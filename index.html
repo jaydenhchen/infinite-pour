@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>INFINITE POUR — you are the bartender</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <canvas class="webgl" id="gl"></canvas>
+  <div id="scan"></div>
+  <div id="vignette"></div>
+  <div id="toast"></div>
+
+  <div id="title">
+    <h1>INFINITE POUR</h1>
+    <p>You are the bartender. So is everyone else on shift.</p>
+    <p>Beer, wine, vodka, whiskey, Twisted Tea, Cutwater — the list never ends.</p>
+    <div class="id-row">
+      <label>YOUR NAME
+        <input id="playerName" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" />
+      </label>
+      <label>BAR CODE
+        <input id="barCode" type="text" maxlength="16" value="MAIN" autocomplete="off" spellcheck="false" />
+      </label>
+    </div>
+    <p class="hint">Same GitHub Pages link + same bar code = same bar. RESTOCK hits every shift.</p>
+    <button type="button" class="cta" id="clockInBtn">CLICK TO STEP BEHIND THE BAR</button>
+    <div class="keys">
+      WASD move · mouse look · SPACE jump · E grab bottle or cup · click pour · F sip · G chug
+      · Q drop · R dump glass · 1–6 glassware · T summon any drink · C new dare · RESTOCK bar
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div id="stats" class="pixel-border">
+      <h2>SHIFT DRINK</h2>
+      <div>SCORE <span id="score">0</span> · POURS <span id="pours">0</span></div>
+      <div>BAC</div>
+      <div class="bar bac"><i id="bacFill"></i></div>
+      <div>GLASS</div>
+      <div class="bar"><i id="glassFill"></i></div>
+      <div id="glassName">empty pint</div>
+      <button type="button" id="restock">RESTOCK BAR</button>
+    </div>
+    <div id="online" class="pixel-border">
+      <div class="tag">ON SHIFT</div>
+      <div id="onlineList">just you</div>
+    </div>
+    <div id="dare" class="pixel-border">
+      <div class="tag">DARE DECK</div>
+      <div id="dareText">Pour yourself whatever you want. The house is yours.</div>
+    </div>
+    <div id="held" class="pixel-border">
+      <div class="name" id="heldName">empty hands</div>
+      <div class="meta" id="heldMeta">summon a bottle with T</div>
+    </div>
+    <div id="lookHint">CLICK TO LOOK · drag if the mouse stays free</div>
+    <div id="prompt"></div>
+    <div id="crosshair"></div>
+  </div>
+
+  <div id="summon">
+    <div class="panel">
+      <h3>BACK-BAR SUMMON</h3>
+      <div id="cats" class="cats"></div>
+      <input id="q" type="text" placeholder="name anything: twisted tea peach, cutwater paloma, house mezcal…" autocomplete="off" spellcheck="false" />
+      <ul id="results"></ul>
+    </div>
+  </div>
+
+  <div id="passout">
+    <h1>YOU CLOSED THE BAR</h1>
+    <p id="passoutStats"></p>
+    <div class="cta">CLICK TO CLOCK BACK IN</div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="js/game.js?v=19"></script>
+</body>
+</html>
