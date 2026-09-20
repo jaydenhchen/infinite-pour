@@ -7,13 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css?v=28" />
 </head>
 <body>
   <canvas class="webgl" id="gl"></canvas>
   <div id="scan"></div>
   <div id="vignette"></div>
   <div id="toast"></div>
+  <div id="winPop"></div>
 
   <div id="title">
     <h1>INFINITE POUR</h1>
@@ -26,12 +27,19 @@
       <label>BAR CODE
         <input id="barCode" type="text" maxlength="16" value="MAIN" autocomplete="off" spellcheck="false" />
       </label>
+      <label>GENDER
+        <div class="gender-picks">
+          <button type="button" data-g="m" class="on">GUY</button>
+          <button type="button" data-g="f">GIRL</button>
+        </div>
+      </label>
     </div>
     <p class="hint">Same GitHub Pages link + same bar code = same bar. RESTOCK hits every shift.</p>
     <button type="button" class="cta" id="clockInBtn">CLICK TO STEP BEHIND THE BAR</button>
     <div class="keys">
-      WASD move · mouse look · SPACE jump · E grab bottle or cup · click pour · F sip · G chug
-      · Q drop · R dump glass · 1–6 glassware · T summon any drink · C new dare · RESTOCK bar
+      WASD move · mouse look · SPACE jump · E grab, sit, or get in a car · SHIFT get out
+      · F sip · G chug · Q drop · R dump · P drunk pee · 1/2/3 camera · 4–9 glassware · T summon
+      · H cab back to the bar · patio: beer pong / beer die · pool inside · C new dare
     </div>
   </div>
 
@@ -45,6 +53,7 @@
       <div class="bar"><i id="glassFill"></i></div>
       <div id="glassName">empty pint</div>
       <button type="button" id="restock">RESTOCK BAR</button>
+      <button type="button" id="warp">CAB BACK TO BAR</button>
     </div>
     <div id="online" class="pixel-border">
       <div class="tag">ON SHIFT</div>
@@ -53,6 +62,10 @@
     <div id="dare" class="pixel-border">
       <div class="tag">DARE DECK</div>
       <div id="dareText">Pour yourself whatever you want. The house is yours.</div>
+    </div>
+    <div id="game" class="pixel-border hidden">
+      <div class="tag">HOUSE GAME</div>
+      <div id="gameText"></div>
     </div>
     <div id="held" class="pixel-border">
       <div class="name" id="heldName">empty hands</div>
@@ -73,9 +86,9 @@
   </div>
 
   <div id="passout">
-    <h1>YOU CLOSED THE BAR</h1>
+    <h1>YOU BLACKED OUT</h1>
     <p id="passoutStats"></p>
-    <div class="cta">CLICK TO CLOCK BACK IN</div>
+    <div class="cta">CLICK TO GET BACK UP</div>
   </div>
 
   <script type="importmap">
@@ -86,6 +99,6 @@
     }
   }
   </script>
-  <script type="module" src="js/game.js?v=19"></script>
+  <script type="module" src="js/game.js?v=28"></script>
 </body>
 </html>

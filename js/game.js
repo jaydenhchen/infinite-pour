@@ -20,7 +20,15 @@ import {
   roster,
   netStatus,
   playerName,
-} from "./multiplayer.js?v=19";
+  makeAvatar,
+  tickAvatar,
+  localId,
+  humanPeers,
+  publishEvent,
+  setGameHandler,
+  setWorldCollide,
+} from "./multiplayer.js?v=28";
+import { createGames } from "./games.js?v=28";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -29,6 +37,11 @@ const D = 12;
 const EYE = 1.58;
 const WELL_Z = -2.22;
 const SHELF_Z = -3.62;
+const PASS_OUT = 0.52;
+const DRUNK_VIS = 0.3;
+const WORLD_X = 62;
+const WORLD_Z_MIN = -18;
+const WORLD_Z_MAX = 72;
 
 const GLYPH = {
   0: ["111", "101", "101", "101", "111"],
@@ -265,6 +278,11 @@ function bootTextures() {
   mats.chrome = new THREE.MeshLambertMaterial({ color: 0xc8d0d8 });
   mats.seat = new THREE.MeshLambertMaterial({ color: 0x6b1c23 });
   mats.glow = new THREE.MeshBasicMaterial({ color: 0xffe08a });
+  mats.asphalt = new THREE.MeshLambertMaterial({ color: 0x1c1c22 });
+  mats.lane = new THREE.MeshLambertMaterial({ color: 0xc9a227 });
+  mats.sidewalk = new THREE.MeshLambertMaterial({ color: 0x3a3a44 });
+  mats.grass = new THREE.MeshLambertMaterial({ color: 0x142016 });
+  mats.night = new THREE.MeshLambertMaterial({ color: 0x0c0a12 });
 }
 
 function lambert(color, extra = {}) {
@@ -591,10 +609,10 @@ const audio = {
 };
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a0c10);
-scene.fog = new THREE.Fog(0x1a0c10, 12, 22);
+scene.background = new THREE.Color(0x12080c);
+scene.fog = new THREE.Fog(0x12080c, 22, 95);
 
-const camera = new THREE.PerspectiveCamera(78, 1, 0.08, 40);
+const camera = new THREE.PerspectiveCamera(78, 1, 0.08, 160);
 camera.rotation.order = "YXZ";
 camera.position.set(0, EYE, -1.05);
 
@@ -630,6 +648,7 @@ let pours = 0;
 let unique = new Set();
 let dare = DARES[(Math.random() * DARES.length) | 0];
 let toastT = 0;
+let winPopT = 0;
 let summonOpen = false;
 let summonCat = "all";
 let summonOpenedBy = null;
@@ -650,27 +669,89 @@ let started = false;
 let dragging = false;
 let rightHand = null;
 let leftHand = null;
+let viewMode = 1;
+let localPeer = null;
+let inCar = null;
+const cars = [];
+const worldSolids = [];
+const pads = [];
+const bodyPos = new THREE.Vector3(0, EYE, -1.05);
+let savedYaw = 0;
+let savedPitch = 0;
+let sitting = null;
+const SIT_Y = 1.22;
+let houseGames = null;
+let view2Yaw = 0;
+let view2Pitch = 0;
+let peeing = false;
+let peeUntil = 0;
+let shakePhase = 0;
+let shakeWalk = 0;
+let localGender = "m";
 
 function solid(x, z, w, d) {
   solids.push({ minx: x - w / 2, maxx: x + w / 2, minz: z - d / 2, maxz: z + d / 2 });
 }
 
+function worldSolid(x, z, w, d) {
+  worldSolids.push({ minx: x - w / 2, maxx: x + w / 2, minz: z - d / 2, maxz: z + d / 2 });
+}
+
+function drunkLevel() {
+  return THREE.MathUtils.clamp(bac / DRUNK_VIS, 0, 1.25);
+}
+
+function insideBar(x, z) {
+  return Math.abs(x) < W / 2 - 0.18 && z > -D / 2 + 0.18 && z < D / 2 - 0.18;
+}
+
+function pushSolid(px, pz, r, s) {
+  const inside = px >= s.minx && px <= s.maxx && pz >= s.minz && pz <= s.maxz;
+  if (inside) {
+    const left = px - s.minx;
+    const right = s.maxx - px;
+    const near = pz - s.minz;
+    const far = s.maxz - pz;
+    const m = Math.min(left, right, near, far);
+    if (m === left) px = s.minx - r;
+    else if (m === right) px = s.maxx + r;
+    else if (m === near) pz = s.minz - r;
+    else pz = s.maxz + r;
+    return [px, pz];
+  }
+  const cx = THREE.MathUtils.clamp(px, s.minx, s.maxx);
+  const cz = THREE.MathUtils.clamp(pz, s.minz, s.maxz);
+  const dx = px - cx;
+  const dz = pz - cz;
+  const dist2 = dx * dx + dz * dz;
+  if (dist2 < r * r) {
+    const dist = Math.sqrt(dist2) || 0.0001;
+    const need = r - dist;
+    px += (dx / dist) * need;
+    pz += (dz / dist) * need;
+  }
+  return [px, pz];
+}
+
 function collide(px, pz, r = 0.28) {
-  px = THREE.MathUtils.clamp(px, -W / 2 + 0.35, W / 2 - 0.35);
-  pz = THREE.MathUtils.clamp(pz, -D / 2 + 0.35, D / 2 - 0.35);
-  for (const s of solids) {
-    const cx = THREE.MathUtils.clamp(px, s.minx, s.maxx);
-    const cz = THREE.MathUtils.clamp(pz, s.minz, s.maxz);
-    let dx = px - cx;
-    let dz = pz - cz;
+  const list = insideBar(px, pz) ? solids : [];
+  for (const s of list) [px, pz] = pushSolid(px, pz, r, s);
+  for (const s of worldSolids) [px, pz] = pushSolid(px, pz, r, s);
+  for (const car of cars) {
+    if (car === inCar) continue;
+    const dx = px - car.x;
+    const dz = pz - car.z;
+    const cr = r + 1.25;
     const dist2 = dx * dx + dz * dz;
-    if (dist2 < r * r) {
+    if (dist2 < cr * cr) {
       const dist = Math.sqrt(dist2) || 0.0001;
-      const need = r - dist;
+      const need = cr - dist;
       px += (dx / dist) * need;
       pz += (dz / dist) * need;
     }
   }
+  px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
+  pz = THREE.MathUtils.clamp(pz, WORLD_Z_MIN, WORLD_Z_MAX);
   return [px, pz];
 }
 
@@ -776,6 +857,7 @@ function restockDrinks() {
   glassState.parts = [];
   parkGlass();
   poseHands();
+  houseGames?.reset();
 }
 
 function resetShift() {
@@ -793,11 +875,19 @@ function resetShift() {
     hatchDoor.rotation.y = 0;
     hatchDoor.position.set(-4.84, 1.1, -2.7);
   }
+  if (inCar) exitCar(true);
   camera.position.set(0, EYE, -1.05);
   camera.rotation.set(0, 0, 0);
+  bodyPos.set(0, EYE, -1.05);
+  savedYaw = 0;
+  savedPitch = 0;
+  view2Yaw = 0;
+  view2Pitch = 0;
   vy = 0;
   onGround = true;
   walkT = 0;
+  peeing = false;
+  peeUntil = 0;
   hud();
 }
 
@@ -825,10 +915,17 @@ function buildWorld() {
 
   const wallH = 3.4;
   addBox(scene, unitBox, mats.brick, 0, wallH / 2, -D / 2, W, wallH, 0.25);
-  addBox(scene, unitBox, mats.brick, 0, wallH / 2, D / 2, W, wallH, 0.25);
+  addBox(scene, unitBox, mats.brick, -4.4, wallH / 2, D / 2, 7.2, wallH, 0.25);
+  addBox(scene, unitBox, mats.brick, 4.4, wallH / 2, D / 2, 7.2, wallH, 0.25);
   addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, 0, 0.25, wallH, D);
   addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, 0, 0.25, wallH, D);
   addBox(scene, unitBox, mats.woodDark, 0, wallH, 0, W, 0.2, D);
+  addBox(scene, unitBox, mats.woodDark, 0, 3.15, D / 2, 1.7, 0.5, 0.28);
+  worldSolid(0, -D / 2, W, 0.4);
+  worldSolid(-4.4, D / 2, 7.2, 0.4);
+  worldSolid(4.4, D / 2, 7.2, 0.4);
+  worldSolid(-W / 2, 0, 0.4, D);
+  worldSolid(W / 2, 0, 0.4, D);
 
   for (let i = -2; i <= 2; i++) {
     addBox(scene, unitBox, mats.woodDark, i * 3.2, 3.25, 0, 0.16, 0.18, D - 0.4);
@@ -976,14 +1073,24 @@ function buildWorld() {
   for (let i = -2; i <= 2; i++) {
     const stool = new THREE.Group();
     const seat = new THREE.Mesh(unitCyl, mats.seat);
-    seat.scale.set(0.16, 0.05, 0.16);
+    seat.scale.set(0.18, 0.06, 0.18);
     seat.position.y = 0.72;
     stool.add(seat);
     const pole = new THREE.Mesh(unitCyl, mats.brass);
     pole.scale.set(0.03, 0.72, 0.03);
     pole.position.y = 0.36;
     stool.add(pole);
+    const ring = new THREE.Mesh(unitCyl, mats.brass);
+    ring.scale.set(0.17, 0.03, 0.17);
+    ring.position.y = 0.06;
+    stool.add(ring);
     stool.position.set(i * 1.5, 0, 1.35);
+    stool.userData.kind = "stool";
+    stool.userData.root = stool;
+    stool.userData.sit = { x: i * 1.5, z: 1.35 };
+    seat.userData.kind = "stool";
+    seat.userData.root = stool;
+    registerPick(stool);
     scene.add(stool);
   }
 
@@ -1031,10 +1138,154 @@ function buildWorld() {
   shelfLight.position.set(0, 2.1, SHELF_Z + 0.55);
   scene.add(shelfLight);
 
-  const door = addBox(scene, unitBox, mats.woodDark, 0, 1.4, D / 2 - 0.2, 1.4, 2.6, 0.1);
+  const door = addBox(scene, unitBox, mats.woodDark, 0.95, 1.4, D / 2 + 0.35, 1.4, 2.6, 0.1);
+  door.rotation.y = 1.25;
   door.userData.kind = "door";
   door.userData.root = door;
   registerPick(door);
+
+  buildTown();
+  houseGames = createGames({
+    scene,
+    camera,
+    lambert,
+    registerPick,
+    solid,
+    worldSolid,
+    toast,
+    flash,
+    audio,
+    neonTex,
+    localId,
+    humans: humanPeers,
+    sendEvent: publishEvent,
+    houseDrink: (msg) => {
+      toast(msg);
+      score += 8;
+    },
+    score: (n) => {
+      score += n;
+    },
+  });
+  houseGames.build();
+  setWorldCollide(collide);
+}
+
+function asphalt(x, z, w, d, mat = mats.asphalt, y = 0.004) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat);
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(x, y, z);
+  m.receiveShadow = true;
+  scene.add(m);
+  return m;
+}
+
+function makeCar(x, z, yaw, color) {
+  const g = new THREE.Group();
+  const body = lambert(color);
+  const dark = lambert(0x121014);
+  const glass = lambert(0x8ad4e8, { transparent: true, opacity: 0.48 });
+  addBox(g, unitBox, body, 0, 0.42, 0, 1.15, 0.38, 2.2);
+  addBox(g, unitBox, body, 0, 0.78, 0.18, 0.95, 0.36, 1.15);
+  addBox(g, unitBox, glass, 0, 0.8, -0.42, 0.88, 0.28, 0.08);
+  addBox(g, unitBox, dark, -0.55, 0.18, -0.7, 0.18, 0.36, 0.36);
+  addBox(g, unitBox, dark, 0.55, 0.18, -0.7, 0.18, 0.36, 0.36);
+  addBox(g, unitBox, dark, -0.55, 0.18, 0.7, 0.18, 0.36, 0.36);
+  addBox(g, unitBox, dark, 0.55, 0.18, 0.7, 0.18, 0.36, 0.36);
+  addBox(g, unitBox, lambert(0xffe08a), -0.38, 0.42, -1.12, 0.12, 0.08, 0.06);
+  addBox(g, unitBox, lambert(0xffe08a), 0.38, 0.42, -1.12, 0.12, 0.08, 0.06);
+  g.position.set(x, 0, z);
+  g.rotation.y = yaw;
+  g.userData.kind = "car";
+  g.userData.root = g;
+  const car = { mesh: g, x, z, yaw, speed: 0 };
+  g.userData.car = car;
+  registerPick(g);
+  scene.add(g);
+  cars.push(car);
+  return car;
+}
+
+function lamp(x, z) {
+  addBox(scene, unitBox, mats.chrome, x, 1.3, z, 0.08, 2.6, 0.08);
+  addBox(scene, unitBox, mats.glow, x, 2.62, z, 0.22, 0.12, 0.22);
+  const pl = new THREE.PointLight(0xffd090, 1.6, 14);
+  pl.position.set(x, 2.55, z);
+  scene.add(pl);
+}
+
+function building(x, z, sx, sy, sz, color) {
+  addBox(scene, unitBox, lambert(color), x, sy / 2, z, sx, sy, sz);
+  worldSolid(x, z, sx, sz);
+}
+
+function barPad(x, z, label) {
+  asphalt(x, z, 2.4, 2.4, mats.glow, 0.03);
+  pads.push({ x, z, r: 1.35 });
+  const board = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.2, 0.55),
+    new THREE.MeshBasicMaterial({ map: neonTex(label, 0x3dfff2), transparent: true, side: THREE.DoubleSide })
+  );
+  board.position.set(x, 1.35, z);
+  scene.add(board);
+}
+
+function buildTown() {
+  asphalt(0, 28, 140, 110, mats.grass, -0.04);
+  asphalt(0, 11.2, 16, 10.4, mats.sidewalk, 0.01);
+  asphalt(0, 11.4, 12, 8.2);
+  asphalt(0, 18.2, 118, 8.4);
+  asphalt(0, 48.2, 118, 8.4);
+  asphalt(0, 33, 8.4, 38);
+  asphalt(36, 33, 8.4, 38);
+  asphalt(-36, 33, 8.4, 38);
+  asphalt(0, 18.2, 118, 0.12, mats.lane, 0.02);
+  asphalt(0, 48.2, 118, 0.12, mats.lane, 0.02);
+  asphalt(0, 33, 0.12, 38, mats.lane, 0.02);
+
+  building(14, 32, 12, 6.2, 10, 0x2a1020);
+  building(-14, 32, 11, 5.4, 10, 0x102028);
+  building(14, 58, 12, 7.5, 11, 0x241830);
+  building(-16, 58, 14, 4.8, 10, 0x1a1024);
+  building(50, 32, 14, 8, 12, 0x301018);
+  building(-50, 32, 14, 6.6, 12, 0x101820);
+  building(50, 58, 13, 5.5, 10, 0x201028);
+  building(-48, 58, 12, 7.2, 11, 0x182010);
+  building(22, 5.5, 8, 4.2, 6, 0x22141c);
+  building(-22, 5.5, 8, 5, 6, 0x141822);
+
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.4, 0.9),
+    new THREE.MeshBasicMaterial({ map: neonTex("INFINITE POUR", 0xff3dac) })
+  );
+  sign.position.set(0, 2.85, D / 2 + 0.16);
+  scene.add(sign);
+
+  lamp(-6, 14);
+  lamp(6, 14);
+  lamp(-18, 18.2);
+  lamp(18, 18.2);
+  lamp(-18, 48.2);
+  lamp(18, 48.2);
+  lamp(0, 30);
+  lamp(36, 24);
+  lamp(-36, 24);
+  lamp(36, 42);
+  lamp(-36, 42);
+
+  makeCar(-4.2, 9.4, Math.PI, 0xc41e3a);
+  makeCar(4.1, 9.6, Math.PI, 0x2e6bff);
+  makeCar(-3.8, 13.2, 0, 0xe8c547);
+  makeCar(3.6, 13.4, 0, 0xff3dac);
+  makeCar(14, 16.4, Math.PI / 2, 0xd8d0c4);
+  makeCar(-12, 20.1, -Math.PI / 2, 0x2c6e49);
+
+  asphalt(-8.4, 12.6, 7.2, 7.4, mats.sidewalk, 0.012);
+  lamp(-8.4, 11.2);
+
+  barPad(0, 8.2, "BAR  H");
+  barPad(0, 33.2, "BAR  H");
+  barPad(36, 18.2, "BAR  H");
 }
 
 function updateGlassVisual() {
@@ -1079,14 +1330,60 @@ function toast(msg) {
   toastT = 2.6;
 }
 
+function flash(text, kind = "win") {
+  const el = $("winPop");
+  if (!el) return;
+  el.textContent = text;
+  el.className = kind === "lose" ? "show lose" : kind === "back" ? "show back" : "show";
+  winPopT = kind === "back" ? 1.8 : 3.2;
+}
+
+function penaltyDrink(msg, oz = 1.1) {
+  bac += (5 / 40) * (oz / 1.2) * 0.028;
+  bumpDrink();
+  pours += 1;
+  score += 6;
+  toast(msg);
+  hud();
+  maybePassOut();
+}
+
+function sitOn(spot) {
+  if (!spot || inCar) return;
+  sitting = { x: spot.x, z: spot.z };
+  vy = 0;
+  onGround = true;
+  camera.position.set(spot.x, SIT_Y, spot.z);
+  bodyPos.set(spot.x, SIT_Y, spot.z);
+  toast("parked on a stool. WASD or E to stand · F/G still drink");
+}
+
+function standUp() {
+  if (!sitting) return;
+  camera.position.set(sitting.x, EYE, sitting.z + 0.12);
+  bodyPos.set(sitting.x, EYE, sitting.z + 0.12);
+  sitting = null;
+  onGround = true;
+  vy = 0;
+}
+
 function playing() {
   return started && !summonOpen && !passedOut;
+}
+
+function drunkWord(d) {
+  if (d < 0.1) return "";
+  if (d < 0.28) return "buzzed";
+  if (d < 0.48) return "tipsy";
+  if (d < 0.7) return "drunk";
+  if (d < 0.95) return "wasted";
+  return "blackout";
 }
 
 function hud() {
   $("score").textContent = String(score);
   $("pours").textContent = String(pours);
-  $("bacFill").style.width = `${THREE.MathUtils.clamp(bac / 0.28, 0, 1) * 100}%`;
+  $("bacFill").style.width = `${THREE.MathUtils.clamp(bac / PASS_OUT, 0, 1) * 100}%`;
   $("glassFill").style.width = `${THREE.MathUtils.clamp(glassState.fill, 0, 1) * 100}%`;
   if (glassState.fill < 0.02) $("glassName").textContent = `empty ${glassState.type}`;
   else {
@@ -1106,7 +1403,7 @@ function hud() {
     $("heldMeta").textContent = "E grab bottle or cup · T summon";
   }
   $("dareText").textContent = dare.text;
-  const d = THREE.MathUtils.clamp(bac / 0.28, 0, 1);
+  const d = THREE.MathUtils.clamp(drunkLevel(), 0, 1.25);
   $("vignette").style.filter = `hue-rotate(${d * 40}deg) saturate(${1 + d})`;
   $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${50 - d * 20}%, rgba(${40 + d * 80}, 8, 20, ${0.45 + d * 0.4}) 100%)`;
   $("lookHint").classList.toggle("show", started && !controls.isLocked && !summonOpen && !passedOut);
@@ -1114,16 +1411,33 @@ function hud() {
   if (list) {
     const people = roster();
     const st = netStatus();
-    const lines = people.map((p) => (p.you ? `> ${p.name} (you)` : p.name));
+    const rows = people.map((p) => {
+      const who = p.you ? `> ${p.name} (you)` : p.bot ? `${p.name} (bot)` : p.name;
+      const buzz = drunkWord(p.drunk || 0);
+      return { who, buzz, you: !!p.you, drunk: p.drunk || 0 };
+    });
     const link = st === "online" ? "live" : st === "connecting" ? "linking..." : "solo";
-    const text = `${lines.join("\n")}\n${people.length} on shift · ${link}`;
+    const text = `${rows.map((r) => (r.buzz ? `${r.who} · ${r.buzz}` : r.who)).join("\n")}\n${people.length} on shift · ${link}`;
     if (list.dataset.snap !== text) {
       list.dataset.snap = text;
       list.replaceChildren();
-      lines.forEach((line, i) => {
+      rows.forEach((row) => {
         const d = document.createElement("div");
-        d.textContent = line;
-        if (people[i]?.you) d.className = "you";
+        const cls = ["row"];
+        if (row.you) cls.push("you");
+        if (row.drunk > 0.45) cls.push("wasted");
+        if (row.buzz === "blackout") cls.push("ko");
+        d.className = cls.join(" ");
+        const who = document.createElement("span");
+        who.className = "who";
+        who.textContent = row.who;
+        d.appendChild(who);
+        if (row.buzz) {
+          const buzz = document.createElement("span");
+          buzz.className = "buzz";
+          buzz.textContent = row.buzz;
+          d.appendChild(buzz);
+        }
         list.appendChild(d);
       });
       const n = document.createElement("div");
@@ -1132,13 +1446,27 @@ function hud() {
       list.appendChild(n);
     }
   }
+  const gameBox = $("game");
+  const gameText = $("gameText");
+  if (gameBox && gameText) {
+    const line = houseGames?.hudText() || "";
+    gameBox.classList.toggle("hidden", !line);
+    if (line && gameText.textContent !== line) gameText.textContent = line;
+  }
 }
 
 function promptFrom(obj) {
+  if (sitting) return houseGames?.prompt(obj) || "stool. WASD or E stand · F sip · G chug";
+  if (inCar) return "WASD drive · SHIFT get out · F/G drink · H cab home";
   if (!obj) {
+    const gamePrompt = houseGames?.prompt(null) || "";
+    if (gamePrompt) return gamePrompt;
+    const car = nearestCar(2.2);
+    if (car) return "E get in the car · SHIFT later to bail";
     if (held && held.userData.kind === "glass") {
       return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  Q set down";
     }
+    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · patio games to the left · 1/2/3 camera";
     return started && !controls.isLocked ? "click the bar to capture mouse" : "";
   }
   const k = obj.userData.kind;
@@ -1151,17 +1479,22 @@ function promptFrom(obj) {
     if (held && held.userData.kind === "bottle") return `click pour  ${held.userData.drink.name}  ·  E grab cup`;
     if (held && held.userData.kind === "glass") {
       if (glassState.fill > 0.02) return "F sip  ·  G chug  ·  Q set down";
-      return "cup in hand  ·  1–6 swap  ·  Q set down";
+      return "cup in hand  ·  4–9 swap  ·  Q set down";
     }
     if (glassState.fill > 0.02) return "E grab cup  ·  F sip  ·  G chug";
-    return "E grab cup  ·  1–6 glassware";
+    return "E grab cup  ·  4–9 glassware";
   }
   if (k === "tap") return `E tap  ${drink.name}`;
   if (k === "fridge") return fridgeOpen ? "E grab a cold one" : "E open fridge";
   if (k === "register" || k === "hatch") return "E / T  summon any drink";
   if (k === "sink") return "E dump glass";
   if (k === "juke") return audio.juke ? "E silence the juke" : "E fire up the juke";
-  if (k === "door") return "locked. you're already on shift.";
+  if (k === "door") return "walk out · H cab back to the bar";
+  if (k === "car") return inCar ? "SHIFT get out" : "E get in · drink and drive";
+  if (k === "stool") return sitting ? "E or WASD stand up" : "E sit at the bar";
+  const gamePrompt = houseGames?.prompt(look) || "";
+  if (gamePrompt) return gamePrompt;
+  if (inCar) return "WASD drive · SHIFT get out · F/G drink · H cab home";
   return "";
 }
 
@@ -1178,7 +1511,11 @@ function pick() {
   raycaster.setFromCamera(ndc, camera);
   const hits = raycaster.intersectObjects(pickables, true);
   for (const h of hits) {
-    if (h.distance > 3.4) continue;
+    const rootGuess = findRoot(h);
+    const kind = rootGuess?.userData?.kind || h.object?.userData?.kind;
+    const extra = houseGames?.pickRange(kind) || 0;
+    const max = kind === "car" ? 4.2 : extra || 3.4;
+    if (h.distance > max) continue;
     const root = findRoot(h);
     if (!root) continue;
     if (held && root === held) continue;
@@ -1500,12 +1837,13 @@ function completeDare() {
 }
 
 function maybePassOut() {
-  if (bac < 0.28 || passedOut) return;
+  if (bac < PASS_OUT || passedOut) return;
   passedOut = true;
   if (controls.isLocked) controls.unlock();
   audio.pourStop();
   $("passoutStats").textContent = `score ${score}  ·  ${pours} pours  ·  ${unique.size} unique  ·  peak bac ${bac.toFixed(3)}`;
   $("passout").classList.add("open");
+  if (inCar) exitCar(true);
   resetShift();
 }
 
@@ -1515,6 +1853,8 @@ function startShift() {
   const ident = loadIdentity();
   const name = ($("playerName")?.value || ident.name).trim();
   const room = ($("barCode")?.value || ident.room).trim();
+  const genderBtn = document.querySelector(".gender-picks button.on");
+  localGender = genderBtn?.dataset.g === "f" || (!genderBtn && ident.gender === "f") ? "f" : "m";
   bootMultiplayer({
     scene,
     camera,
@@ -1522,6 +1862,8 @@ function startShift() {
     toast,
     name,
     room,
+    gender: localGender,
+    collide,
     onRestock(by) {
       restockDrinks();
       audio.clink();
@@ -1530,8 +1872,21 @@ function startShift() {
   });
   setPoseSources(
     () => held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : ""),
-    () => pouring
+    () => pouring,
+    () => drunkLevel(),
+    () => ({
+      x: bodyPos.x,
+      y: sitting ? SIT_Y : bodyPos.y,
+      z: bodyPos.z,
+      yaw: viewMode === 2 ? view2Yaw : savedYaw,
+      pit: viewMode === 2 ? view2Pitch : savedPitch,
+      s: sitting ? 1 : 0,
+      u: peeing ? 1 : 0,
+      g: localGender,
+    })
   );
+  setGameHandler((msg) => houseGames?.onNet(msg));
+  ensureLocalAvatar();
   toast(`${playerName()} is on the stick`);
   $("title").classList.add("hidden");
   $("hud").classList.remove("hidden");
@@ -1601,7 +1956,8 @@ function useLook() {
   } else if (k === "juke") {
     audio.toggleJuke();
     toast(audio.juke ? "jukebox: after hours" : "jukebox off");
-  } else if (k === "door") toast("you're already inside. lock the door behind you.");
+  } else if (k === "door") toast("door's open. streets are yours.");
+  else if (k === "car") enterCar(look.userData.car);
 }
 
 function spawnDrop() {
@@ -1647,9 +2003,296 @@ function updateDeliveries(dt) {
   }
 }
 
+
+function nearestCar(max = 2.4) {
+  let best = null;
+  let bestD = max;
+  for (const car of cars) {
+    if (car === inCar) continue;
+    const d = Math.hypot(car.x - camera.position.x, car.z - camera.position.z);
+    if (d < bestD) {
+      bestD = d;
+      best = car;
+    }
+  }
+  return best;
+}
+
+function ensureLocalAvatar() {
+  if (!playerName) return;
+  const gender = localGender === "f" ? "f" : "m";
+  if (localPeer) {
+    if (localPeer.gender !== gender) {
+      scene.remove(localPeer.rig);
+      localPeer = null;
+    } else return;
+  }
+  try {
+    const rig = makeAvatar("you", playerName(), gender);
+    rig.visible = false;
+    scene.add(rig);
+    localPeer = {
+      id: "you",
+      name: playerName(),
+      gender,
+      rig,
+      tx: camera.position.x,
+      tz: camera.position.z,
+      ty: camera.position.y,
+      tyaw: 0,
+      tpit: 0,
+      pit: 0,
+      bac: 0,
+      held: "",
+      pouring: false,
+      last: performance.now(),
+      phase: 1.7,
+      lx: camera.position.x,
+      lz: camera.position.z,
+      local: true,
+      sit: false,
+      pee: false,
+      freezeFacing: false,
+      freezeHead: false,
+    };
+  } catch (err) {
+    console.warn("avatar", err);
+  }
+}
+
+function setView(mode) {
+  if (mode === 2 && viewMode !== 2) {
+    view2Yaw = savedYaw;
+    view2Pitch = savedPitch;
+  }
+  if (mode !== 2 && viewMode === 2) {
+    savedYaw = view2Yaw;
+    savedPitch = view2Pitch;
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = view2Yaw;
+    camera.rotation.x = view2Pitch;
+  }
+  viewMode = mode;
+  toast(mode === 1 ? "1st person" : mode === 2 ? "2nd person — your face" : "3rd person");
+}
+
+function applyDrunkCam(dt, extra = 0) {
+  const drunk = Math.max(0, drunkLevel());
+  const amp = drunk;
+  shakePhase += dt * 1.05;
+  const moving = sitting == null && inCar == null && onGround && (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD);
+  if (moving) shakeWalk += dt * 5.2;
+  if (viewMode === 2) {
+    camera.fov = 78 + extra * 8;
+    camera.updateProjectionMatrix();
+    return;
+  }
+  const roll = Math.sin(shakePhase) * 0.2 * amp + Math.sin(shakeWalk) * 0.055 * amp * (moving ? 1 : 0.1);
+  camera.rotation.z = (amp < 0.03 ? 0 : roll) + extra;
+  camera.fov = 78 + extra * 8 + (amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * 4.2 * amp);
+  camera.updateProjectionMatrix();
+}
+
+function togglePee() {
+  if (inCar) {
+    toast("not in the car");
+    return;
+  }
+  if (sitting) standUp();
+  peeing = peeing ? false : true;
+  peeUntil = peeing ? tWorld + 8 : 0;
+  toast(peeing ? "pants down" : "pants up");
+}
+
+function enterCar(car) {
+  if (!car || inCar) return;
+  inCar = car;
+  car.speed = 0;
+  vy = 0;
+  onGround = true;
+  camera.position.set(car.x, EYE, car.z);
+  toast("in the car. WASD drive · SHIFT get out · F/G still drink");
+}
+
+function exitCar(silent) {
+  if (!inCar) return;
+  const car = inCar;
+  const side = 1.7;
+  const x = car.x + Math.cos(car.yaw) * side;
+  const z = car.z - Math.sin(car.yaw) * side;
+  const [nx, nz] = collide(x, z, 0.3);
+  camera.position.set(nx, EYE, nz);
+  inCar = null;
+  car.speed = 0;
+  if (!silent) toast("boots on pavement");
+}
+
+function warpBar() {
+  if (inCar) exitCar(true);
+  camera.position.set(0, EYE, -1.05);
+  camera.rotation.set(0, 0, 0);
+  savedYaw = 0;
+  savedPitch = 0;
+  view2Yaw = 0;
+  view2Pitch = 0;
+  bodyPos.set(0, EYE, -1.05);
+  vy = 0;
+  onGround = true;
+  toast("back at the stick");
+}
+
+function tryPads() {
+  for (const pad of pads) {
+    if (pad.z < 16) continue;
+    if (Math.hypot(camera.position.x - pad.x, camera.position.z - pad.z) < pad.r) {
+      warpBar();
+      return true;
+    }
+  }
+  return false;
+}
+
+function updateCar(dt) {
+  const car = inCar;
+  if (!car) return;
+  const drunk = drunkLevel();
+  const throttle = Number(!!keys.KeyW) - Number(!!keys.KeyS);
+  const steer = Number(!!keys.KeyD) - Number(!!keys.KeyA);
+  const maxV = 17 * (1 - Math.min(0.6, drunk * 0.48));
+  const target = throttle * maxV;
+  car.speed += (target - car.speed) * Math.min(1, dt * (throttle ? 1.8 : 3.2));
+  const wobble = (Math.random() - 0.5) * drunk * 1.6 + Math.sin(tWorld * (1.4 + drunk)) * drunk * 0.9;
+  const grip = Math.min(1, 0.25 + Math.abs(car.speed) * 0.1);
+  car.yaw -= (steer + wobble * 0.35) * dt * 1.35 * grip * Math.sign(car.speed || throttle || 1);
+  const fx = -Math.sin(car.yaw);
+  const fz = -Math.cos(car.yaw);
+  let nx = car.x + fx * car.speed * dt;
+  let nz = car.z + fz * car.speed * dt;
+  const [cx, cz] = collide(nx, nz, 1.15);
+  if (Math.hypot(cx - nx, cz - nz) > 0.01) car.speed *= -0.18;
+  car.x = cx;
+  car.z = cz;
+  car.mesh.position.set(car.x, 0, car.z);
+  car.mesh.rotation.y = car.yaw;
+  camera.position.set(car.x, EYE + Math.abs(car.speed) * 0.01, car.z);
+  applyDrunkCam(dt, Math.min(0.12, Math.abs(car.speed) * 0.004));
+}
+
+function stashLook() {
+  if (viewMode === 2) {
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = view2Yaw;
+    camera.rotation.x = view2Pitch;
+    savedYaw = view2Yaw;
+    savedPitch = view2Pitch;
+  } else {
+    savedYaw = camera.rotation.y;
+    savedPitch = camera.rotation.x;
+  }
+  bodyPos.copy(camera.position);
+}
+
+function restoreBodyPos() {
+  camera.position.copy(bodyPos);
+  if (viewMode === 2) {
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = view2Yaw;
+    camera.rotation.x = view2Pitch;
+    camera.rotation.z = 0;
+    camera.quaternion.setFromEuler(camera.rotation);
+  }
+}
+
+function restoreBodyLook() {
+  camera.position.copy(bodyPos);
+  camera.rotation.order = "YXZ";
+  if (viewMode === 2) {
+    camera.rotation.y = view2Yaw;
+    camera.rotation.x = view2Pitch;
+  } else {
+    camera.rotation.y = savedYaw;
+    camera.rotation.x = savedPitch;
+  }
+  camera.rotation.z = 0;
+  camera.quaternion.setFromEuler(camera.rotation);
+}
+
+function applyView() {
+  const drunk = drunkLevel();
+  const yaw = viewMode === 2 ? view2Yaw : savedYaw;
+  const pitch = viewMode === 2 ? view2Pitch : savedPitch;
+  const showBody = viewMode !== 1;
+  if (rightHand) rightHand.visible = viewMode === 1 && !inCar;
+  if (leftHand) leftHand.visible = viewMode === 1 && !inCar;
+  if (localPeer) {
+    localPeer.tx = bodyPos.x;
+    localPeer.tz = bodyPos.z;
+    localPeer.ty = inCar ? EYE : bodyPos.y;
+    localPeer.tyaw = inCar ? inCar.yaw : yaw;
+    localPeer.tpit = inCar ? 0 : pitch;
+    localPeer.bac = drunk;
+    localPeer.held = held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : "");
+    localPeer.pouring = pouring;
+    localPeer.sit = Boolean(sitting);
+    localPeer.pee = Boolean(peeing);
+    localPeer.gender = localGender;
+    localPeer.freezeFacing = viewMode === 2;
+    localPeer.freezeHead = viewMode === 2;
+    localPeer.rig.visible = showBody || peeing;
+    if (localPeer.rig.userData.body) localPeer.rig.userData.body.visible = showBody;
+    if (localPeer.rig.userData.tag) localPeer.rig.userData.tag.visible = showBody;
+    localPeer.rig.userData.held.visible = Boolean(localPeer.held);
+    if (inCar) {
+      localPeer.rig.position.set(inCar.x, 0.15, inCar.z);
+      localPeer.rig.rotation.y = inCar.yaw;
+    }
+  }
+  if (viewMode === 1) {
+    if (inCar) camera.position.set(inCar.x, 1.22, inCar.z);
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+    return;
+  }
+  const dist = viewMode === 2 ? 2.55 : inCar ? 6.2 : 3.5;
+  const sign = viewMode === 2 ? -1 : 1;
+  const useYaw = inCar && viewMode === 3 ? inCar.yaw : yaw;
+  const fx = -Math.sin(useYaw);
+  const fz = -Math.cos(useYaw);
+  camera.position.x = bodyPos.x - fx * dist * sign;
+  camera.position.z = bodyPos.z - fz * dist * sign;
+  camera.position.y = (inCar ? 2.1 : bodyPos.y + 0.35) + (viewMode === 3 ? 0.55 : 0.05);
+  if (viewMode === 2) {
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = useYaw + Math.PI;
+    camera.rotation.x = 0.08;
+    camera.rotation.z = 0;
+    camera.quaternion.setFromEuler(camera.rotation);
+  } else {
+    camera.rotation.y = useYaw;
+    camera.rotation.x = pitch * 0.45 - 0.12;
+  }
+}
+
+function updateLocalAvatar(dt) {
+  if (!localPeer) return;
+  tickAvatar(localPeer, dt, tWorld);
+}
+
 function updatePlayer(dt) {
-  const drunk = THREE.MathUtils.clamp(bac / 0.28, 0, 1);
-  const speed = (keys.ShiftLeft || keys.ShiftRight ? 4.2 : 2.6) * (1 - drunk * 0.45);
+  if (inCar) {
+    updateCar(dt);
+    return;
+  }
+  if (sitting) {
+    if (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || keys.Space) standUp();
+    else {
+      camera.position.set(sitting.x, SIT_Y, sitting.z);
+      applyDrunkCam(dt);
+      return;
+    }
+  }
+  const drunk = drunkLevel();
+  const speed = (keys.ShiftLeft || keys.ShiftRight ? 4.2 : 2.6) * (1 - Math.min(0.7, drunk * 0.42)) * (peeing ? 0.45 : 1);
   const fwd = Number(!!keys.KeyW) - Number(!!keys.KeyS);
   const side = Number(!!keys.KeyD) - Number(!!keys.KeyA);
   const len = Math.hypot(fwd, side);
@@ -1657,10 +2300,21 @@ function updatePlayer(dt) {
     const f = (fwd / len) * speed * dt;
     const s = (side / len) * speed * dt;
     const slip = (Math.random() - 0.5) * drunk * 0.4 * dt;
-    controls.moveForward(f + slip);
-    controls.moveRight(s + slip * 0.5);
+    const hitch = Math.max(0, Math.sin(walkT)) * drunk * 0.7 * dt;
+    if (viewMode === 2) {
+      const yaw = view2Yaw;
+      const fx = -Math.sin(yaw);
+      const fz = -Math.cos(yaw);
+      const rx = Math.cos(yaw);
+      const rz = -Math.sin(yaw);
+      camera.position.x += fx * (f + slip - hitch * 0.35) + rx * (s + slip * 0.5 + hitch);
+      camera.position.z += fz * (f + slip - hitch * 0.35) + rz * (s + slip * 0.5 + hitch);
+    } else {
+      controls.moveForward(f + slip - hitch * 0.35);
+      controls.moveRight(s + slip * 0.5 + hitch);
+    }
   }
-  if (keys.Space && onGround) {
+  if (keys.Space && onGround && !peeing) {
     vy = 5.2;
     onGround = false;
   }
@@ -1675,12 +2329,13 @@ function updatePlayer(dt) {
   camera.position.x = nx;
   camera.position.z = nz;
   if (onGround && len > 0) {
-    walkT += dt * (8 + drunk * 4);
-    camera.position.y = EYE + Math.abs(Math.sin(walkT)) * 0.055;
+    walkT += dt * (7 + drunk * 5);
+    const limpBob = 0.055 + drunk * 0.05;
+    const hitchBob = Math.max(0, -Math.sin(walkT)) * drunk * 0.04;
+    camera.position.y = EYE + Math.abs(Math.sin(walkT)) * limpBob + hitchBob;
   }
-  camera.rotation.z = Math.sin(tWorld * (1.1 + drunk)) * 0.12 * drunk;
-  camera.fov = 78 + Math.sin(tWorld * 0.7) * 4 * drunk;
-  camera.updateProjectionMatrix();
+  applyDrunkCam(dt);
+  if (camera.position.z > 16 && tryPads()) return;
 }
 
 function updatePour(dt) {
@@ -1732,6 +2387,7 @@ function tick() {
   const dt = Math.min(0.05, clock.getDelta());
   tWorld += dt;
   if (sipT > 0) sipT = Math.max(0, sipT - dt);
+  if (peeing && peeUntil && tWorld > peeUntil) peeing = false;
   if (bac > 0.0001) {
     if (bacWait > 0) bacWait = Math.max(0, bacWait - dt);
     else {
@@ -1751,19 +2407,29 @@ function tick() {
   if (neonA) neonA.intensity = 3.0 + Math.sin(tWorld * 7) * 0.3 + (Math.random() < 0.015 ? -0.8 : 0);
   if (neonB) neonB.intensity = 1.8 + Math.sin(tWorld * 5 + 1) * 0.2;
   if (jukeLight) jukeLight.color.setHSL((tWorld * 0.12) % 1, 0.85, 0.55);
+  restoreBodyPos();
   look = null;
   if (playing()) {
     const p = pick();
     look = p ? p.root : null;
     updatePlayer(dt);
-    updatePour(dt);
+    if (!inCar) updatePour(dt);
+    stashLook();
   } else audio.pourStop();
   updateDrops(dt);
   updateDeliveries(dt);
+  if (playing()) houseGames?.tick(dt, tWorld);
   $("prompt").textContent = playing() ? promptFrom(look) : "";
   if (toastT > 0) {
     toastT -= dt;
     if (toastT <= 0) $("toast").classList.remove("show");
+  }
+  if (winPopT > 0) {
+    winPopT -= dt;
+    if (winPopT <= 0) {
+      const el = $("winPop");
+      if (el) el.className = "";
+    }
   }
   poseHands();
   try {
@@ -1771,8 +2437,11 @@ function tick() {
   } catch (err) {
     console.warn("mp", err);
   }
+  if (localPeer) updateLocalAvatar(dt);
+  applyView();
   hud();
   renderer.render(scene, camera);
+  restoreBodyLook();
 }
 
 function bind() {
@@ -1780,6 +2449,17 @@ function bind() {
   const ident = loadIdentity();
   if ($("playerName")) $("playerName").value = ident.name;
   if ($("barCode")) $("barCode").value = ident.room.toUpperCase();
+  localGender = ident.gender === "f" ? "f" : "m";
+  document.querySelectorAll(".gender-picks button").forEach((btn) => {
+    btn.classList.toggle("on", btn.dataset.g === localGender);
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      localGender = btn.dataset.g === "f" ? "f" : "m";
+      document.querySelectorAll(".gender-picks button").forEach((b) => b.classList.toggle("on", b === btn));
+      try { localStorage.setItem("infinite-pour-gender", localGender); } catch (err) { /* ignore */ }
+    });
+  });
   $("clockInBtn").addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1809,13 +2489,16 @@ function bind() {
     if (!summonOpen && !passedOut && !started) $("title").classList.remove("hidden");
   });
   window.addEventListener("mousedown", (e) => {
-    if (e.target.closest("#restock")) return;
+    if (e.target.closest("#restock") || e.target.closest("#warp")) return;
     if (e.button !== 0) return;
     mouseDown = true;
     dragging = started && !controls.isLocked && !summonOpen;
     if (!started) return;
-    if (!controls.isLocked && !summonOpen && !passedOut && !e.target.closest("#summon") && !e.target.closest("#restock")) {
+    if (!controls.isLocked && !summonOpen && !passedOut && !e.target.closest("#summon") && !e.target.closest("#restock") && !e.target.closest("#warp")) {
       controls.lock();
+    }
+    if (playing() && houseGames?.pointerDown(look)) {
+      return;
     }
     if (playing() && look && look !== held) {
       if (look.userData.kind === "bottle") attachHeld(look);
@@ -1825,8 +2508,10 @@ function bind() {
   window.addEventListener("mouseup", () => {
     mouseDown = false;
     dragging = false;
+    houseGames?.pointerUp();
   });
   window.addEventListener("mousemove", (e) => {
+    if (viewMode === 2) return;
     if (!dragging || controls.isLocked || summonOpen) return;
     camera.rotation.y -= e.movementX * 0.0024;
     camera.rotation.x = THREE.MathUtils.clamp(camera.rotation.x - e.movementY * 0.0024, -1.2, 1.2);
@@ -1867,9 +2552,54 @@ function bind() {
     if (summonOpen && e.key === "Escape") closeSummon();
     if (!playing()) return;
     if (e.repeat && (e.code === "KeyF" || e.code === "KeyG" || e.code === "KeyE")) return;
+    if ((e.code === "ShiftLeft" || e.code === "ShiftRight") && inCar) {
+      e.preventDefault();
+      exitCar();
+      return;
+    }
     if (e.code === "KeyE") {
       e.preventDefault();
+      if (inCar) return;
+      if (houseGames?.use(look) || houseGames?.use(null)) return;
+      if (sitting) {
+        standUp();
+        return;
+      }
+      if (look && look.userData.kind === "stool") {
+        sitOn(look.userData.sit || look.userData.root?.userData.sit);
+        return;
+      }
+      if (look && look.userData.kind === "car") {
+        enterCar(look.userData.car);
+        return;
+      }
+      const car = nearestCar(2.2);
+      if (car && (!look || look.userData.kind === "car")) {
+        enterCar(car);
+        return;
+      }
       useLook();
+    }
+    if (e.code === "KeyH") {
+      e.preventDefault();
+      warpBar();
+    }
+    if (e.code === "Digit1" || e.code === "Numpad1") {
+      e.preventDefault();
+      setView(1);
+    }
+    if (e.code === "Digit2" || e.code === "Numpad2") {
+      e.preventDefault();
+      setView(2);
+    }
+    if (e.code === "Digit3" || e.code === "Numpad3") {
+      e.preventDefault();
+      setView(3);
+    }
+    if (e.code === "KeyP") {
+      e.preventDefault();
+      if (e.repeat) return;
+      togglePee();
     }
     if (e.code === "KeyQ") dropHeld();
     if (e.code === "KeyR") {
@@ -1901,12 +2631,12 @@ function bind() {
       audio.clink();
     }
     const glassKeys = {
-      Digit1: "pint",
-      Digit2: "wine",
-      Digit3: "rocks",
-      Digit4: "shot",
-      Digit5: "highball",
-      Digit6: "coupe",
+      Digit4: "pint",
+      Digit5: "wine",
+      Digit6: "rocks",
+      Digit7: "shot",
+      Digit8: "highball",
+      Digit9: "coupe",
     };
     if (glassKeys[e.code]) setGlassType(glassKeys[e.code]);
   });
@@ -1946,6 +2676,12 @@ function bind() {
     publishRestock();
     toast("bar restocked for everyone");
     audio.clink();
+  });
+  $("warp")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!started || passedOut) return;
+    warpBar();
   });
 }
 
