@@ -9,7 +9,6 @@ import {
   nameMix,
   mixColor,
   mixAbv,
-  DARES,
 } from "./drinks.js";
 import {
   bootMultiplayer,
@@ -27,21 +26,31 @@ import {
   publishEvent,
   setGameHandler,
   setWorldCollide,
-} from "./multiplayer.js?v=28";
-import { createGames } from "./games.js?v=28";
+  shirtColor,
+  tryPunch,
+  eyeHeight,
+} from "./multiplayer.js?v=75";
+import { createGames } from "./games.js?v=75";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
 const W = 16;
 const D = 12;
 const EYE = 1.58;
+function eyeY() {
+  return eyeHeight(localGender);
+}
 const WELL_Z = -2.22;
 const SHELF_Z = -3.62;
-const PASS_OUT = 0.52;
+const PASS_OUT = 2.6;
 const DRUNK_VIS = 0.3;
-const WORLD_X = 62;
+const DRUNK_MAX = 6.25;
+const HEART_START = 0.7;
+const BAC_HOLD = 30;
+const BAC_FADE = 60;
+const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
-const WORLD_Z_MAX = 72;
+const WORLD_Z_MAX = 118;
 
 const GLYPH = {
   0: ["111", "101", "101", "101", "111"],
@@ -478,43 +487,47 @@ function glassDims(type) {
 function makeHand(side) {
   const g = new THREE.Group();
   const skin = lambert(0xe8b48a);
-  const knuckle = lambert(0xc98a62);
-  const sleeve = lambert(0x16161e);
-  const cuff = lambert(0x2c2c3a);
-  addBox(g, unitBox, sleeve, 0.02 * side, 0.05, 0.2, 0.1, 0.1, 0.3);
-  addBox(g, unitBox, cuff, 0.01 * side, 0.02, 0.06, 0.088, 0.08, 0.055);
-  addBox(g, unitBox, skin, 0.004 * side, 0.0, 0.02, 0.075, 0.058, 0.055);
-  addBox(g, unitBox, skin, 0, -0.012, -0.04, 0.09, 0.042, 0.11);
-
-  const thumb = new THREE.Group();
-  addBox(thumb, unitBox, skin, 0, 0, 0, 0.034, 0.034, 0.075);
-  addBox(thumb, unitBox, knuckle, 0.002 * side, 0.014, -0.042, 0.028, 0.024, 0.04);
-  thumb.position.set(-0.058 * side, 0.02, -0.015);
-  thumb.rotation.set(0.45, 0.55 * side, 0.85 * side);
-  g.add(thumb);
+  const shirt = lambert(shirtColor("you"));
+  const sleeve = addBox(g, unitBox, shirt, 0, 0, 0.22, 0.12, 0.12, 0.36);
+  const palm = addBox(g, unitBox, skin, 0, 0, -0.02, 0.1, 0.1, 0.14);
 
   const open = new THREE.Group();
   const wrap = new THREE.Group();
-  const xs = [-0.032, -0.01, 0.012, 0.034];
-  xs.forEach((x, i) => {
-    const len = 0.078 - i * 0.008;
-    addBox(open, unitBox, skin, x, -0.008, -0.1, 0.02, 0.022, len);
-    addBox(open, unitBox, knuckle, x, -0.002, -0.1 - len * 0.42, 0.018, 0.018, 0.032);
-    addBox(wrap, unitBox, skin, x + 0.012 * side, -0.008, -0.092, 0.02, 0.024, 0.055);
-    addBox(wrap, unitBox, knuckle, x - 0.028 * side, 0.022, -0.118, 0.02, 0.055, 0.022);
-    addBox(wrap, unitBox, skin, x - 0.052 * side, 0.046, -0.092, 0.018, 0.032, 0.022);
-  });
   wrap.visible = false;
   g.add(open);
   g.add(wrap);
   g.userData.open = open;
   g.userData.wrap = wrap;
+  g.userData.shirt = shirt;
+  g.userData.skin = skin;
+  g.userData.sleeve = sleeve;
+  g.userData.palm = palm;
 
   const grip = new THREE.Group();
   grip.position.set(-0.012 * side, -0.018, -0.048);
   g.add(grip);
   g.userData.grip = grip;
   return g;
+}
+
+function bindLocalHands() {
+  const u = localPeer?.rig?.userData;
+  const shirt = u?.shirt;
+  const skin = u?.skin;
+  const hex = shirtColor("you");
+  for (const hand of [rightHand, leftHand]) {
+    if (!hand) continue;
+    if (shirt && hand.userData.sleeve) {
+      hand.userData.sleeve.material = shirt;
+      hand.userData.shirt = shirt;
+    } else if (hand.userData.shirt) {
+      hand.userData.shirt.color.setHex(hex);
+    }
+    if (skin && hand.userData.palm) {
+      hand.userData.palm.material = skin;
+      hand.userData.skin = skin;
+    }
+  }
 }
 
 const audio = {
@@ -570,6 +583,48 @@ const audio = {
     this.beep(140, 0.18, "sine", 0.08);
     this.beep(90, 0.22, "triangle", 0.05);
   },
+  doorThump() {
+    this.beep(180, 0.09, "triangle", 0.07);
+    this.beep(90, 0.16, "sine", 0.05);
+  },
+  heartLub(str) {
+    const v = 0.03 + str * 0.07;
+    this.beep(46, 0.1, "sine", v);
+    this.beep(28, 0.16, "triangle", v * 0.7);
+  },
+  heartDub(str) {
+    const v = 0.02 + str * 0.045;
+    this.beep(38, 0.08, "sine", v);
+  },
+  engineStart() {
+    if (this.ctx == null || this.eng) return;
+    const o = this.ctx.createOscillator();
+    const n = this.ctx.createGain();
+    o.type = "sawtooth";
+    o.frequency.value = 48;
+    n.gain.value = 0.0;
+    const f = this.ctx.createBiquadFilter();
+    f.type = "lowpass";
+    f.frequency.value = 240;
+    o.connect(f);
+    f.connect(n);
+    n.connect(this.ctx.destination);
+    o.start();
+    this.eng = { o, n, f };
+  },
+  engineTick(speed) {
+    if (this.eng == null || this.ctx == null) return;
+    const sp = Math.abs(speed);
+    const now = this.ctx.currentTime;
+    this.eng.o.frequency.setTargetAtTime(48 + sp * 9, now, 0.08);
+    this.eng.n.gain.setTargetAtTime(0.018 + Math.min(0.07, sp * 0.004), now, 0.08);
+    this.eng.f.frequency.setTargetAtTime(220 + sp * 18, now, 0.08);
+  },
+  engineStop() {
+    if (this.eng == null) return;
+    try { this.eng.o.stop(); } catch (err) { /* already stopped */ }
+    this.eng = null;
+  },
   pourStart() {
     if (!this.ctx || this.pourOsc) return;
     const o = this.ctx.createOscillator();
@@ -610,9 +665,9 @@ const audio = {
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x12080c);
-scene.fog = new THREE.Fog(0x12080c, 22, 95);
+scene.fog = new THREE.Fog(0x12080c, 28, 170);
 
-const camera = new THREE.PerspectiveCamera(78, 1, 0.08, 160);
+const camera = new THREE.PerspectiveCamera(78, 1, 0.08, 280);
 camera.rotation.order = "YXZ";
 camera.position.set(0, EYE, -1.05);
 
@@ -629,6 +684,10 @@ scene.add(controls.object);
 const clock = new THREE.Clock();
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2(0, 0);
+const _pickOrigin = new THREE.Vector3();
+const _pickDir = new THREE.Vector3();
+const _pickWorld = new THREE.Vector3();
+const NEAR_USE = new Set(["door", "fridge", "register", "hatch", "sink", "juke", "stool", "car", "tap"]);
 const solids = [];
 const pickables = [];
 const bottles = [];
@@ -646,7 +705,6 @@ let bac = 0;
 let score = 0;
 let pours = 0;
 let unique = new Set();
-let dare = DARES[(Math.random() * DARES.length) | 0];
 let toastT = 0;
 let winPopT = 0;
 let summonOpen = false;
@@ -662,9 +720,17 @@ let glassState = { type: "pint", fill: 0, parts: [] };
 let glassMesh = null;
 let bacWait = 0;
 let bacSoberT = 0;
+let bacDecayFrom = 0;
+let bacHoldUntil = 0;
+let bacDecayStart = 0;
 let sipT = 0;
 let neonA, neonB, jukeLight;
 let hatchDoor;
+let frontDoor = null;
+let frontDoorOpen = false;
+let frontDoorAng = 0;
+let frontDoorWant = 0;
+let zoomHold = false;
 let started = false;
 let dragging = false;
 let rightHand = null;
@@ -674,8 +740,12 @@ let localPeer = null;
 let inCar = null;
 const cars = [];
 const worldSolids = [];
+const camSolids = [];
 const pads = [];
 const bodyPos = new THREE.Vector3(0, EYE, -1.05);
+const _headAim = new THREE.Vector3();
+const _headWorld = new THREE.Vector3();
+const _camDir = new THREE.Vector3();
 let savedYaw = 0;
 let savedPitch = 0;
 let sitting = null;
@@ -688,17 +758,112 @@ let peeUntil = 0;
 let shakePhase = 0;
 let shakeWalk = 0;
 let localGender = "m";
+let heartT = 0;
+let heartKick = 0;
 
-function solid(x, z, w, d) {
+function solid(x, z, w, d, h = 1.2) {
   solids.push({ minx: x - w / 2, maxx: x + w / 2, minz: z - d / 2, maxz: z + d / 2 });
+  camBox(x, h / 2, z, w, h, d);
 }
 
 function worldSolid(x, z, w, d) {
   worldSolids.push({ minx: x - w / 2, maxx: x + w / 2, minz: z - d / 2, maxz: z + d / 2 });
 }
 
+function camBox(x, y, z, sx, sy, sz, extra = {}) {
+  camSolids.push({
+    minx: x - sx / 2,
+    maxx: x + sx / 2,
+    miny: y - sy / 2,
+    maxy: y + sy / 2,
+    minz: z - sz / 2,
+    maxz: z + sz / 2,
+    ...extra,
+  });
+}
+
+function rayAabb(ox, oy, oz, dx, dy, dz, maxT, b) {
+  let tmin = 0;
+  let tmax = maxT;
+  const axes = [
+    [ox, dx, b.minx, b.maxx],
+    [oy, dy, b.miny, b.maxy],
+    [oz, dz, b.minz, b.maxz],
+  ];
+  for (const [o, d, mn, mx] of axes) {
+    if (Math.abs(d) < 1e-12) {
+      if (o < mn || o > mx) return null;
+      continue;
+    }
+    const inv = 1 / d;
+    let t1 = (mn - o) * inv;
+    let t2 = (mx - o) * inv;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    if (t1 > tmin) tmin = t1;
+    if (t2 < tmax) tmax = t2;
+    if (tmin > tmax) return null;
+  }
+  return tmin;
+}
+
+function camRayHit(ox, oy, oz, dx, dy, dz, maxT) {
+  let hit = maxT;
+  for (const b of camSolids) {
+    if (b.door && frontDoorAng < -0.35) continue;
+    const t = rayAabb(ox, oy, oz, dx, dy, dz, hit, b);
+    if (t != null && t < hit) hit = Math.max(0, t);
+  }
+  return hit;
+}
+
 function drunkLevel() {
-  return THREE.MathUtils.clamp(bac / DRUNK_VIS, 0, 1.25);
+  return THREE.MathUtils.clamp(bac / DRUNK_VIS, 0, DRUNK_MAX);
+}
+
+function heartStrength() {
+  if (!started || passedOut) return 0;
+  return THREE.MathUtils.clamp((drunkLevel() - HEART_START) / 2.4, 0, 1);
+}
+
+function heartPulse(p, at, width) {
+  const x = (p - at) / width;
+  if (x < 0 || x > 1) return 0;
+  return Math.sin(x * Math.PI);
+}
+
+function tickHeartbeat(dt) {
+  const el = $("heartVig");
+  if (!el) return;
+  const str = heartStrength();
+  if (str <= 0.001) {
+    el.style.opacity = "0";
+    heartT = 0;
+    heartKick = Math.max(0, heartKick - dt * 4);
+    return;
+  }
+  const bpm = 66 + str * 56;
+  const period = 60 / bpm;
+  const prev = heartT;
+  heartT += dt;
+  const p0 = (prev % period) / period;
+  const p1 = (heartT % period) / period;
+  if (p1 < p0) {
+    audio.heartLub(str);
+    heartKick = Math.max(heartKick, 0.1 + str * 0.22);
+  } else if (p0 < 0.22 && p1 >= 0.22) {
+    audio.heartDub(str);
+    heartKick = Math.max(heartKick, 0.05 + str * 0.12);
+  }
+  heartKick = Math.max(0, heartKick - dt * 3.2);
+  const beat = Math.max(heartPulse(p1, 0, 0.14), heartPulse(p1, 0.2, 0.12) * 0.72);
+  const dark = Math.min(0.96, 0.2 + str * 0.46 + beat * (0.32 + str * 0.38));
+  const hole = Math.max(6, 64 - str * 30 - beat * (12 + str * 18));
+  el.style.opacity = "1";
+  el.style.background = `radial-gradient(ellipse at center, transparent ${hole.toFixed(1)}%, rgba(0,0,0,${dark.toFixed(3)}) 100%)`;
 }
 
 function insideBar(x, z) {
@@ -736,12 +901,15 @@ function pushSolid(px, pz, r, s) {
 function collide(px, pz, r = 0.28) {
   const list = insideBar(px, pz) ? solids : [];
   for (const s of list) [px, pz] = pushSolid(px, pz, r, s);
-  for (const s of worldSolids) [px, pz] = pushSolid(px, pz, r, s);
+  for (const s of worldSolids) {
+    if (s.door && frontDoorAng < -0.35) continue;
+    [px, pz] = pushSolid(px, pz, r, s);
+  }
   for (const car of cars) {
     if (car === inCar) continue;
     const dx = px - car.x;
     const dz = pz - car.z;
-    const cr = r + 1.25;
+    const cr = r + 2.15;
     const dist2 = dx * dx + dz * dz;
     if (dist2 < cr * cr) {
       const dist = Math.sqrt(dist2) || 0.0001;
@@ -865,20 +1033,24 @@ function resetShift() {
   bac = 0;
   bacWait = 0;
   bacSoberT = 0;
+  bacDecayFrom = 0;
+  bacHoldUntil = 0;
+  bacDecayStart = 0;
   sipT = 0;
   score = 0;
   pours = 0;
   unique = new Set();
-  dare = DARES[(Math.random() * DARES.length) | 0];
   fridgeOpen = false;
+  zoomHold = false;
+  if (frontDoor) setFrontDoor(false, true);
   if (hatchDoor) {
     hatchDoor.rotation.y = 0;
     hatchDoor.position.set(-4.84, 1.1, -2.7);
   }
   if (inCar) exitCar(true);
-  camera.position.set(0, EYE, -1.05);
+  camera.position.set(0, eyeY(), -1.05);
   camera.rotation.set(0, 0, 0);
-  bodyPos.set(0, EYE, -1.05);
+  bodyPos.set(0, eyeY(), -1.05);
   savedYaw = 0;
   savedPitch = 0;
   view2Yaw = 0;
@@ -926,6 +1098,14 @@ function buildWorld() {
   worldSolid(4.4, D / 2, 7.2, 0.4);
   worldSolid(-W / 2, 0, 0.4, D);
   worldSolid(W / 2, 0, 0.4, D);
+  camBox(0, wallH / 2, -D / 2, W, wallH, 0.4);
+  camBox(-4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
+  camBox(4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
+  camBox(-W / 2, wallH / 2, 0, 0.4, wallH, D);
+  camBox(W / 2, wallH / 2, 0, 0.4, wallH, D);
+  camBox(0, wallH, 0, W, 0.24, D);
+  camBox(0, 3.15, D / 2, 1.7, 0.5, 0.32);
+  camBox(0, -0.2, 50, WORLD_X * 2 + 40, 0.4, WORLD_Z_MAX - WORLD_Z_MIN + 40);
 
   for (let i = -2; i <= 2; i++) {
     addBox(scene, unitBox, mats.woodDark, i * 3.2, 3.25, 0, 0.16, 0.18, D - 0.4);
@@ -934,19 +1114,19 @@ function buildWorld() {
   addBox(scene, unitBox, mats.barTop, 0, 0.52, 0.35, 9.2, 1.04, 1.05);
   addBox(scene, unitBox, mats.woodDark, 0, 1.06, 0.35, 9.4, 0.06, 1.15);
   addBox(scene, unitBox, mats.brass, 0, 0.28, 0.88, 9.0, 0.05, 0.05);
-  solid(0, 0.35, 9.2, 1.05);
+  solid(0, 0.35, 9.2, 1.05, 1.1);
 
   addBox(scene, unitBox, mats.barTop, 0, 0.5, WELL_Z, 7.4, 1.0, 0.7);
   addBox(scene, unitBox, mats.woodDark, 0, 1.02, WELL_Z, 7.5, 0.05, 0.78);
   addBox(scene, unitBox, mats.glow, 0, 1.015, WELL_Z - 0.28, 6.8, 0.008, 0.05);
-  solid(0, WELL_Z, 7.4, 0.7);
+  solid(0, WELL_Z, 7.4, 0.7, 1.1);
 
   addBox(scene, unitBox, mats.woodDark, 0, 1.55, SHELF_Z - 0.22, 11.2, 2.6, 0.1);
   for (let row = 0; row < 4; row++) {
     const y = 0.88 + row * 0.56;
     addBox(scene, unitBox, mats.woodDark, 0, y, SHELF_Z - 0.08, 10.6, 0.05, 0.36);
   }
-  solid(0, SHELF_Z - 0.1, 11, 0.55);
+  solid(0, SHELF_Z - 0.1, 11, 0.55, 2.8);
 
   const shelfDrinks = CATALOG.slice().sort(() => Math.random() - 0.5);
   let k = 0;
@@ -985,10 +1165,10 @@ function buildWorld() {
   hatchDoor.userData.kind = "fridge";
   hatchDoor.userData.root = fridge;
   addBox(scene, unitBox, lambert(0x3dfff2), -4.82, 1.7, -2.7, 0.08, 0.08, 0.08);
-  solid(-5.35, -2.7, 1.15, 0.95);
+  solid(-5.35, -2.7, 1.15, 0.95, 2.2);
 
   addBox(scene, unitBox, mats.woodDark, 5.35, 1.2, -2.85, 1.15, 2.4, 0.62);
-  solid(5.35, -2.85, 1.25, 0.7);
+  solid(5.35, -2.85, 1.25, 0.7, 2.4);
   for (let r = 0; r < 5; r++) {
     for (let c = 0; c < 4; c++) {
       placeBottle(randomDrink((d) => d.type === "wine"), 4.95 + c * 0.2, 0.32 + r * 0.42, -2.62, 0);
@@ -1103,7 +1283,7 @@ function buildWorld() {
   jukeLight = new THREE.PointLight(0xff3dac, 1.2, 5);
   jukeLight.position.set(7.1, 1.5, 3.2);
   scene.add(jukeLight);
-  solid(7.1, 3.6, 0.8, 0.6);
+  solid(7.1, 3.6, 0.8, 0.6, 1.8);
 
   glassMesh = makeGlassMesh(glassState.type);
   glassMesh.position.set(0.22, 1.05, WELL_Z + 0.28);
@@ -1138,11 +1318,20 @@ function buildWorld() {
   shelfLight.position.set(0, 2.1, SHELF_Z + 0.55);
   scene.add(shelfLight);
 
-  const door = addBox(scene, unitBox, mats.woodDark, 0.95, 1.4, D / 2 + 0.35, 1.4, 2.6, 0.1);
-  door.rotation.y = 1.25;
+  const hinge = new THREE.Group();
+  hinge.position.set(-0.78, 0, D / 2 + 0.02);
+  scene.add(hinge);
+  const door = addBox(hinge, unitBox, mats.woodDark, 0.78, 1.3, 0, 1.52, 2.55, 0.08);
+  addBox(hinge, unitBox, mats.brass, 1.46, 1.25, 0.05, 0.04, 0.12, 0.04);
   door.userData.kind = "door";
   door.userData.root = door;
   registerPick(door);
+  frontDoor = hinge;
+  frontDoorAng = 0;
+  frontDoorWant = 0;
+  frontDoorOpen = false;
+  worldSolids.push({ minx: -0.8, maxx: 0.8, minz: D / 2 - 0.18, maxz: D / 2 + 0.22, door: true });
+  camBox(0, 1.3, D / 2 + 0.02, 1.6, 2.6, 0.16, { door: true });
 
   buildTown();
   houseGames = createGames({
@@ -1184,16 +1373,31 @@ function makeCar(x, z, yaw, color) {
   const g = new THREE.Group();
   const body = lambert(color);
   const dark = lambert(0x121014);
-  const glass = lambert(0x8ad4e8, { transparent: true, opacity: 0.48 });
-  addBox(g, unitBox, body, 0, 0.42, 0, 1.15, 0.38, 2.2);
-  addBox(g, unitBox, body, 0, 0.78, 0.18, 0.95, 0.36, 1.15);
-  addBox(g, unitBox, glass, 0, 0.8, -0.42, 0.88, 0.28, 0.08);
-  addBox(g, unitBox, dark, -0.55, 0.18, -0.7, 0.18, 0.36, 0.36);
-  addBox(g, unitBox, dark, 0.55, 0.18, -0.7, 0.18, 0.36, 0.36);
-  addBox(g, unitBox, dark, -0.55, 0.18, 0.7, 0.18, 0.36, 0.36);
-  addBox(g, unitBox, dark, 0.55, 0.18, 0.7, 0.18, 0.36, 0.36);
-  addBox(g, unitBox, lambert(0xffe08a), -0.38, 0.42, -1.12, 0.12, 0.08, 0.06);
-  addBox(g, unitBox, lambert(0xffe08a), 0.38, 0.42, -1.12, 0.12, 0.08, 0.06);
+  const cabin = lambert(0x1c1412);
+  const seat = lambert(0x2a1c18);
+  const chrome = lambert(0xc8c4bc);
+  const glass = lambert(0x8ad4e8, { transparent: true, opacity: 0.28 });
+  addBox(g, unitBox, body, 0, 0.5, 0, 2.15, 0.46, 4.35);
+  addBox(g, unitBox, cabin, 0, 0.78, 0.15, 1.88, 0.1, 2.7);
+  addBox(g, unitBox, seat, -0.46, 0.98, 0.18, 0.54, 0.32, 0.5);
+  addBox(g, unitBox, seat, 0.46, 0.98, 0.18, 0.54, 0.32, 0.5);
+  addBox(g, unitBox, seat, -0.46, 0.98, 1.12, 0.54, 0.32, 0.5);
+  addBox(g, unitBox, seat, 0.46, 0.98, 1.12, 0.54, 0.32, 0.5);
+  addBox(g, unitBox, dark, -0.46, 0.92, -0.22, 0.86, 0.08, 0.95);
+  addBox(g, unitBox, chrome, -0.46, 1.0, -0.42, 0.38, 0.08, 0.22);
+  addBox(g, unitBox, body, 0, 1.42, 0.28, 1.98, 0.1, 2.55);
+  addBox(g, unitBox, glass, 0, 1.18, -1.05, 1.72, 0.52, 0.06);
+  addBox(g, unitBox, glass, 0, 1.16, 1.58, 1.72, 0.48, 0.06);
+  addBox(g, unitBox, glass, -1.0, 1.16, 0.28, 0.05, 0.46, 2.15);
+  addBox(g, unitBox, glass, 1.0, 1.16, 0.28, 0.05, 0.46, 2.15);
+  addBox(g, unitBox, dark, -1.08, 0.3, -1.38, 0.3, 0.58, 0.58);
+  addBox(g, unitBox, dark, 1.08, 0.3, -1.38, 0.3, 0.58, 0.58);
+  addBox(g, unitBox, dark, -1.08, 0.3, 1.38, 0.3, 0.58, 0.58);
+  addBox(g, unitBox, dark, 1.08, 0.3, 1.38, 0.3, 0.58, 0.58);
+  addBox(g, unitBox, lambert(0xffe08a), -0.72, 0.52, -2.18, 0.16, 0.1, 0.08);
+  addBox(g, unitBox, lambert(0xffe08a), 0.72, 0.52, -2.18, 0.16, 0.1, 0.08);
+  addBox(g, unitBox, lambert(0xc41e3a), -0.72, 0.52, 2.18, 0.16, 0.1, 0.08);
+  addBox(g, unitBox, lambert(0xc41e3a), 0.72, 0.52, 2.18, 0.16, 0.1, 0.08);
   g.position.set(x, 0, z);
   g.rotation.y = yaw;
   g.userData.kind = "car";
@@ -1217,6 +1421,7 @@ function lamp(x, z) {
 function building(x, z, sx, sy, sz, color) {
   addBox(scene, unitBox, lambert(color), x, sy / 2, z, sx, sy, sz);
   worldSolid(x, z, sx, sz);
+  camBox(x, sy / 2, z, sx, sy, sz);
 }
 
 function barPad(x, z, label) {
@@ -1231,26 +1436,40 @@ function barPad(x, z, label) {
 }
 
 function buildTown() {
-  asphalt(0, 28, 140, 110, mats.grass, -0.04);
+  asphalt(0, 50, 240, 180, mats.grass, -0.04);
   asphalt(0, 11.2, 16, 10.4, mats.sidewalk, 0.01);
   asphalt(0, 11.4, 12, 8.2);
-  asphalt(0, 18.2, 118, 8.4);
-  asphalt(0, 48.2, 118, 8.4);
-  asphalt(0, 33, 8.4, 38);
-  asphalt(36, 33, 8.4, 38);
-  asphalt(-36, 33, 8.4, 38);
-  asphalt(0, 18.2, 118, 0.12, mats.lane, 0.02);
-  asphalt(0, 48.2, 118, 0.12, mats.lane, 0.02);
-  asphalt(0, 33, 0.12, 38, mats.lane, 0.02);
+  asphalt(0, 22, 216, 16);
+  asphalt(0, 58, 216, 16);
+  asphalt(0, 94, 216, 16);
+  asphalt(0, 58, 16, 88);
+  asphalt(52, 58, 16, 88);
+  asphalt(-52, 58, 16, 88);
+  asphalt(96, 58, 16, 88);
+  asphalt(-96, 58, 16, 88);
+  asphalt(0, 21.55, 216, 0.1, mats.lane, 0.02);
+  asphalt(0, 22.45, 216, 0.1, mats.lane, 0.02);
+  asphalt(0, 57.55, 216, 0.1, mats.lane, 0.02);
+  asphalt(0, 58.45, 216, 0.1, mats.lane, 0.02);
+  asphalt(0, 93.55, 216, 0.1, mats.lane, 0.02);
+  asphalt(0, 94.45, 216, 0.1, mats.lane, 0.02);
+  asphalt(-0.45, 58, 0.1, 88, mats.lane, 0.02);
+  asphalt(0.45, 58, 0.1, 88, mats.lane, 0.02);
+  asphalt(51.55, 58, 0.1, 88, mats.lane, 0.02);
+  asphalt(52.45, 58, 0.1, 88, mats.lane, 0.02);
+  asphalt(-51.55, 58, 0.1, 88, mats.lane, 0.02);
+  asphalt(-52.45, 58, 0.1, 88, mats.lane, 0.02);
 
-  building(14, 32, 12, 6.2, 10, 0x2a1020);
-  building(-14, 32, 11, 5.4, 10, 0x102028);
-  building(14, 58, 12, 7.5, 11, 0x241830);
-  building(-16, 58, 14, 4.8, 10, 0x1a1024);
-  building(50, 32, 14, 8, 12, 0x301018);
-  building(-50, 32, 14, 6.6, 12, 0x101820);
-  building(50, 58, 13, 5.5, 10, 0x201028);
-  building(-48, 58, 12, 7.2, 11, 0x182010);
+  building(26, 40, 12, 6.2, 10, 0x2a1020);
+  building(-26, 40, 11, 5.4, 10, 0x102028);
+  building(26, 76, 12, 7.5, 11, 0x241830);
+  building(-26, 76, 14, 4.8, 10, 0x1a1024);
+  building(74, 40, 14, 8, 12, 0x301018);
+  building(-74, 40, 14, 6.6, 12, 0x101820);
+  building(74, 76, 13, 5.5, 10, 0x201028);
+  building(-74, 76, 12, 7.2, 11, 0x182010);
+  building(26, 108, 12, 6.4, 9, 0x201428);
+  building(-26, 108, 13, 5.8, 9, 0x142018);
   building(22, 5.5, 8, 4.2, 6, 0x22141c);
   building(-22, 5.5, 8, 5, 6, 0x141822);
 
@@ -1263,29 +1482,30 @@ function buildTown() {
 
   lamp(-6, 14);
   lamp(6, 14);
-  lamp(-18, 18.2);
-  lamp(18, 18.2);
-  lamp(-18, 48.2);
-  lamp(18, 48.2);
-  lamp(0, 30);
-  lamp(36, 24);
-  lamp(-36, 24);
-  lamp(36, 42);
-  lamp(-36, 42);
+  for (const z of [22, 58, 94]) {
+    for (const x of [-84, -40, -20, 20, 40, 84]) lamp(x, z);
+  }
+  for (const x of [-96, -52, 52, 96]) {
+    for (const z of [40, 76]) lamp(x, z);
+  }
+  lamp(0, 40);
+  lamp(0, 76);
 
   makeCar(-4.2, 9.4, Math.PI, 0xc41e3a);
   makeCar(4.1, 9.6, Math.PI, 0x2e6bff);
   makeCar(-3.8, 13.2, 0, 0xe8c547);
   makeCar(3.6, 13.4, 0, 0xff3dac);
-  makeCar(14, 16.4, Math.PI / 2, 0xd8d0c4);
-  makeCar(-12, 20.1, -Math.PI / 2, 0x2c6e49);
+  makeCar(20.4, 15.2, Math.PI / 2, 0xd8d0c4);
+  makeCar(-20.4, 15.2, -Math.PI / 2, 0x2c6e49);
+  makeCar(40.5, 29.1, Math.PI / 2, 0x8a3a12);
+  makeCar(-40.5, 50.8, -Math.PI / 2, 0x3a3a48);
 
   asphalt(-8.4, 12.6, 7.2, 7.4, mats.sidewalk, 0.012);
   lamp(-8.4, 11.2);
 
-  barPad(0, 8.2, "BAR  H");
-  barPad(0, 33.2, "BAR  H");
-  barPad(36, 18.2, "BAR  H");
+  pads.push({ x: 0, z: 22, r: 1.35 });
+  pads.push({ x: 52, z: 22, r: 1.35 });
+  pads.push({ x: 0, z: 58, r: 1.35 });
 }
 
 function updateGlassVisual() {
@@ -1355,13 +1575,12 @@ function sitOn(spot) {
   onGround = true;
   camera.position.set(spot.x, SIT_Y, spot.z);
   bodyPos.set(spot.x, SIT_Y, spot.z);
-  toast("parked on a stool. WASD or E to stand · F/G still drink");
 }
 
 function standUp() {
   if (!sitting) return;
-  camera.position.set(sitting.x, EYE, sitting.z + 0.12);
-  bodyPos.set(sitting.x, EYE, sitting.z + 0.12);
+  camera.position.set(sitting.x, eyeY(), sitting.z + 0.12);
+  bodyPos.set(sitting.x, eyeY(), sitting.z + 0.12);
   sitting = null;
   onGround = true;
   vy = 0;
@@ -1377,7 +1596,9 @@ function drunkWord(d) {
   if (d < 0.48) return "tipsy";
   if (d < 0.7) return "drunk";
   if (d < 0.95) return "wasted";
-  return "blackout";
+  if (d < 2.2) return "blackout";
+  if (d < 4.0) return "wrecked";
+  return "gone";
 }
 
 function hud() {
@@ -1402,10 +1623,9 @@ function hud() {
     $("heldName").textContent = "empty hands";
     $("heldMeta").textContent = "E grab bottle or cup · T summon";
   }
-  $("dareText").textContent = dare.text;
-  const d = THREE.MathUtils.clamp(drunkLevel(), 0, 1.25);
-  $("vignette").style.filter = `hue-rotate(${d * 40}deg) saturate(${1 + d})`;
-  $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${50 - d * 20}%, rgba(${40 + d * 80}, 8, 20, ${0.45 + d * 0.4}) 100%)`;
+  const d = drunkLevel();
+  $("vignette").style.filter = `hue-rotate(${Math.min(180, d * 40)}deg) saturate(${1 + Math.min(4, d)})`;
+  $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(6, 50 - d * 12)}%, rgba(${Math.min(220, 40 + d * 40)}, 8, 20, ${Math.min(0.92, 0.45 + d * 0.12)}) 100%)`;
   $("lookHint").classList.toggle("show", started && !controls.isLocked && !summonOpen && !passedOut);
   const list = $("onlineList");
   if (list) {
@@ -1457,11 +1677,11 @@ function hud() {
 
 function promptFrom(obj) {
   if (sitting) return houseGames?.prompt(obj) || "stool. WASD or E stand · F sip · G chug";
-  if (inCar) return "WASD drive · SHIFT get out · F/G drink · H cab home";
+  if (inCar) return "WASD drive · SHIFT get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   if (!obj) {
     const gamePrompt = houseGames?.prompt(null) || "";
     if (gamePrompt) return gamePrompt;
-    const car = nearestCar(2.2);
+    const car = nearestCar(3.4);
     if (car) return "E get in the car · SHIFT later to bail";
     if (held && held.userData.kind === "glass") {
       return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  Q set down";
@@ -1489,12 +1709,12 @@ function promptFrom(obj) {
   if (k === "register" || k === "hatch") return "E / T  summon any drink";
   if (k === "sink") return "E dump glass";
   if (k === "juke") return audio.juke ? "E silence the juke" : "E fire up the juke";
-  if (k === "door") return "walk out · H cab back to the bar";
+  if (k === "door") return frontDoorOpen ? "E close the front door" : "E open the front door";
   if (k === "car") return inCar ? "SHIFT get out" : "E get in · drink and drive";
   if (k === "stool") return sitting ? "E or WASD stand up" : "E sit at the bar";
   const gamePrompt = houseGames?.prompt(look) || "";
   if (gamePrompt) return gamePrompt;
-  if (inCar) return "WASD drive · SHIFT get out · F/G drink · H cab home";
+  if (inCar) return "WASD drive · SHIFT get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   return "";
 }
 
@@ -1507,21 +1727,112 @@ function findRoot(hit) {
   return null;
 }
 
-function pick() {
-  raycaster.setFromCamera(ndc, camera);
+function isLocalHit(obj) {
+  const rig = localPeer?.rig;
+  if (!rig) return false;
+  let o = obj;
+  while (o) {
+    if (o === rig) return true;
+    o = o.parent;
+  }
+  return false;
+}
+
+function facingYaw() {
+  return viewMode === 2 ? view2Yaw : camera.rotation.y;
+}
+
+function facingPitch() {
+  return viewMode === 2 ? view2Pitch : camera.rotation.x;
+}
+
+function pickReach(kind) {
+  const extra = houseGames?.pickRange(kind) || 0;
+  const base = kind === "car" ? 5.4 : extra || 3.4;
+  return viewMode === 1 ? base : base + 1.2;
+}
+
+function pickFromRay(origin, dir) {
+  raycaster.set(origin, dir);
+  raycaster.near = 0.02;
+  raycaster.far = 14;
   const hits = raycaster.intersectObjects(pickables, true);
   for (const h of hits) {
-    const rootGuess = findRoot(h);
-    const kind = rootGuess?.userData?.kind || h.object?.userData?.kind;
-    const extra = houseGames?.pickRange(kind) || 0;
-    const max = kind === "car" ? 4.2 : extra || 3.4;
-    if (h.distance > max) continue;
+    if (isLocalHit(h.object)) continue;
     const root = findRoot(h);
-    if (!root) continue;
-    if (held && root === held) continue;
-    return { root, distance: h.distance, point: h.point };
+    if (!root || (held && root === held)) continue;
+    const kind = root.userData?.kind || "";
+    const dist = Math.hypot(h.point.x - bodyPos.x, h.point.z - bodyPos.z);
+    if (dist > pickReach(kind)) continue;
+    return { root, distance: dist, point: h.point };
   }
   return null;
+}
+
+function nearbyUse() {
+  const yaw = facingYaw();
+  const fx = -Math.sin(yaw);
+  const fz = -Math.cos(yaw);
+  const reach = viewMode === 1 ? 1.9 : 2.8;
+  let best = null;
+  for (const obj of pickables) {
+    const root = obj.userData?.root || obj;
+    const kind = root.userData?.kind;
+    if (!NEAR_USE.has(kind)) continue;
+    if (held && root === held) continue;
+    root.getWorldPosition(_pickWorld);
+    const dx = _pickWorld.x - bodyPos.x;
+    const dz = _pickWorld.z - bodyPos.z;
+    const dist = Math.hypot(dx, dz);
+    const max = kind === "car" ? 3.6 : kind === "door" ? 2.8 : reach;
+    if (dist > max) continue;
+    const forward = dist < 0.15 ? 1 : (dx * fx + dz * fz) / dist;
+    if (kind !== "door" && kind !== "car" && kind !== "stool" && forward < -0.25) continue;
+    const score = dist - Math.max(0, forward) * 0.9 - (kind === "door" ? 0.4 : 0);
+    if (!best || score < best.score) best = { root, distance: dist, point: _pickWorld.clone(), score };
+  }
+  return best;
+}
+
+function pick() {
+  const yaw = facingYaw();
+  const pit = facingPitch();
+  const cp = Math.cos(pit);
+  _pickOrigin.copy(bodyPos);
+  _pickDir.set(-Math.sin(yaw) * cp, Math.sin(pit), -Math.cos(yaw) * cp);
+  if (_pickDir.lengthSq() < 1e-8) _pickDir.set(0, 0, -1);
+  else _pickDir.normalize();
+  const fromBody = pickFromRay(_pickOrigin, _pickDir);
+  if (fromBody) return fromBody;
+
+  if (viewMode === 2 || viewMode === 3) {
+    const useYaw = inCar && viewMode === 3 ? inCar.yaw : yaw;
+    const p = THREE.MathUtils.clamp(pit, -1.35, 1.35);
+    const cp2 = Math.cos(p);
+    const sp2 = Math.sin(p);
+    _pickOrigin.copy(camera.position);
+    _pickDir.set(-Math.sin(useYaw) * cp2, sp2, -Math.cos(useYaw) * cp2).normalize();
+    const fromCam = pickFromRay(_pickOrigin, _pickDir);
+    if (fromCam) return fromCam;
+  }
+
+  if (viewMode === 1) {
+    raycaster.setFromCamera(ndc, camera);
+    raycaster.near = 0;
+    raycaster.far = 8;
+    const hits = raycaster.intersectObjects(pickables, true);
+    for (const h of hits) {
+      if (isLocalHit(h.object)) continue;
+      const root = findRoot(h);
+      if (!root || (held && root === held)) continue;
+      const kind = root.userData?.kind || "";
+      if (h.distance > pickReach(kind)) continue;
+      return { root, distance: h.distance, point: h.point };
+    }
+    return null;
+  }
+
+  return nearbyUse();
 }
 
 function seatHeldGlass(g) {
@@ -1562,7 +1873,6 @@ function attachHeld(obj) {
     setRightGrip(true);
     poseHands();
     audio.clink();
-    toast("cup in hand");
     return;
   }
   const kind = obj.userData.drink?.bottle || "spirit";
@@ -1636,7 +1946,6 @@ function dumpHeldEmpty() {
     if (i >= 0) bottles.splice(i, 1);
     unregisterPick(empty);
   }
-  toast("bottle's dry");
 }
 
 function addPart(drink, amount) {
@@ -1669,7 +1978,6 @@ function deliver(drink) {
     to: new THREE.Vector3(0.2 + Math.random() * 0.35, 1.05, WELL_Z + 0.16),
   });
   audio.clink();
-  toast(`summoned  ${drink.name}`);
 }
 
 function paintCats() {
@@ -1750,8 +2058,11 @@ function sipAmount(kind) {
 }
 
 function bumpDrink() {
-  bacWait = 10;
+  bacWait = BAC_HOLD;
   bacSoberT = 0;
+  bacDecayFrom = 0;
+  bacHoldUntil = tWorld + BAC_HOLD;
+  bacDecayStart = 0;
   sipT = 0.38;
 }
 
@@ -1778,16 +2089,6 @@ function drinkGlass(kind) {
   }
   updateGlassVisual();
   audio.gulp();
-  const snap = {
-    name,
-    type: glassState.parts[0]?.type,
-    abv,
-    parts: glassState.parts.length ? glassState.parts : [{ name, type: "cocktail", abv }],
-    fill: glassState.fill,
-    glass: glassState.type,
-    bottle: glassState.parts[0]?.bottle,
-  };
-  checkDare(snap, kind === "chug");
   hud();
   maybePassOut();
 }
@@ -1812,28 +2113,8 @@ function drinkHeld(kind) {
     dumpHeldEmpty();
   } else score += 3;
   audio.gulp();
-  checkDare({ ...drink, parts: [drink], fill: held ? held.userData.volume : 0, glass: drink.glass }, kind === "chug");
   hud();
   maybePassOut();
-}
-
-function checkDare(snap, isChug) {
-  if (!dare) return;
-  if (dare.chug && !isChug) return;
-  try {
-    if (dare.test(snap)) completeDare();
-  } catch {
-    /* ignore */
-  }
-}
-
-function completeDare() {
-  score += 100;
-  toast("DARE CLEARED  +100");
-  audio.beep(520, 0.1, "square", 0.06);
-  audio.beep(780, 0.16, "square", 0.06);
-  dare = DARES[(Math.random() * DARES.length) | 0];
-  hud();
 }
 
 function maybePassOut() {
@@ -1855,6 +2136,8 @@ function startShift() {
   const room = ($("barCode")?.value || ident.room).trim();
   const genderBtn = document.querySelector(".gender-picks button.on");
   localGender = genderBtn?.dataset.g === "f" || (!genderBtn && ident.gender === "f") ? "f" : "m";
+  camera.position.y = eyeY();
+  bodyPos.y = eyeY();
   bootMultiplayer({
     scene,
     camera,
@@ -1878,7 +2161,7 @@ function startShift() {
       x: bodyPos.x,
       y: sitting ? SIT_Y : bodyPos.y,
       z: bodyPos.z,
-      yaw: viewMode === 2 ? view2Yaw : savedYaw,
+      yaw: (viewMode === 2 ? view2Yaw : savedYaw) + Math.PI,
       pit: viewMode === 2 ? view2Pitch : savedPitch,
       s: sitting ? 1 : 0,
       u: peeing ? 1 : 0,
@@ -1887,7 +2170,7 @@ function startShift() {
   );
   setGameHandler((msg) => houseGames?.onNet(msg));
   ensureLocalAvatar();
-  toast(`${playerName()} is on the stick`);
+  bindLocalHands();
   $("title").classList.add("hidden");
   $("hud").classList.remove("hidden");
   setTimeout(() => {
@@ -1905,7 +2188,6 @@ function clockIn() {
   $("passout").classList.remove("open");
   resetShift();
   controls.lock();
-  toast("back on the stick — bar restocked");
 }
 
 function useLook() {
@@ -1914,10 +2196,8 @@ function useLook() {
   if (k === "bottle") {
     if (held && held.userData.kind === "glass") {
       const add = pourIntoGlass(look.userData.drink, 0.28);
-      if (add) {
-        audio.clink();
-        toast(`poured  ${look.userData.drink.name}`);
-      } else toast("cup is full");
+      if (add) audio.clink();
+      else toast("cup is full");
       return;
     }
     attachHeld(look);
@@ -1927,17 +2207,14 @@ function useLook() {
   }
   else if (k === "tap" && look.userData.drink) {
     const add = pourIntoGlass(look.userData.drink, 0.28);
-    if (add) {
-      audio.clink();
-      toast(`tapped  ${look.userData.drink.name}`);
-    } else toast("glass is full");
+    if (add) audio.clink();
+    else toast("glass is full");
   } else if (k === "fridge") {
     if (!fridgeOpen) {
       fridgeOpen = true;
       hatchDoor.rotation.y = -1.2;
       hatchDoor.position.x = -4.55;
       hatchDoor.position.z = -2.35;
-      toast("fridge yawns. cold cans wait.");
     } else if (!held) {
       const can = randomDrink((d) => d.bottle === "can" || d.type === "rtd");
       const b = makeBottle(can);
@@ -1945,19 +2222,17 @@ function useLook() {
       scene.add(b);
       bottles.push(b);
       attachHeld(b);
-      toast(can.name);
     }
   } else if (k === "register" || k === "hatch") openSummon("e");
   else if (k === "sink") {
     glassState.fill = 0;
     glassState.parts = [];
     updateGlassVisual();
-    toast("glass dumped");
   } else if (k === "juke") {
     audio.toggleJuke();
-    toast(audio.juke ? "jukebox: after hours" : "jukebox off");
-  } else if (k === "door") toast("door's open. streets are yours.");
-  else if (k === "car") enterCar(look.userData.car);
+  } else if (k === "door") {
+    setFrontDoor(frontDoorOpen ? false : true);
+  } else if (k === "car") enterCar(look.userData.car);
 }
 
 function spawnDrop() {
@@ -2004,7 +2279,7 @@ function updateDeliveries(dt) {
 }
 
 
-function nearestCar(max = 2.4) {
+function nearestCar(max = 3.4) {
   let best = null;
   let bestD = max;
   for (const car of cars) {
@@ -2023,6 +2298,7 @@ function ensureLocalAvatar() {
   const gender = localGender === "f" ? "f" : "m";
   if (localPeer) {
     if (localPeer.gender !== gender) {
+      localPeer.rig.userData.disposeFx?.();
       scene.remove(localPeer.rig);
       localPeer = null;
     } else return;
@@ -2055,6 +2331,7 @@ function ensureLocalAvatar() {
       freezeFacing: false,
       freezeHead: false,
     };
+    bindLocalHands();
   } catch (err) {
     console.warn("avatar", err);
   }
@@ -2073,7 +2350,6 @@ function setView(mode) {
     camera.rotation.x = view2Pitch;
   }
   viewMode = mode;
-  toast(mode === 1 ? "1st person" : mode === 2 ? "2nd person — your face" : "3rd person");
 }
 
 function applyDrunkCam(dt, extra = 0) {
@@ -2082,6 +2358,11 @@ function applyDrunkCam(dt, extra = 0) {
   shakePhase += dt * 1.05;
   const moving = sitting == null && inCar == null && onGround && (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD);
   if (moving) shakeWalk += dt * 5.2;
+  if (zoomHold) {
+    camera.fov = 22;
+    camera.updateProjectionMatrix();
+    return;
+  }
   if (viewMode === 2) {
     camera.fov = 78 + extra * 8;
     camera.updateProjectionMatrix();
@@ -2089,56 +2370,84 @@ function applyDrunkCam(dt, extra = 0) {
   }
   const roll = Math.sin(shakePhase) * 0.2 * amp + Math.sin(shakeWalk) * 0.055 * amp * (moving ? 1 : 0.1);
   camera.rotation.z = (amp < 0.03 ? 0 : roll) + extra;
-  camera.fov = 78 + extra * 8 + (amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * 4.2 * amp);
+  camera.fov = 78 + extra * 8 + (amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * 4.2 * amp) + heartKick * 16;
   camera.updateProjectionMatrix();
 }
 
+function setFrontDoor(open, silent) {
+  frontDoorOpen = open ? true : false;
+  frontDoorWant = frontDoorOpen ? -1.9 : 0;
+  if (silent) return;
+  audio.doorThump();
+}
+
+function tickFrontDoor(dt) {
+  if (frontDoor == null) return;
+  const diff = frontDoorWant - frontDoorAng;
+  if (Math.abs(diff) < 0.002) frontDoorAng = frontDoorWant;
+  else frontDoorAng += diff * Math.min(1, dt * 6.2);
+  frontDoor.rotation.y = frontDoorAng;
+}
+
+function carSeat(car) {
+  const fx = -Math.sin(car.yaw);
+  const fz = -Math.cos(car.yaw);
+  const lx = Math.cos(car.yaw);
+  const lz = -Math.sin(car.yaw);
+  return {
+    x: car.x - lx * 0.46 + fx * 0.16,
+    y: 1.18,
+    z: car.z - lz * 0.46 + fz * 0.16,
+  };
+}
+
 function togglePee() {
-  if (inCar) {
-    toast("not in the car");
-    return;
-  }
+  if (inCar) return;
   if (sitting) standUp();
   peeing = peeing ? false : true;
   peeUntil = peeing ? tWorld + 8 : 0;
-  toast(peeing ? "pants down" : "pants up");
 }
 
 function enterCar(car) {
-  if (!car || inCar) return;
+  if (car == null || inCar) return;
   inCar = car;
   car.speed = 0;
   vy = 0;
   onGround = true;
-  camera.position.set(car.x, EYE, car.z);
-  toast("in the car. WASD drive · SHIFT get out · F/G still drink");
+  const s = carSeat(car);
+  camera.position.set(s.x, s.y, s.z);
+  bodyPos.set(s.x, s.y, s.z);
+  audio.doorThump();
+  audio.engineStart();
 }
 
 function exitCar(silent) {
-  if (!inCar) return;
+  if (inCar == null) return;
   const car = inCar;
-  const side = 1.7;
-  const x = car.x + Math.cos(car.yaw) * side;
-  const z = car.z - Math.sin(car.yaw) * side;
+  const side = 2.4;
+  const x = car.x - Math.cos(car.yaw) * side;
+  const z = car.z + Math.sin(car.yaw) * side;
   const [nx, nz] = collide(x, z, 0.3);
-  camera.position.set(nx, EYE, nz);
+  camera.position.set(nx, eyeY(), nz);
+  bodyPos.set(nx, eyeY(), nz);
   inCar = null;
   car.speed = 0;
-  if (!silent) toast("boots on pavement");
+  audio.engineStop();
+  if (silent) return;
+  audio.doorThump();
 }
 
 function warpBar() {
   if (inCar) exitCar(true);
-  camera.position.set(0, EYE, -1.05);
+  camera.position.set(0, eyeY(), -1.05);
   camera.rotation.set(0, 0, 0);
   savedYaw = 0;
   savedPitch = 0;
   view2Yaw = 0;
   view2Pitch = 0;
-  bodyPos.set(0, EYE, -1.05);
+  bodyPos.set(0, eyeY(), -1.05);
   vy = 0;
   onGround = true;
-  toast("back at the stick");
 }
 
 function tryPads() {
@@ -2156,8 +2465,8 @@ function updateCar(dt) {
   const car = inCar;
   if (!car) return;
   const drunk = drunkLevel();
-  const throttle = Number(!!keys.KeyW) - Number(!!keys.KeyS);
-  const steer = Number(!!keys.KeyD) - Number(!!keys.KeyA);
+  const throttle = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
+  const steer = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
   const maxV = 17 * (1 - Math.min(0.6, drunk * 0.48));
   const target = throttle * maxV;
   car.speed += (target - car.speed) * Math.min(1, dt * (throttle ? 1.8 : 3.2));
@@ -2174,7 +2483,10 @@ function updateCar(dt) {
   car.z = cz;
   car.mesh.position.set(car.x, 0, car.z);
   car.mesh.rotation.y = car.yaw;
-  camera.position.set(car.x, EYE + Math.abs(car.speed) * 0.01, car.z);
+  const s = carSeat(car);
+  camera.position.set(s.x, s.y + Math.abs(car.speed) * 0.008, s.z);
+  bodyPos.set(s.x, s.y, s.z);
+  audio.engineTick(car.speed);
   applyDrunkCam(dt, Math.min(0.12, Math.abs(car.speed) * 0.004));
 }
 
@@ -2201,6 +2513,7 @@ function restoreBodyPos() {
     camera.rotation.z = 0;
     camera.quaternion.setFromEuler(camera.rotation);
   }
+  camera.updateMatrix();
 }
 
 function restoreBodyLook() {
@@ -2217,6 +2530,73 @@ function restoreBodyLook() {
   camera.quaternion.setFromEuler(camera.rotation);
 }
 
+function aimLocalHeadAtCamera() {
+  const head = localPeer?.rig?.userData?.head;
+  if (!head) return;
+  localPeer.rig.updateMatrixWorld(true);
+  const parent = head.parent;
+  if (!parent) return;
+  parent.worldToLocal(_headAim.copy(camera.position));
+  const dx = _headAim.x - head.position.x;
+  const dy = _headAim.y - head.position.y;
+  const dz = _headAim.z - head.position.z;
+  head.rotation.order = "YXZ";
+  head.rotation.y = THREE.MathUtils.clamp(Math.atan2(dx, dz), -1.4, 1.4);
+  head.rotation.x = THREE.MathUtils.clamp(-Math.atan2(dy, Math.hypot(dx, dz) || 1e-6), -1.15, 0.9);
+  head.rotation.z = 0;
+}
+
+function orbitHeadCam(head, dist, yaw, pit, front) {
+  const p = THREE.MathUtils.clamp(pit, -1.35, 1.35);
+  const cp = Math.cos(p);
+  const sp = Math.sin(p);
+  const fx = -Math.sin(yaw);
+  const fz = -Math.cos(yaw);
+  const s = front ? 1 : -1;
+  _camDir.set(s * fx * cp, s * sp, s * fz * cp);
+  const mag = _camDir.length();
+  if (mag < 1e-8) {
+    camera.position.set(head.x, Math.max(0.16, head.y), head.z);
+    camera.lookAt(head.x, head.y, head.z);
+    return;
+  }
+  _camDir.multiplyScalar(1 / mag);
+  let t = camRayHit(head.x, head.y, head.z, _camDir.x, _camDir.y, _camDir.z, dist);
+  t = Math.max(0.22, Math.min(dist, t - 0.14));
+  camera.position.set(head.x + _camDir.x * t, head.y + _camDir.y * t, head.z + _camDir.z * t);
+  if (camera.position.y < 0.16) {
+    const dy = _camDir.y;
+    if (dy < -1e-6) {
+      const u = (0.16 - head.y) / dy;
+      if (u > 0 && u < t) {
+        t = u;
+        camera.position.set(head.x + _camDir.x * t, 0.16, head.z + _camDir.z * t);
+      } else camera.position.y = 0.16;
+    } else camera.position.y = 0.16;
+  }
+  camera.lookAt(head.x, head.y, head.z);
+}
+
+function snapLocalRig() {
+  if (!localPeer?.rig || inCar) return;
+  const eye = eyeY();
+  const off = sitting ? 0.22 : Math.max(0, bodyPos.y - eye);
+  localPeer.rig.position.set(bodyPos.x, off, bodyPos.z);
+  localPeer.rig.rotation.y = localPeer.tyaw;
+}
+
+function localHeadWorld() {
+  const head = localPeer?.rig?.userData?.head;
+  if (!head) {
+    _headWorld.set(bodyPos.x, inCar ? 1.18 : bodyPos.y, bodyPos.z);
+    return _headWorld;
+  }
+  snapLocalRig();
+  localPeer.rig.updateMatrixWorld(true);
+  head.getWorldPosition(_headWorld);
+  return _headWorld;
+}
+
 function applyView() {
   const drunk = drunkLevel();
   const yaw = viewMode === 2 ? view2Yaw : savedYaw;
@@ -2227,8 +2607,8 @@ function applyView() {
   if (localPeer) {
     localPeer.tx = bodyPos.x;
     localPeer.tz = bodyPos.z;
-    localPeer.ty = inCar ? EYE : bodyPos.y;
-    localPeer.tyaw = inCar ? inCar.yaw : yaw;
+    localPeer.ty = inCar ? eyeY() : bodyPos.y;
+    localPeer.tyaw = (inCar ? inCar.yaw : yaw) + Math.PI;
     localPeer.tpit = inCar ? 0 : pitch;
     localPeer.bac = drunk;
     localPeer.held = held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : "");
@@ -2236,40 +2616,40 @@ function applyView() {
     localPeer.sit = Boolean(sitting);
     localPeer.pee = Boolean(peeing);
     localPeer.gender = localGender;
-    localPeer.freezeFacing = viewMode === 2;
+    localPeer.freezeFacing = viewMode !== 1;
     localPeer.freezeHead = viewMode === 2;
-    localPeer.rig.visible = showBody || peeing;
-    if (localPeer.rig.userData.body) localPeer.rig.userData.body.visible = showBody;
-    if (localPeer.rig.userData.tag) localPeer.rig.userData.tag.visible = showBody;
-    localPeer.rig.userData.held.visible = Boolean(localPeer.held);
+    const showSelf = showBody || peeing;
+    const u = localPeer.rig.userData;
+    localPeer.rig.visible = showSelf;
+    if (u.body) u.body.visible = showSelf;
+    if (u.head) u.head.visible = showBody;
+    if (u.armL) u.armL.visible = showBody;
+    if (u.armR) u.armR.visible = showBody;
+    if (u.tag) u.tag.visible = showBody;
+    if (u.held) u.held.visible = showBody && Boolean(localPeer.held);
     if (inCar) {
-      localPeer.rig.position.set(inCar.x, 0.15, inCar.z);
-      localPeer.rig.rotation.y = inCar.yaw;
+      const s = carSeat(inCar);
+      localPeer.rig.position.set(s.x, 0.12, s.z);
+      localPeer.rig.rotation.y = inCar.yaw + Math.PI;
     }
   }
   if (viewMode === 1) {
-    if (inCar) camera.position.set(inCar.x, 1.22, inCar.z);
+    if (inCar) {
+      const s = carSeat(inCar);
+      camera.position.set(s.x, s.y, s.z);
+    }
     camera.rotation.y = yaw;
     camera.rotation.x = pitch;
     return;
   }
-  const dist = viewMode === 2 ? 2.55 : inCar ? 6.2 : 3.5;
-  const sign = viewMode === 2 ? -1 : 1;
+  const dist = viewMode === 2 ? (inCar ? 5.4 : 2.55) : inCar ? 8.4 : 3.5;
   const useYaw = inCar && viewMode === 3 ? inCar.yaw : yaw;
-  const fx = -Math.sin(useYaw);
-  const fz = -Math.cos(useYaw);
-  camera.position.x = bodyPos.x - fx * dist * sign;
-  camera.position.z = bodyPos.z - fz * dist * sign;
-  camera.position.y = (inCar ? 2.1 : bodyPos.y + 0.35) + (viewMode === 3 ? 0.55 : 0.05);
+  const head = localHeadWorld();
   if (viewMode === 2) {
-    camera.rotation.order = "YXZ";
-    camera.rotation.y = useYaw + Math.PI;
-    camera.rotation.x = 0.08;
-    camera.rotation.z = 0;
-    camera.quaternion.setFromEuler(camera.rotation);
+    orbitHeadCam(head, dist, useYaw, pitch, true);
+    aimLocalHeadAtCamera();
   } else {
-    camera.rotation.y = useYaw;
-    camera.rotation.x = pitch * 0.45 - 0.12;
+    orbitHeadCam(head, dist, useYaw, pitch, false);
   }
 }
 
@@ -2310,6 +2690,7 @@ function updatePlayer(dt) {
       camera.position.x += fx * (f + slip - hitch * 0.35) + rx * (s + slip * 0.5 + hitch);
       camera.position.z += fz * (f + slip - hitch * 0.35) + rz * (s + slip * 0.5 + hitch);
     } else {
+      camera.updateMatrix();
       controls.moveForward(f + slip - hitch * 0.35);
       controls.moveRight(s + slip * 0.5 + hitch);
     }
@@ -2320,8 +2701,8 @@ function updatePlayer(dt) {
   }
   vy -= 18 * dt;
   camera.position.y += vy * dt;
-  if (camera.position.y <= EYE) {
-    camera.position.y = EYE;
+  if (camera.position.y <= eyeY()) {
+    camera.position.y = eyeY();
     vy = 0;
     onGround = true;
   }
@@ -2332,7 +2713,7 @@ function updatePlayer(dt) {
     walkT += dt * (7 + drunk * 5);
     const limpBob = 0.055 + drunk * 0.05;
     const hitchBob = Math.max(0, -Math.sin(walkT)) * drunk * 0.04;
-    camera.position.y = EYE + Math.abs(Math.sin(walkT)) * limpBob + hitchBob;
+    camera.position.y = eyeY() + Math.abs(Math.sin(walkT)) * limpBob + hitchBob;
   }
   applyDrunkCam(dt);
   if (camera.position.z > 16 && tryPads()) return;
@@ -2389,24 +2770,41 @@ function tick() {
   if (sipT > 0) sipT = Math.max(0, sipT - dt);
   if (peeing && peeUntil && tWorld > peeUntil) peeing = false;
   if (bac > 0.0001) {
-    if (bacWait > 0) bacWait = Math.max(0, bacWait - dt);
-    else {
-      bacSoberT += dt;
-      const rate = 0.00022 * Math.exp(bacSoberT / 15);
-      bac = Math.max(0, bac - rate * dt);
-      if (bac <= 0) {
+    if (tWorld < bacHoldUntil) {
+      bacWait = bacHoldUntil - tWorld;
+      bacSoberT = 0;
+      bacDecayFrom = 0;
+      bacDecayStart = 0;
+    } else {
+      bacWait = 0;
+      if (!bacDecayStart) {
+        bacDecayStart = tWorld;
+        bacDecayFrom = bac;
+      }
+      bacSoberT = tWorld - bacDecayStart;
+      const tau = 15;
+      const u = (Math.exp(bacSoberT / tau) - 1) / (Math.exp(BAC_FADE / tau) - 1);
+      bac = Math.max(0, bacDecayFrom * (1 - Math.min(1, u)));
+      if (bacSoberT >= BAC_FADE || bac <= 0.00005) {
         bac = 0;
         bacSoberT = 0;
+        bacDecayFrom = 0;
+        bacDecayStart = 0;
+        bacHoldUntil = 0;
       }
     }
   } else {
     bac = 0;
     bacWait = 0;
     bacSoberT = 0;
+    bacDecayFrom = 0;
+    bacDecayStart = 0;
+    bacHoldUntil = 0;
   }
   if (neonA) neonA.intensity = 3.0 + Math.sin(tWorld * 7) * 0.3 + (Math.random() < 0.015 ? -0.8 : 0);
   if (neonB) neonB.intensity = 1.8 + Math.sin(tWorld * 5 + 1) * 0.2;
   if (jukeLight) jukeLight.color.setHSL((tWorld * 0.12) % 1, 0.85, 0.55);
+  tickFrontDoor(dt);
   restoreBodyPos();
   look = null;
   if (playing()) {
@@ -2439,6 +2837,7 @@ function tick() {
   }
   if (localPeer) updateLocalAvatar(dt);
   applyView();
+  tickHeartbeat(dt);
   hud();
   renderer.render(scene, camera);
   restoreBodyLook();
@@ -2458,6 +2857,10 @@ function bind() {
       localGender = btn.dataset.g === "f" ? "f" : "m";
       document.querySelectorAll(".gender-picks button").forEach((b) => b.classList.toggle("on", b === btn));
       try { localStorage.setItem("infinite-pour-gender", localGender); } catch (err) { /* ignore */ }
+      if (onGround && !sitting && !inCar) {
+        camera.position.y = eyeY();
+        bodyPos.y = eyeY();
+      }
     });
   });
   $("clockInBtn").addEventListener("click", (e) => {
@@ -2500,6 +2903,9 @@ function bind() {
     if (playing() && houseGames?.pointerDown(look)) {
       return;
     }
+    if (playing() && houseGames?.playing?.() == null && inCar == null && sitting == null) {
+      tryPunch();
+    }
     if (playing() && look && look !== held) {
       if (look.userData.kind === "bottle") attachHeld(look);
       else if (look.userData.kind === "glass" && !(held && held.userData.kind === "bottle")) attachHeld(look);
@@ -2511,7 +2917,13 @@ function bind() {
     houseGames?.pointerUp();
   });
   window.addEventListener("mousemove", (e) => {
-    if (viewMode === 2) return;
+    if (viewMode === 2) {
+      if (!started || summonOpen || passedOut) return;
+      if (!controls.isLocked && !dragging) return;
+      view2Yaw -= e.movementX * 0.0024;
+      view2Pitch = THREE.MathUtils.clamp(view2Pitch - e.movementY * 0.0024, -1.35, 1.35);
+      return;
+    }
     if (!dragging || controls.isLocked || summonOpen) return;
     camera.rotation.y -= e.movementX * 0.0024;
     camera.rotation.x = THREE.MathUtils.clamp(camera.rotation.x - e.movementY * 0.0024, -1.2, 1.2);
@@ -2561,6 +2973,10 @@ function bind() {
       e.preventDefault();
       if (inCar) return;
       if (houseGames?.use(look) || houseGames?.use(null)) return;
+      if (houseGames?.playing?.()) {
+        houseGames.leave();
+        return;
+      }
       if (sitting) {
         standUp();
         return;
@@ -2573,7 +2989,7 @@ function bind() {
         enterCar(look.userData.car);
         return;
       }
-      const car = nearestCar(2.2);
+      const car = nearestCar(3.4);
       if (car && (!look || look.userData.kind === "car")) {
         enterCar(car);
         return;
@@ -2620,9 +3036,7 @@ function bind() {
       openSummon("t");
     }
     if (e.code === "KeyC") {
-      dare = DARES[(Math.random() * DARES.length) | 0];
-      toast("new dare");
-      hud();
+      zoomHold = true;
     }
     if (e.code === "KeyB") {
       restockDrinks();
@@ -2642,6 +3056,7 @@ function bind() {
   });
   window.addEventListener("keyup", (e) => {
     keys[e.code] = false;
+    if (e.code === "KeyC") zoomHold = false;
   });
   $("q").addEventListener("input", () => {
     if (summonOpenedBy && $("q").value.toLowerCase() === summonOpenedBy) {
