@@ -7,12 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/style.css?v=28" />
+  <link rel="stylesheet" href="css/style.css?v=75" />
 </head>
 <body>
   <canvas class="webgl" id="gl"></canvas>
   <div id="scan"></div>
   <div id="vignette"></div>
+  <div id="heartVig"></div>
+  <div id="hurt"></div>
   <div id="toast"></div>
   <div id="winPop"></div>
 
@@ -37,9 +39,9 @@
     <p class="hint">Same GitHub Pages link + same bar code = same bar. RESTOCK hits every shift.</p>
     <button type="button" class="cta" id="clockInBtn">CLICK TO STEP BEHIND THE BAR</button>
     <div class="keys">
-      WASD move · mouse look · SPACE jump · E grab, sit, or get in a car · SHIFT get out
-      · F sip · G chug · Q drop · R dump · P drunk pee · 1/2/3 camera · 4–9 glassware · T summon
-      · H cab back to the bar · patio: beer pong / beer die · pool inside · C new dare
+      WASD move · mouse look · SPACE jump · E grab, sit, door, car, enter or leave a game · ESC menu · SHIFT get out of a car
+      · F sip · G chug · Q drop · R dump · P drunk pee · click punch · 1/2/3 camera · hold C zoom · 4–9 glassware · T summon
+      · H cab back to the bar · patio: beer pong / beer die · pool inside
     </div>
   </div>
 
@@ -58,10 +60,6 @@
     <div id="online" class="pixel-border">
       <div class="tag">ON SHIFT</div>
       <div id="onlineList">just you</div>
-    </div>
-    <div id="dare" class="pixel-border">
-      <div class="tag">DARE DECK</div>
-      <div id="dareText">Pour yourself whatever you want. The house is yours.</div>
     </div>
     <div id="game" class="pixel-border hidden">
       <div class="tag">HOUSE GAME</div>
@@ -99,6 +97,6 @@
     }
   }
   </script>
-  <script type="module" src="js/game.js?v=28"></script>
+  <script type="module" src="js/game.js?v=75"></script>
 </body>
 </html>

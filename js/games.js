@@ -37,6 +37,7 @@ export function createGames(api) {
   const youMat = lambert(0x3dfff2);
   const themMat = lambert(0xff3dac);
   const ridge = lambert(0xb42020);
+  let active = null;
 
   const BALL_COLORS = [
     0xf2d21a, 0x2e6bff, 0xc41e3a, 0x6b1c9a, 0xe07a3d, 0x1f8a4c, 0x7a1a12, 0x121014,
@@ -435,30 +436,43 @@ export function createGames(api) {
 
   function ballMesh(n, color, striped, eight) {
     const g = new THREE.Group();
-    addMesh(g, sphGeo, lambert(color), 0, 0, 0, 0.038, 0.038, 0.038);
-    if (striped) {
-      addMesh(g, sphGeo, white, 0, 0, 0, 0.0405, 0.022, 0.0405);
-      addMesh(g, sphGeo, lambert(color), 0, 0, 0, 0.0412, 0.01, 0.0412);
-    }
-    if (eight) addMesh(g, sphGeo, white, 0, 0.012, 0.028, 0.016, 0.016, 0.008);
-    if (n > 0) {
-      const c = document.createElement("canvas");
-      c.width = 32;
-      c.height = 32;
-      const ctx = c.getContext("2d");
-      ctx.fillStyle = striped || eight ? "#111" : "#f4ead0";
-      ctx.font = "bold 22px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(n), 16, 17);
-      const tex = new THREE.CanvasTexture(c);
-      tex.magFilter = THREE.NearestFilter;
-      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true }));
-      spr.scale.set(0.07, 0.07, 1);
-      spr.position.set(0, 0.002, 0.039);
-      g.add(spr);
+    const r = 0.038;
+    if (n === 0) {
+      addMesh(g, sphGeo, lambert(0xf7f3e8), 0, 0, 0, r, r, r);
+    } else if (eight) {
+      addMesh(g, sphGeo, lambert(0x121014), 0, 0, 0, r, r, r);
+      addMesh(g, sphGeo, white, 0, 0.01, 0.026, 0.014, 0.014, 0.008);
+    } else if (striped) {
+      addMesh(g, sphGeo, white, 0, 0, 0, r, r, r);
+      addMesh(g, sphGeo, lambert(color), 0, 0, 0, r * 1.03, r * 0.42, r * 1.03);
+    } else {
+      addMesh(g, sphGeo, lambert(color), 0, 0, 0, r, r, r);
+      addMesh(g, sphGeo, white, 0, 0.01, 0.026, 0.012, 0.012, 0.006);
     }
     return g;
+  }
+
+  function ballTalk(n) {
+    if (n === 8) return "the 8-ball";
+    if (n <= 7) return `the ${n} (solid)`;
+    return `the ${n} (stripe)`;
+  }
+
+  function announceSink(n, scratch) {
+    const house = pool.turn === "them";
+    const who = house ? "house" : "you";
+    if (scratch) {
+      flash("SCRATCH", "lose");
+      toast(house ? "house scratched" : "scratch — cue ball in");
+      return;
+    }
+    if (n === 8) {
+      flash("8-BALL", house ? "lose" : "win");
+      toast(`${who} sank the 8-ball`);
+      return;
+    }
+    flash(`${n} IN`, "back");
+    toast(`${who} sank ${ballTalk(n)}`);
   }
 
   function liveOf(group) {
@@ -470,22 +484,49 @@ export function createGames(api) {
     const gap = r * 2.02;
     const ox = pool.x + 0.48;
     const oz = pool.z;
-    let n = 0;
-    const rows = [1, 2, 3, 4, 5];
-    for (let row = 0; row < rows.length; row++) {
-      const count = rows[row];
+    const spots = [];
+    for (let row = 0; row < 5; row++) {
+      const count = row + 1;
       for (let i = 0; i < count; i++) {
-        const b = pool.balls[n];
-        if (!b) continue;
-        b.live = true;
-        b.mesh.visible = true;
-        b.x = ox + row * gap * 0.87;
-        b.z = oz + (i - (count - 1) / 2) * gap;
-        b.vx = 0;
-        b.vz = 0;
-        b.mesh.position.set(b.x, pool.y + 0.038, b.z);
-        n++;
+        spots.push({
+          x: ox + row * gap * 0.87,
+          z: oz + (i - (count - 1) / 2) * gap,
+        });
       }
+    }
+    const place = (b, spot) => {
+      if (!b || !spot) return;
+      b.live = true;
+      b.mesh.visible = true;
+      b.x = spot.x;
+      b.z = spot.z;
+      b.vx = 0;
+      b.vz = 0;
+      b.mesh.position.set(b.x, pool.y + 0.038, b.z);
+    };
+    const eight = pool.balls.find((b) => b.n === 8);
+    const solids = pool.balls.filter((b) => b.n <= 7);
+    const stripes = pool.balls.filter((b) => b.n >= 9);
+    const rest = [...solids, ...stripes];
+    for (let i = rest.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const tmp = rest[i];
+      rest[i] = rest[j];
+      rest[j] = tmp;
+    }
+    place(eight, spots[4]);
+    const cornerSolid = rest.find((b) => b.n <= 7);
+    const cornerStripe = rest.find((b) => b.n >= 9);
+    place(cornerSolid, spots[10]);
+    place(cornerStripe, spots[14]);
+    const used = new Set([eight, cornerSolid, cornerStripe]);
+    let s = 0;
+    for (let i = 0; i < 15; i++) {
+      if (i === 4 || i === 10 || i === 14) continue;
+      while (rest[s] && used.has(rest[s])) s++;
+      place(rest[s], spots[i]);
+      used.add(rest[s]);
+      s++;
     }
     const cue = pool.cue;
     cue.live = true;
@@ -661,12 +702,16 @@ export function createGames(api) {
     });
     const keep = !scratch && legal.length > 0;
     if (keep) {
+      const names = legal.map((n) => String(n)).join(" + ");
+      toast(shooter === "you" ? `you keep shooting · ${names} down` : `house keeps the table · ${names} down`);
       if (shooter === "them") pool.botWait = 0.8;
       return;
     }
+    if (scratch) toast(shooter === "you" ? "scratch. house's shot" : "house scratch. your shot");
+    else if (objects.length) toast(shooter === "you" ? "wrong ball. house's shot" : "house hit the wrong suit. your shot");
+    else toast(shooter === "you" ? "nothing down. house's shot" : "house missed. your shot");
     pool.turn = shooter === "you" ? "them" : "you";
     if (pool.turn === "them") pool.botWait = 0.9;
-    else toast("your shot");
   }
 
   function legalPongMake(who, cup) {
@@ -692,53 +737,27 @@ export function createGames(api) {
     return table === pong ? legalPongMake(who, cup) : mine !== yours;
   }
 
-  function bouncePingOffCup(f, cup, dx, dz, dist) {
-    const nx = dist > 1e-5 ? dx / dist : 1;
-    const nz = dist > 1e-5 ? dz / dist : 0;
-    const vn = f.vel.x * nx + f.vel.z * nz;
-    if (vn < 0) {
-      f.vel.x -= 1.65 * vn * nx;
-      f.vel.z -= 1.65 * vn * nz;
-    }
-    if (f.vel.y < 0) f.vel.y *= -0.38;
-    f.vel.y += 0.55;
-    f.vel.x *= 0.82;
-    f.vel.z *= 0.82;
-    const push = CUP_OUTER_R + PING_R + 0.004;
-    if (dist < push) {
-      f.mesh.position.x = cup.position.x + nx * push;
-      f.mesh.position.z = cup.position.z + nz * push;
-    }
-    f.bounced = true;
-    audio.beep(520, 0.04, "square", 0.025);
-  }
-
   function resolvePingCup(f) {
     const p = f.mesh.position;
+    let best = null;
+    let bestDist = Infinity;
     for (const c of pong.cups) {
       if (!c.userData.live) continue;
       const dx = p.x - c.position.x;
       const dz = p.z - c.position.z;
       const dist = Math.hypot(dx, dz);
-      if (dist > CUP_OUTER_R + PING_R + 0.02) continue;
       const rimY = c.position.y + CUP_RIM_Y;
       const baseY = c.position.y;
-      if (p.y > rimY + PING_R + 0.02) continue;
-      if (dist < CUP_OPEN_R) {
-        if (f.vel.y < 0 && p.y <= rimY + PING_R * 0.2 && p.y > baseY - 0.04) {
-          const legal = sinkCup(c, f.who, pong);
-          return legal ? "in" : "own";
-        }
-        continue;
-      }
-      if (p.y > rimY + PING_R) continue;
+      if (p.y > rimY + PING_R + 0.04) continue;
       if (p.y < baseY - PING_R) continue;
-      if (dist < CUP_OUTER_R + PING_R) {
-        bouncePingOffCup(f, c, dx, dz, dist);
-        return "bounce";
+      if (dist < CUP_OUTER_R + PING_R && dist < bestDist) {
+        best = c;
+        bestDist = dist;
       }
     }
-    return null;
+    if (!best) return null;
+    const legal = sinkCup(best, f.who, pong);
+    return legal ? "in" : "own";
   }
 
   function onRect(table, x, z) {
@@ -777,7 +796,7 @@ export function createGames(api) {
         b.vz *= -0.72;
       }
       b.mesh.position.set(b.x, pool.y + 0.038, b.z);
-      const sunk = pocks.some(([px, pz]) => Math.hypot(b.x - px, b.z - pz) < 0.1);
+      const sunk = pocks.some(([px, pz]) => Math.hypot(b.x - px, b.z - pz) < 0.11);
       if (sunk) {
         b.live = false;
         b.mesh.visible = false;
@@ -792,9 +811,10 @@ export function createGames(api) {
           b.vx = 0;
           b.vz = 0;
           b.mesh.position.set(b.x, pool.y + 0.038, b.z);
-          toast("scratch");
+          announceSink(0, true);
         } else {
           pool.shotSunk.push(b.n);
+          announceSink(b.n, false);
           api.score?.(8);
         }
       }
@@ -999,26 +1019,44 @@ export function createGames(api) {
 
   function buildPool() {
     const g = new THREE.Group();
-    addMesh(g, boxGeo, rail, 0, 0.4, 0, 2.28, 0.8, 1.34);
-    addMesh(g, boxGeo, felt, 0, 0.805, 0, 1.92, 0.04, 0.98);
-    addMesh(g, boxGeo, rail, 0, 0.86, -0.58, 2.2, 0.1, 0.1);
-    addMesh(g, boxGeo, rail, 0, 0.86, 0.58, 2.2, 0.1, 0.1);
-    addMesh(g, boxGeo, rail, -1.06, 0.86, 0, 0.1, 0.1, 1.16);
-    addMesh(g, boxGeo, rail, 1.06, 0.86, 0, 0.1, 0.1, 1.16);
-    addMesh(g, boxGeo, lambert(0xf2d21a), -0.72, 0.83, 0, 0.28, 0.012, 0.12);
-    addMesh(g, boxGeo, white, 0.72, 0.83, 0, 0.28, 0.012, 0.12);
-    addMesh(g, sphGeo, lambert(0xc41e3a), -0.72, 0.86, 0, 0.03, 0.03, 0.03);
-    addMesh(g, sphGeo, white, 0.72, 0.86, 0, 0.03, 0.02, 0.03);
-    addMesh(g, sphGeo, lambert(0xc41e3a), 0.72, 0.86, 0, 0.03, 0.012, 0.03);
+    const wood = lambert(0x5a3218);
+    const darkWood = lambert(0x3a1e10);
+    const cushion = lambert(0x14532d);
+    const ivory = lambert(0xe8d9b0);
+    addMesh(g, boxGeo, darkWood, 0, 0.38, 0, 2.36, 0.76, 1.42);
+    addMesh(g, boxGeo, wood, 0, 0.78, 0, 2.32, 0.08, 1.38);
+    addMesh(g, boxGeo, felt, 0, 0.805, 0, 1.92, 0.035, 0.98);
+    const railY = 0.86;
+    addMesh(g, boxGeo, cushion, -0.52, railY, -0.515, 0.84, 0.09, 0.08);
+    addMesh(g, boxGeo, cushion, 0.52, railY, -0.515, 0.84, 0.09, 0.08);
+    addMesh(g, boxGeo, cushion, -0.52, railY, 0.515, 0.84, 0.09, 0.08);
+    addMesh(g, boxGeo, cushion, 0.52, railY, 0.515, 0.84, 0.09, 0.08);
+    addMesh(g, boxGeo, cushion, -0.995, railY, 0, 0.08, 0.09, 0.72);
+    addMesh(g, boxGeo, cushion, 0.995, railY, 0, 0.08, 0.09, 0.72);
+    addMesh(g, boxGeo, wood, -0.52, railY + 0.05, -0.56, 0.88, 0.04, 0.1);
+    addMesh(g, boxGeo, wood, 0.52, railY + 0.05, -0.56, 0.88, 0.04, 0.1);
+    addMesh(g, boxGeo, wood, -0.52, railY + 0.05, 0.56, 0.88, 0.04, 0.1);
+    addMesh(g, boxGeo, wood, 0.52, railY + 0.05, 0.56, 0.88, 0.04, 0.1);
+    addMesh(g, boxGeo, wood, -1.06, railY + 0.05, 0, 0.12, 0.04, 0.78);
+    addMesh(g, boxGeo, wood, 1.06, railY + 0.05, 0, 0.12, 0.04, 0.78);
+    const pocketGeo = new THREE.CylinderGeometry(1, 1, 1, 12);
     for (const [x, z] of [
       [-1.0, -0.52],
-      [0, -0.52],
+      [0, -0.54],
       [1.0, -0.52],
       [-1.0, 0.52],
-      [0, 0.52],
+      [0, 0.54],
       [1.0, 0.52],
     ]) {
-      addMesh(g, new THREE.CylinderGeometry(1, 1, 1, 10), pocketMat, x, 0.82, z, 0.07, 0.05, 0.07);
+      addMesh(g, pocketGeo, pocketMat, x, 0.78, z, 0.1, 0.06, 0.1);
+    }
+    for (const x of [-0.72, -0.36, 0.36, 0.72]) {
+      addMesh(g, boxGeo, ivory, x, railY + 0.072, -0.56, 0.03, 0.012, 0.03);
+      addMesh(g, boxGeo, ivory, x, railY + 0.072, 0.56, 0.03, 0.012, 0.03);
+    }
+    for (const z of [-0.26, 0.26]) {
+      addMesh(g, boxGeo, ivory, -1.06, railY + 0.072, z, 0.03, 0.012, 0.03);
+      addMesh(g, boxGeo, ivory, 1.06, railY + 0.072, z, 0.03, 0.012, 0.03);
     }
     g.position.set(pool.x, 0, pool.z);
     mark(g, "pool");
@@ -1163,49 +1201,95 @@ export function createGames(api) {
     }
   }
 
+  function kindFromLook(look) {
+    const k = look?.userData?.kind;
+    if (k === "pool") return "pool";
+    if (k === "pong" || k === "pong-join" || k === "cup") return "pong";
+    if (k === "die" || k === "die-join") return "die";
+    return null;
+  }
+
+  function gameName(kind) {
+    if (kind === "pool") return "8-ball";
+    if (kind === "pong") return "beer pong";
+    if (kind === "die") return "beer die";
+    return "the table";
+  }
+
+  function enterGame(kind) {
+    if (!kind) return false;
+    if (active === kind) return true;
+    active = kind;
+    if (kind === "pool") toast("8-ball. click-hold to shoot · E leave");
+    if (kind === "pong") {
+      if (humans().length && !pong.match) tryQueue("pong");
+      else toast("beer pong vs the house. click-hold to throw · E leave");
+    }
+    if (kind === "die") {
+      if (humans().length && !dye.match) tryQueue("die");
+      else toast("beer die vs the house. click-hold to toss · E leave");
+    }
+    return true;
+  }
+
+  function leaveGame() {
+    if (!active) return false;
+    const name = gameName(active);
+    pool.charging = false;
+    pong.charging = false;
+    dye.charging = false;
+    if (active === "pong" && pong.queued) tryQueue("pong");
+    if (active === "die" && dye.queued) tryQueue("die");
+    active = null;
+    toast(`left ${name}`);
+    return true;
+  }
+
   function prompt(look) {
     if (dye.catchUntil > _t) return "E CATCH THE DIE";
-    if (!look) return "";
-    const k = look.userData.kind;
-    if (k === "pool") {
-      if (pool.over) return pool.winner === "you" ? "YOU WIN · re-racking…" : "HOUSE WINS · re-racking…";
-      if (moving() || pool.shotActive) return "balls are rolling";
-      if (pool.turn !== "you") return "their shot";
+    const kind = kindFromLook(look);
+    if (!active) {
+      if (kind === "pool") return "E play 8-ball";
+      if (kind === "pong") return "E play beer pong";
+      if (kind === "die") return "E play beer die";
+      return "";
+    }
+    if (active === "pool") {
+      if (pool.over) return pool.winner === "you" ? "YOU WIN · re-racking… · E leave" : "HOUSE WINS · re-racking… · E leave";
+      if (moving() || pool.shotActive) return "balls are rolling · E leave";
+      if (pool.turn !== "you") return "their shot · E leave";
       const suit = pool.youGroup ? `you are ${groupLabel(pool.youGroup)}` : "open table · first pocket sets solids or stripes";
       return pool.charging
         ? `power ${Math.round(pool.charge * 100)}%  ·  release  ·  ${suit}`
-        : `click-hold to shoot  ·  ${suit}  ·  sink the 8 early and you lose`;
+        : `click-hold to shoot  ·  ${suit}  ·  E leave`;
     }
-    if (k === "pong" || k === "pong-join") {
-      if (pong.over) return "game over · re-racking…";
-      if (pong.queued) return "queued for beer pong · E to leave queue";
-      if (humans().length && !pong.match) return "E queue for beer pong · 2 = 1v1, 4 = 2v2 · click-hold on YOUR turn";
+    if (active === "pong") {
+      if (pong.over) return "game over · re-racking… · E leave";
+      if (pong.queued) return "queued for beer pong · E leave table";
+      if (humans().length && !pong.match) return "E queue  ·  2 = 1v1, 4 = 2v2  ·  E leave";
       if (!canThrowPong()) {
-        if (!isMyPoss(pong)) return "not your throw";
-        if (pong.match?.mode === "2v2") return "wait — teammate throws";
-        return "wait for the ball";
+        if (!isMyPoss(pong)) return "not your throw · E leave";
+        if (pong.match?.mode === "2v2") return "wait — teammate throws · E leave";
+        return "wait for the ball · E leave";
       }
       return pong.charging
         ? `throw ${Math.round(pong.charge * 100)}%  ·  ${pongTurnText()}`
-        : `BEER PONG  ·  ${pongTurnText()}  ·  click-hold at FAR pink  ·  both in = balls back`;
+        : `BEER PONG  ·  ${pongTurnText()}  ·  click-hold at FAR pink  ·  E leave`;
     }
-    if (k === "die" || k === "die-join") {
-      if (dye.over) return "game over · re-racking…";
-      if (dye.queued) return "queued for beer die · E to leave queue";
-      if (humans().length && !dye.match) return "E queue for beer die · click-hold on YOUR turn";
-      if (!canThrowDie()) return isMyPoss(dye) ? "wait for the die" : "not your toss";
+    if (active === "die") {
+      if (dye.over) return "game over · re-racking… · E leave";
+      if (dye.queued) return "queued for beer die · E leave table";
+      if (humans().length && !dye.match) return "E queue for beer die · E leave";
+      if (!canThrowDie()) return (isMyPoss(dye) ? "wait for the die" : "not your toss") + " · E leave";
       return dye.charging
         ? `toss ${Math.round(dye.charge * 100)}%  ·  release`
-        : "BEER DIE  ·  your toss  ·  click-hold  ·  5 they lose a cup, 1/6 both sip";
+        : "BEER DIE  ·  your toss  ·  click-hold  ·  E leave";
     }
-    if (k === "cup") {
-      return look.userData.owner === "you" ? "YOUR cup (cyan ring). shoot the other side." : "THEIR cup (pink ring). throw here.";
-    }
-    return "";
+    return "E leave the table";
   }
 
   function hudText() {
-    if (Math.hypot(camera.position.x - pool.x, camera.position.z - pool.z) < 3.4) {
+    if (active === "pool") {
       const solids = liveOf("solids");
       const stripes = liveOf("stripes");
       const eight = pool.balls.find((b) => b.n === 8)?.live ? "8 in play" : "8 down";
@@ -1213,11 +1297,11 @@ export function createGames(api) {
       const turn = pool.over ? (pool.winner === "you" ? "YOU WIN" : "HOUSE WINS") : pool.turn === "you" ? "your shot" : "their shot";
       return `8-BALL  you ${you}  ·  solids ${solids}  stripes ${stripes}  ·  ${eight}  ·  ${turn}`;
     }
-    if (Math.hypot(camera.position.x - pong.x, camera.position.z - pong.z) < 4.4) {
+    if (active === "pong") {
       const vs = pong.match ? (pong.match.mode === "2v2" ? "2v2" : "1v1") : pong.queued ? "queued" : "house";
       return `BEER PONG  your cups ${pong.youCups}  ·  their cups ${pong.themCups}  ·  ${vs}  ·  ${pongTurnText()}`;
     }
-    if (Math.hypot(camera.position.x - dye.x, camera.position.z - dye.z) < 3.6) {
+    if (active === "die") {
       const vs = dye.match ? (dye.match.mode === "2v2" ? "2v2" : "1v1") : dye.queued ? "queued" : "house";
       const turn = dye.over ? (dye.youCups <= 0 ? loseLabel(dye) : "YOU WIN") : isMyPoss(dye) ? "your toss" : "their toss";
       return `BEER DIE  vs ${vs}  ·  your cups ${dye.youCups}  their cups ${dye.themCups}  ·  ${turn}` + (dye.catchUntil > _t ? "  ·  CATCH" : "");
@@ -1238,28 +1322,20 @@ export function createGames(api) {
       nextDiePoss(who);
       return true;
     }
-    if (!look) return false;
-    if (look.userData.kind === "pong-join" || look.userData.kind === "pong") return tryQueue("pong");
-    if (look.userData.kind === "die-join" || look.userData.kind === "die") return tryQueue("die");
-    if (look.userData.kind === "pool") {
-      if (pool.over || !pool.balls.some((b) => b.live && b.n !== 8)) {
-        rackPool();
-        toast("fresh rack");
-        return true;
-      }
-      return false;
-    }
+    const kind = kindFromLook(look);
+    if (kind && active !== kind) return enterGame(kind);
     return false;
   }
 
   function pointerDown(look) {
-    if (!look) return false;
-    if (look.userData.kind === "pool" && pool.turn === "you" && !moving() && !pool.over) {
-      pool.charging = true;
-      pool.charge = 0.12;
+    if (active === "pool") {
+      if (pool.turn === "you" && !moving() && !pool.over) {
+        pool.charging = true;
+        pool.charge = 0.12;
+      }
       return true;
     }
-    if (look.userData.kind === "pong" || look.userData.kind === "pong-join" || (look.userData.kind === "cup" && Math.hypot(look.position.x - pong.x, look.position.z - pong.z) < 2)) {
+    if (active === "pong") {
       if (pong.over) return true;
       if (!canThrowPong()) {
         if (!isMyPoss(pong)) toast("not your throw");
@@ -1270,7 +1346,7 @@ export function createGames(api) {
       pong.charge = 0.12;
       return true;
     }
-    if (look.userData.kind === "die" || look.userData.kind === "die-join") {
+    if (active === "die") {
       if (dye.over) return true;
       if (!canThrowDie()) {
         if (!isMyPoss(dye)) toast("not your toss");
@@ -1280,6 +1356,7 @@ export function createGames(api) {
       dye.charge = 0.12;
       return true;
     }
+    if (kindFromLook(look)) return true;
     return false;
   }
 
@@ -1341,6 +1418,7 @@ export function createGames(api) {
   }
 
   function reset() {
+    active = null;
     pool.charging = false;
     pong.charging = false;
     dye.charging = false;
@@ -1361,5 +1439,5 @@ export function createGames(api) {
     return 0;
   }
 
-  return { build, tick, prompt, use, pointerDown, pointerUp, hudText, reset, pickRange, onNet };
+  return { build, tick, prompt, use, pointerDown, pointerUp, hudText, reset, pickRange, onNet, leave: leaveGame, playing: () => active };
 }

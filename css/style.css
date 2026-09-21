@@ -50,6 +50,15 @@ canvas.webgl {
   transition: filter 0.4s linear, background 0.4s linear;
 }
 
+#heartVig {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 42;
+  background: radial-gradient(ellipse at center, transparent 68%, rgba(0, 0, 0, 0) 100%);
+  opacity: 0;
+}
+
 #hud, #title, #summon, #passout {
   position: fixed;
   inset: 0;
