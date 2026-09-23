@@ -54,6 +54,23 @@ const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
 const CLIMB_MAX = 1.1;
+const ROAD_W = 16;
+const ROAD_HALF = 8;
+const LANE_W = 3.5;
+const WALK_W = 3.1;
+const CURB_T = 0.28;
+const CURB_H = 0.14;
+const EW_ZS = [22, 58, 94];
+const NS_XS = [-96, -52, 0, 52, 96];
+const ROAD_XMIN = -108;
+const ROAD_XMAX = 108;
+const ROAD_ZMIN = 14;
+const ROAD_ZMAX = 102;
+const LAMP_SPACING = 20;
+const LAMP_CLEAR = 6.4;
+const LAMP_SETBACK = ROAD_HALF + 0.96;
+const LAMP_H = 4.92;
+const LAMP_ARM = 2.18;
 
 const GLYPH = {
   0: ["111", "101", "101", "101", "111"],
@@ -205,6 +222,56 @@ function rubberTex() {
   });
 }
 
+function asphaltTex() {
+  return px(32, 32, (ctx, n) => {
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const grit = ((x * 13 + y * 7) ^ (x * 3 + y * 17) ^ (x * y)) & 15;
+        const v = 26 + grit;
+        ctx.fillStyle = `rgb(${v},${v},${v + 3})`;
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    for (let i = 4; i < n; i += 11) ctx.fillRect(0, i, n, 1);
+    ctx.fillStyle = "rgba(255,255,255,0.04)";
+    ctx.fillRect(9, 0, 1, n);
+    ctx.fillRect(21, 6, 1, 18);
+  });
+}
+
+function sidewalkTex() {
+  return px(32, 32, (ctx, n) => {
+    ctx.fillStyle = "#3e3c42";
+    ctx.fillRect(0, 0, n, n);
+    for (let y = 0; y < 2; y++) {
+      for (let x = 0; x < 2; x++) {
+        const s = ((x * 7 + y * 11) & 7) * 3;
+        ctx.fillStyle = `rgb(${86 + s},${84 + s},${88 + s})`;
+        ctx.fillRect(x * 16 + 1, y * 16 + 1, 14, 14);
+        ctx.fillStyle = "rgba(0,0,0,0.12)";
+        ctx.fillRect(x * 16 + 1, y * 16 + 13, 14, 2);
+      }
+    }
+    ctx.fillStyle = "#2c2a30";
+    ctx.fillRect(0, 15, n, 2);
+    ctx.fillRect(15, 0, 2, n);
+  });
+}
+
+function grassTex() {
+  return px(16, 16, (ctx, n) => {
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const g = 20 + ((x * 5 + y * 11 + x * y) & 15);
+        ctx.fillStyle = `rgb(${6 + (g & 3)},${g},${12})`;
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+  });
+}
+
+
 function brassTex() {
   return px(16, 16, (ctx) => {
     for (let y = 0; y < 16; y++) {
@@ -290,10 +357,20 @@ function bootTextures() {
   mats.chrome = new THREE.MeshLambertMaterial({ color: 0xc8d0d8 });
   mats.seat = new THREE.MeshLambertMaterial({ color: 0x6b1c23 });
   mats.glow = new THREE.MeshBasicMaterial({ color: 0xffe08a });
-  mats.asphalt = new THREE.MeshLambertMaterial({ color: 0x1c1c22 });
+  const asp = asphaltTex();
+  asp.wrapS = asp.wrapT = THREE.RepeatWrapping;
+  const walk = sidewalkTex();
+  walk.wrapS = walk.wrapT = THREE.RepeatWrapping;
+  const grass = grassTex();
+  grass.wrapS = grass.wrapT = THREE.RepeatWrapping;
+  mats.asphalt = new THREE.MeshLambertMaterial({ map: asp, color: 0x8a8a94 });
   mats.lane = new THREE.MeshLambertMaterial({ color: 0xc9a227 });
-  mats.sidewalk = new THREE.MeshLambertMaterial({ color: 0x3a3a44 });
-  mats.grass = new THREE.MeshLambertMaterial({ color: 0x142016 });
+  mats.laneYellow = new THREE.MeshLambertMaterial({ color: 0xd7b31c, emissive: 0x3d2c00, emissiveIntensity: 0.24 });
+  mats.laneWhite = new THREE.MeshLambertMaterial({ color: 0xeeeae0, emissive: 0x2a2820, emissiveIntensity: 0.2 });
+  mats.sidewalk = new THREE.MeshLambertMaterial({ map: walk, color: 0x8a8882 });
+  mats.grass = new THREE.MeshLambertMaterial({ map: grass, color: 0x2a3c22 });
+  mats.curb = new THREE.MeshLambertMaterial({ color: 0x8a8680 });
+  mats.steel = new THREE.MeshLambertMaterial({ color: 0x2a2c32 });
   mats.night = new THREE.MeshLambertMaterial({ color: 0x0c0a12 });
 }
 
@@ -1814,12 +1891,290 @@ function buildWorld() {
 }
 
 function asphalt(x, z, w, d, mat = mats.asphalt, y = 0.004) {
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat);
+  return ground(x, z, w, d, mat, y);
+}
+
+function ground(x, z, w, d, mat = mats.asphalt, y = 0.004, tileX = 6, tileZ = 6) {
+  let use = mat;
+  if (mat && mat.map) {
+    use = mat.clone();
+    use.map = mat.map.clone();
+    use.map.wrapS = use.map.wrapT = THREE.RepeatWrapping;
+    use.map.repeat.set(Math.max(0.5, Math.abs(w) / tileX), Math.max(0.5, Math.abs(d) / tileZ));
+    use.map.needsUpdate = true;
+  }
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), use);
   m.rotation.x = -Math.PI / 2;
   m.position.set(x, y, z);
   m.receiveShadow = true;
   scene.add(m);
   return m;
+}
+
+function inXsect(x, z, pad = 0) {
+  for (const ix of NS_XS) {
+    if (Math.abs(x - ix) > ROAD_HALF + pad) continue;
+    for (const iz of EW_ZS) {
+      if (Math.abs(z - iz) <= ROAD_HALF + pad) return true;
+    }
+  }
+  return false;
+}
+
+function paintChunk(x, z, w, d, mat, y = 0.018) {
+  if (w < 0.08 || d < 0.08) return;
+  if (inXsect(x, z, 0.15)) return;
+  ground(x, z, w, d, mat, y);
+}
+
+function paintLine(x0, z0, x1, z1, w, mat) {
+  const horiz = Math.abs(z1 - z0) < 1e-6;
+  if (horiz) {
+    const z = z0;
+    let x = Math.min(x0, x1);
+    const end = Math.max(x0, x1);
+    while (x < end) {
+      const n = Math.min(end, x + 2.4);
+      paintChunk((x + n) / 2, z, n - x, w, mat);
+      x = n;
+    }
+    return;
+  }
+  const x = x0;
+  let z = Math.min(z0, z1);
+  const end = Math.max(z0, z1);
+  while (z < end) {
+    const n = Math.min(end, z + 2.4);
+    paintChunk(x, (z + n) / 2, w, n - z, mat);
+    z = n;
+  }
+}
+
+function paintDash(x0, z0, x1, z1, w, dash = 2.15, gap = 2.05) {
+  const horiz = Math.abs(z1 - z0) < 1e-6;
+  let on = true;
+  if (horiz) {
+    const z = z0;
+    let x = Math.min(x0, x1);
+    const end = Math.max(x0, x1);
+    while (x < end) {
+      const len = Math.min(on ? dash : gap, end - x);
+      if (on) paintChunk(x + len / 2, z, len, w, mats.laneWhite);
+      x += len;
+      on = !on;
+    }
+    return;
+  }
+  const x = x0;
+  let z = Math.min(z0, z1);
+  const end = Math.max(z0, z1);
+  while (z < end) {
+    const len = Math.min(on ? dash : gap, end - z);
+    if (on) paintChunk(x, z + len / 2, w, len, mats.laneWhite);
+    z += len;
+    on = !on;
+  }
+}
+
+function crosswalk(x, z, alongX) {
+  if (alongX) {
+    for (let i = -3; i <= 3; i++) ground(x, z + i * 1.02, 2.4, 0.4, mats.laneWhite, 0.02);
+  } else {
+    for (let i = -3; i <= 3; i++) ground(x + i * 1.02, z, 0.4, 2.4, mats.laneWhite, 0.02);
+  }
+}
+
+function curbAt(x, z, w, d) {
+  addBox(scene, unitBox, mats.curb, x, CURB_H / 2, z, w, CURB_H, d);
+}
+
+function blockSpans(axis) {
+  const pts = axis === "x" ? [ROAD_XMIN, ...NS_XS, ROAD_XMAX] : [ROAD_ZMIN, ...EW_ZS, ROAD_ZMAX];
+  const spans = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const len = b - a - ROAD_W;
+    if (len < 2.4) continue;
+    spans.push({ a, b, mid: (a + b) / 2, len });
+  }
+  return spans;
+}
+
+function lampStations(a, b) {
+  const start = a + ROAD_HALF + LAMP_CLEAR;
+  const end = b - ROAD_HALF - LAMP_CLEAR;
+  const span = end - start;
+  if (span < 8) return [];
+  const n = Math.max(1, Math.round(span / LAMP_SPACING));
+  const step = span / n;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(start + step * (i + 0.5));
+  return out;
+}
+
+function streetLight(x, z, armYaw = 0, lit = true) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  g.rotation.y = armYaw;
+  addBox(g, unitBox, mats.curb, 0, 0.08, 0, 0.34, 0.16, 0.34);
+  addBox(g, unitCyl, mats.steel, 0, LAMP_H * 0.5, 0, 0.07, LAMP_H, 0.07);
+  addBox(g, unitCyl, mats.steel, 0, LAMP_H + 0.05, 0, 0.1, 0.1, 0.1);
+  addBox(g, unitBox, mats.steel, 0, LAMP_H + 0.1, -LAMP_ARM * 0.48, 0.055, 0.055, LAMP_ARM * 0.96);
+  addBox(g, unitBox, mats.steel, 0, LAMP_H + 0.02, -LAMP_ARM, 0.05, 0.14, 0.05);
+  addBox(g, unitBox, lambert(0x16181c), 0, LAMP_H - 0.05, -LAMP_ARM, 0.3, 0.1, 0.44);
+  addBox(g, unitBox, mats.glow, 0, LAMP_H - 0.11, -LAMP_ARM, 0.22, 0.035, 0.34);
+  scene.add(g);
+  if (lit) {
+    const pl = new THREE.PointLight(0xffd4a0, 1.15, 13.5);
+    pl.position.set(x - Math.sin(armYaw) * LAMP_ARM, LAMP_H - 0.14, z - Math.cos(armYaw) * LAMP_ARM);
+    scene.add(pl);
+  }
+  return g;
+}
+
+function lamp(x, z) {
+  streetLight(x, z, 0, true);
+}
+
+function buildRoads() {
+  const xLen = ROAD_XMAX - ROAD_XMIN;
+  const zLen = ROAD_ZMAX - ROAD_ZMIN;
+  const xMid = (ROAD_XMIN + ROAD_XMAX) / 2;
+  const zMid = (ROAD_ZMIN + ROAD_ZMAX) / 2;
+  for (const z of EW_ZS) ground(xMid, z, xLen, ROAD_W, mats.asphalt, 0.005, 5.5, 5.5);
+  for (const x of NS_XS) ground(x, zMid, ROAD_W, zLen, mats.asphalt, 0.005, 5.5, 5.5);
+
+  for (const z of EW_ZS) {
+    for (const sp of blockSpans("x")) {
+      ground(sp.mid, z + ROAD_HALF + WALK_W / 2, sp.len, WALK_W, mats.sidewalk, 0.055, 2.2, 2.2);
+      ground(sp.mid, z - ROAD_HALF - WALK_W / 2, sp.len, WALK_W, mats.sidewalk, 0.055, 2.2, 2.2);
+      curbAt(sp.mid, z + ROAD_HALF + CURB_T / 2, sp.len, CURB_T);
+      curbAt(sp.mid, z - ROAD_HALF - CURB_T / 2, sp.len, CURB_T);
+    }
+  }
+  for (const x of NS_XS) {
+    for (const sp of blockSpans("z")) {
+      ground(x + ROAD_HALF + WALK_W / 2, sp.mid, WALK_W, sp.len, mats.sidewalk, 0.055, 2.2, 2.2);
+      ground(x - ROAD_HALF - WALK_W / 2, sp.mid, WALK_W, sp.len, mats.sidewalk, 0.055, 2.2, 2.2);
+      curbAt(x + ROAD_HALF + CURB_T / 2, sp.mid, CURB_T, sp.len);
+      curbAt(x - ROAD_HALF - CURB_T / 2, sp.mid, CURB_T, sp.len);
+    }
+  }
+  for (const ix of NS_XS) {
+    for (const iz of EW_ZS) {
+      const o = ROAD_HALF + WALK_W / 2;
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          ground(ix + sx * o, iz + sz * o, WALK_W, WALK_W, mats.sidewalk, 0.055, 2.2, 2.2);
+        }
+      }
+    }
+  }
+
+  for (const z of EW_ZS) {
+    paintLine(ROAD_XMIN, z - 0.18, ROAD_XMAX, z - 0.18, 0.12, mats.laneYellow);
+    paintLine(ROAD_XMIN, z + 0.18, ROAD_XMAX, z + 0.18, 0.12, mats.laneYellow);
+    paintLine(ROAD_XMIN, z - ROAD_HALF + 0.55, ROAD_XMAX, z - ROAD_HALF + 0.55, 0.11, mats.laneWhite);
+    paintLine(ROAD_XMIN, z + ROAD_HALF - 0.55, ROAD_XMAX, z + ROAD_HALF - 0.55, 0.11, mats.laneWhite);
+    paintDash(ROAD_XMIN, z - LANE_W, ROAD_XMAX, z - LANE_W, 0.11);
+    paintDash(ROAD_XMIN, z + LANE_W, ROAD_XMAX, z + LANE_W, 0.11);
+  }
+  for (const x of NS_XS) {
+    paintLine(x - 0.18, ROAD_ZMIN, x - 0.18, ROAD_ZMAX, 0.12, mats.laneYellow);
+    paintLine(x + 0.18, ROAD_ZMIN, x + 0.18, ROAD_ZMAX, 0.12, mats.laneYellow);
+    paintLine(x - ROAD_HALF + 0.55, ROAD_ZMIN, x - ROAD_HALF + 0.55, ROAD_ZMAX, 0.11, mats.laneWhite);
+    paintLine(x + ROAD_HALF - 0.55, ROAD_ZMIN, x + ROAD_HALF - 0.55, ROAD_ZMAX, 0.11, mats.laneWhite);
+    paintDash(x - LANE_W, ROAD_ZMIN, x - LANE_W, ROAD_ZMAX, 0.11);
+    paintDash(x + LANE_W, ROAD_ZMIN, x + LANE_W, ROAD_ZMAX, 0.11);
+  }
+  for (const ix of NS_XS) {
+    for (const iz of EW_ZS) {
+      crosswalk(ix - ROAD_HALF - 1.55, iz, true);
+      crosswalk(ix + ROAD_HALF + 1.55, iz, true);
+      crosswalk(ix, iz - ROAD_HALF - 1.55, false);
+      crosswalk(ix, iz + ROAD_HALF + 1.55, false);
+    }
+  }
+}
+
+function buildStreetLights() {
+  const seen = new Set();
+  const place = (x, z, yaw) => {
+    const key = x.toFixed(1) + "|" + z.toFixed(1);
+    if (seen.has(key)) return;
+    if (inXsect(x, z, 1.35)) return;
+    if (Math.abs(x) < 8.8 && z > 6 && z < 16.4) return;
+    seen.add(key);
+    streetLight(x, z, yaw, true);
+  };
+  for (const zc of EW_ZS) {
+    for (const sp of blockSpans("x")) {
+      lampStations(sp.a, sp.b).forEach((x, i) => {
+        const south = i % 2 === 0;
+        place(x, zc + (south ? LAMP_SETBACK : -LAMP_SETBACK), south ? 0 : Math.PI);
+      });
+    }
+  }
+  for (const xc of NS_XS) {
+    for (const sp of blockSpans("z")) {
+      lampStations(sp.a, sp.b).forEach((z, i) => {
+        const east = i % 2 === 0;
+        place(xc + (east ? LAMP_SETBACK : -LAMP_SETBACK), z, east ? Math.PI / 2 : -Math.PI / 2);
+      });
+    }
+  }
+}
+
+function buildTown() {
+  ground(0, 50, 240, 180, mats.grass, -0.04, 12, 12);
+  buildRoads();
+  ground(0, 11.2, 16, 10.4, mats.sidewalk, 0.012, 2.4, 2.4);
+  ground(0, 11.4, 12, 8.2, mats.asphalt, 0.007, 4, 4);
+  for (const x of [-4.2, -1.4, 1.4, 4.2]) ground(x, 9.55, 0.08, 3.5, mats.laneWhite, 0.016);
+  ground(-8.4, 12.6, 7.2, 7.4, mats.sidewalk, 0.012, 2.2, 2.2);
+
+  building(26, 40, 12, 6.2, 10, 0x2a1020);
+  building(-26, 40, 11, 5.4, 10, 0x102028);
+  building(26, 76, 12, 7.5, 11, 0x241830);
+  building(-26, 76, 14, 4.8, 10, 0x1a1024);
+  building(74, 40, 14, 8, 12, 0x301018);
+  building(-74, 40, 14, 6.6, 12, 0x101820);
+  building(74, 76, 13, 5.5, 10, 0x201028);
+  building(-74, 76, 12, 7.2, 11, 0x182010);
+  building(26, 108, 12, 6.4, 9, 0x201428);
+  building(-26, 108, 13, 5.8, 9, 0x142018);
+  building(22, 5.5, 8, 4.2, 6, 0x22141c);
+  building(-22, 5.5, 8, 5, 6, 0x141822);
+
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.4, 0.9),
+    new THREE.MeshBasicMaterial({ map: neonTex("INFINITE POUR", 0xff3dac) })
+  );
+  sign.position.set(0, 2.85, D / 2 + 0.16);
+  scene.add(sign);
+
+  buildStreetLights();
+  streetLight(-6.6, 8.35, Math.PI, true);
+  streetLight(6.6, 8.35, Math.PI, true);
+  streetLight(-8.4, 10.55, Math.PI, true);
+
+  makeCar(-4.2, 9.4, Math.PI, 0xc41e3a);
+  makeCar(4.1, 9.6, Math.PI, 0x2e6bff);
+  makeCar(-3.8, 13.2, 0, 0xe8c547);
+  makeCar(3.6, 13.4, 0, 0xff3dac);
+  makeCar(20.4, 15.2, Math.PI / 2, 0xd8d0c4);
+  makeCar(-20.4, 15.2, -Math.PI / 2, 0x2c6e49);
+  makeCar(40.5, 29.1, Math.PI / 2, 0x8a3a12);
+  makeCar(-40.5, 50.8, -Math.PI / 2, 0x3a3a48);
+  makeCar(16.8, 20.2, Math.PI / 2, 0x6a2030);
+  makeCar(-17.4, 24.6, -Math.PI / 2, 0x203050);
+  makeCar(7.8, 56.4, 0, 0xb8b0a4);
+  makeCar(-11.2, 60.6, Math.PI, 0x3d5a3a);
+
+  pads.push({ x: 0, z: 22, r: 1.35 });
+  pads.push({ x: 52, z: 22, r: 1.35 });
+  pads.push({ x: 0, z: 58, r: 1.35 });
 }
 
 function makeCar(x, z, yaw, color) {
@@ -1910,14 +2265,6 @@ function hangingBarLight(x, z, shadow) {
   return g;
 }
 
-function lamp(x, z) {
-  addBox(scene, unitBox, mats.chrome, x, 1.3, z, 0.08, 2.6, 0.08);
-  addBox(scene, unitBox, mats.glow, x, 2.62, z, 0.22, 0.12, 0.22);
-  const pl = new THREE.PointLight(0xffd090, 1.6, 14);
-  pl.position.set(x, 2.55, z);
-  scene.add(pl);
-}
-
 function building(x, z, sx, sy, sz, color) {
   addBox(scene, unitBox, lambert(color), x, sy / 2, z, sx, sy, sz);
   worldSolid(x, z, sx, sz);
@@ -1933,83 +2280,6 @@ function barPad(x, z, label) {
   );
   board.position.set(x, 1.35, z);
   scene.add(board);
-}
-
-function buildTown() {
-  asphalt(0, 50, 240, 180, mats.grass, -0.04);
-  asphalt(0, 11.2, 16, 10.4, mats.sidewalk, 0.01);
-  asphalt(0, 11.4, 12, 8.2);
-  asphalt(0, 22, 216, 16);
-  asphalt(0, 58, 216, 16);
-  asphalt(0, 94, 216, 16);
-  asphalt(0, 58, 16, 88);
-  asphalt(52, 58, 16, 88);
-  asphalt(-52, 58, 16, 88);
-  asphalt(96, 58, 16, 88);
-  asphalt(-96, 58, 16, 88);
-  asphalt(0, 21.55, 216, 0.1, mats.lane, 0.02);
-  asphalt(0, 22.45, 216, 0.1, mats.lane, 0.02);
-  asphalt(0, 57.55, 216, 0.1, mats.lane, 0.02);
-  asphalt(0, 58.45, 216, 0.1, mats.lane, 0.02);
-  asphalt(0, 93.55, 216, 0.1, mats.lane, 0.02);
-  asphalt(0, 94.45, 216, 0.1, mats.lane, 0.02);
-  asphalt(-0.45, 58, 0.1, 88, mats.lane, 0.02);
-  asphalt(0.45, 58, 0.1, 88, mats.lane, 0.02);
-  asphalt(51.55, 58, 0.1, 88, mats.lane, 0.02);
-  asphalt(52.45, 58, 0.1, 88, mats.lane, 0.02);
-  asphalt(-51.55, 58, 0.1, 88, mats.lane, 0.02);
-  asphalt(-52.45, 58, 0.1, 88, mats.lane, 0.02);
-
-  building(26, 40, 12, 6.2, 10, 0x2a1020);
-  building(-26, 40, 11, 5.4, 10, 0x102028);
-  building(26, 76, 12, 7.5, 11, 0x241830);
-  building(-26, 76, 14, 4.8, 10, 0x1a1024);
-  building(74, 40, 14, 8, 12, 0x301018);
-  building(-74, 40, 14, 6.6, 12, 0x101820);
-  building(74, 76, 13, 5.5, 10, 0x201028);
-  building(-74, 76, 12, 7.2, 11, 0x182010);
-  building(26, 108, 12, 6.4, 9, 0x201428);
-  building(-26, 108, 13, 5.8, 9, 0x142018);
-  building(22, 5.5, 8, 4.2, 6, 0x22141c);
-  building(-22, 5.5, 8, 5, 6, 0x141822);
-
-  const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(4.4, 0.9),
-    new THREE.MeshBasicMaterial({ map: neonTex("INFINITE POUR", 0xff3dac) })
-  );
-  sign.position.set(0, 2.85, D / 2 + 0.16);
-  scene.add(sign);
-
-  lamp(-6, 14);
-  lamp(6, 14);
-  for (const z of [22, 58, 94]) {
-    for (const x of [-84, -40, -20, 20, 40, 84]) lamp(x, z);
-  }
-  for (const x of [-96, -52, 52, 96]) {
-    for (const z of [40, 76]) lamp(x, z);
-  }
-  lamp(0, 40);
-  lamp(0, 76);
-
-  makeCar(-4.2, 9.4, Math.PI, 0xc41e3a);
-  makeCar(4.1, 9.6, Math.PI, 0x2e6bff);
-  makeCar(-3.8, 13.2, 0, 0xe8c547);
-  makeCar(3.6, 13.4, 0, 0xff3dac);
-  makeCar(20.4, 15.2, Math.PI / 2, 0xd8d0c4);
-  makeCar(-20.4, 15.2, -Math.PI / 2, 0x2c6e49);
-  makeCar(40.5, 29.1, Math.PI / 2, 0x8a3a12);
-  makeCar(-40.5, 50.8, -Math.PI / 2, 0x3a3a48);
-  makeCar(16.8, 20.2, Math.PI / 2, 0x6a2030);
-  makeCar(-17.4, 24.6, -Math.PI / 2, 0x203050);
-  makeCar(7.8, 56.4, 0, 0xb8b0a4);
-  makeCar(-11.2, 60.6, Math.PI, 0x3d5a3a);
-
-  asphalt(-8.4, 12.6, 7.2, 7.4, mats.sidewalk, 0.012);
-  lamp(-8.4, 11.2);
-
-  pads.push({ x: 0, z: 22, r: 1.35 });
-  pads.push({ x: 52, z: 22, r: 1.35 });
-  pads.push({ x: 0, z: 58, r: 1.35 });
 }
 
 function bathTileTex() {
@@ -4568,7 +4838,7 @@ function tickPolice(dt) {
         car.z = resolved.z;
       }
       const close = dist < 6.2;
-      if ((pack.driveT >= 3 && close) || pack.driveT > 8) {
+      if ((pack.driveT >= 6 && close) || pack.driveT > 12) {
         pack.arrived = true;
         car.speed = 0;
       }
@@ -4635,8 +4905,8 @@ function tickPolice(dt) {
       const dist = Math.hypot(dx, dz);
       off.yaw = Math.atan2(dx, dz);
       const carSpd = inCar ? Math.abs(inCar.speed || 0) : 0;
-      const tooFast = inCar && carSpd > 4.2;
-      const reach = inCar ? 1.95 : 1.08;
+      const tooFast = inCar && carSpd > 3.5;
+      const reach = inCar ? 1.72 : 1.08;
       if (off.state === "chase") {
         if (dist > 0.8) {
           let nx = off.x + (dx / (dist || 1)) * 3.28 * dt;
@@ -4652,7 +4922,7 @@ function tickPolice(dt) {
         }
       } else if (off.state === "swing") {
         off.swingT += dt;
-        if (off.swingT > 0.16 && off.swingT < 0.34 && dist < reach + 0.22 && !tooFast) {
+        if (off.swingT > 0.18 && off.swingT < 0.32 && dist < reach + 0.12 && !tooFast) {
           if (inCar) yankFromCar(off);
           arrestPlayer();
           return;
