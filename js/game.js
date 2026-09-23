@@ -46,7 +46,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=132";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=1";
+import { createClub } from "./club.js?v=3";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1310,7 +1310,7 @@ const ndc = new THREE.Vector2(0, 0);
 const _pickOrigin = new THREE.Vector3();
 const _pickDir = new THREE.Vector3();
 const _pickWorld = new THREE.Vector3();
-const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "clubDoor", "darts", "cupstack", "baton"]);
+const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "clubChair", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "clubDoor", "darts", "cupstack", "baton"]);
 const solids = [];
 const pickables = [];
 const bottles = [];
@@ -2162,9 +2162,7 @@ function buildWorld() {
   addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, -4.76, 0.25, wallH, 2.48);
   addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, 2.06, 0.25, wallH, 7.88);
   addBox(scene, unitBox, mats.brick, -W / 2, 2.85, -2.7, 0.25, 0.9, 1.72);
-  addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, -3.275, 0.25, wallH, 5.45);
-  addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, 3.325, 0.25, wallH, 5.35);
-  addBox(scene, unitBox, mats.brick, W / 2, 2.85, 0.065, 0.25, 0.9, 1.32);
+  addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, 0, 0.25, wallH, D);
   addBox(scene, unitBox, mats.woodDark, 0, wallH, 0, W, 0.2, D);
   addCeiling(0, 0, W, D, wallH - 0.1);
   addBox(scene, unitBox, mats.woodDark, 0, 3.15, D / 2, 1.7, 0.5, 0.28);
@@ -2173,17 +2171,14 @@ function buildWorld() {
   worldSolid(4.4, D / 2, 7.2, 0.4);
   worldSolid(-W / 2, -4.76, 0.4, 2.48);
   worldSolid(-W / 2, 2.06, 0.4, 7.88);
-  worldSolid(W / 2, -3.275, 0.4, 5.45);
-  worldSolid(W / 2, 3.325, 0.4, 5.35);
+  worldSolid(W / 2, 0, 0.4, D);
   camBox(0, wallH / 2, -D / 2, W, wallH, 0.4);
   camBox(-4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
   camBox(4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
   camBox(-W / 2, wallH / 2, -4.76, 0.4, wallH, 2.48);
   camBox(-W / 2, wallH / 2, 2.06, 0.4, wallH, 7.88);
   camBox(-W / 2, 2.85, -2.7, 0.4, 0.9, 1.72);
-  camBox(W / 2, wallH / 2, -3.275, 0.4, wallH, 5.45);
-  camBox(W / 2, wallH / 2, 3.325, 0.4, wallH, 5.35);
-  camBox(W / 2, 2.85, 0.065, 0.4, 0.9, 1.4);
+  camBox(W / 2, wallH / 2, 0, 0.4, wallH, D);
   camBox(0, wallH, 0, W, 0.24, D);
   camBox(0, 3.15, D / 2, 1.7, 0.5, 0.32);
   camBox(0, -0.2, 50, WORLD_X * 2 + 40, 0.4, WORLD_Z_MAX - WORLD_Z_MIN + 40);
@@ -2437,6 +2432,9 @@ function buildWorld() {
     neonTex,
     audio,
     playerPos: () => bodyPos,
+    makeBottle,
+    makeGlassMesh,
+    randomDrink,
   });
   houseClub.build();
   setWorldCollide(collide);
@@ -4011,6 +4009,7 @@ function standUp() {
   const x = sitting.standX ?? sitting.x;
   const z = sitting.standZ ?? sitting.z + 0.12;
   const floor = sitting.floor || 0;
+  if (sitting.fixture) houseClub?.freeChair?.(sitting.fixture);
   const [nx, nz] = collide(x, z, 0.28, floor);
   sitting = null;
   onGround = true;
@@ -4190,8 +4189,8 @@ function promptFrom(obj) {
     if (inBathroom(camera.position.x, camera.position.z)) {
       return localGender === "f" ? "restrooms · E sit · P pee on the toilet" : "restrooms · E sit or open doors · P pee";
     }
-    if (houseClub?.inside(camera.position.x, camera.position.z)) return "AFTER HOURS · stairs on the right · balcony looks over the floor · E sit";
-    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · club next door to the right · patio games to the left · restrooms behind the left wall";
+    if (houseClub?.inside(camera.position.x, camera.position.z)) return "AFTER HOURS · street door · stairs on the right · walk the balcony · E kick a seat or sit";
+    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · club next door down the alley · patio games to the left · restrooms behind the left wall";
     return started && !controls.isLocked ? "click the bar to capture mouse" : "";
   }
   const k = obj.userData.kind;
@@ -4222,6 +4221,7 @@ function promptFrom(obj) {
   if (k === "urinal") return localGender === "f" ? "girls sit on the toilet" : "P to pee";
   if (k === "restroomDoor") return lookDoorOpen(obj) ? "E close the restroom door" : "E open the restroom door";
   if (k === "clubDoor") return houseClub?.prompt(obj) || (lookDoorOpen(obj) ? "E close the club door" : "E open the club");
+  if (k === "clubChair") return houseClub?.prompt(obj) || (obj.userData.sitter && obj.userData.sitter !== "player" ? "E kick them out of the chair" : "E sit and watch the floor");
   if (k === "stallDoor") return lookDoorOpen(obj) ? "E close the stall" : "E open the stall";
   if (k === "register" || k === "hatch") return "E / Y  summon any drink";
   if (k === "sink") return "E dump glass";
@@ -4317,7 +4317,7 @@ function nearbyUse() {
     const max = kind === "car" ? 3.6 : kind === "door" || kind === "restroomDoor" || kind === "stallDoor" || kind === "clubDoor" ? 2.8 : reach;
     if (dist > max) continue;
     const forward = dist < 0.15 ? 1 : (dx * fx + dz * fz) / dist;
-    if (kind !== "door" && kind !== "car" && kind !== "stool" && kind !== "restroomDoor" && kind !== "stallDoor" && kind !== "clubDoor" && kind !== "toilet" && kind !== "urinal" && kind !== "bathSink" && kind !== "darts" && forward < -0.25) continue;
+    if (kind !== "door" && kind !== "car" && kind !== "stool" && kind !== "clubChair" && kind !== "restroomDoor" && kind !== "stallDoor" && kind !== "clubDoor" && kind !== "toilet" && kind !== "urinal" && kind !== "bathSink" && kind !== "darts" && forward < -0.25) continue;
     const score = dist - Math.max(0, forward) * 0.9 - (kind === "door" ? 0.4 : 0);
     if (!best || score < best.score) best = { root, distance: dist, point: _pickWorld.clone(), score };
   }
@@ -6174,7 +6174,7 @@ function hitOfficer(off, fx, fz, dmg) {
   off.hp = Math.max(0, (off.hp ?? COP_HP) - dmg);
   if (holdingBaton()) audio.baton();
   if (off.hp <= 0) {
-    killOfficer(off, null, 3.4, { reinforce: false, mild: true, shove: { fx, fz } });
+    killOfficer(off, null, 3.4, { reinforce: false, foot: true, mild: true, shove: { fx, fz } });
     return true;
   }
   return true;
@@ -6320,6 +6320,49 @@ function addCopPack(x, z) {
 function spawnPolice(x, z) {
   toast(cops.length ? "more cops incoming" : "cops incoming");
   addCopPack(x, z);
+}
+
+function addFootCop(x, z) {
+  heatUp();
+  if (!cops.length) audio.sirenStart();
+  copWave += 1;
+  const roads = [22, 58, 94];
+  let rz = roads[0];
+  for (const r of roads) if (Math.abs(r - z) < Math.abs(rz - z)) rz = r;
+  const side = x >= 0 ? 1 : -1;
+  let sx = THREE.MathUtils.clamp(x + side * (16 + (copWave % 3) * 4), -WORLD_X + 8, WORLD_X - 8);
+  [sx, rz] = collideWorld(sx, rz, 0.28);
+  const pack = {
+    car: null,
+    officers: [],
+    tx: x,
+    tz: z,
+    arrived: true,
+    driveT: 0,
+    hijacked: false,
+    foot: true,
+  };
+  pack.officers.push({
+    id: copSerial + 1,
+    rig: makeOfficer(),
+    car: null,
+    seat: -0.46,
+    state: "chase",
+    x: sx,
+    z: rz,
+    yaw: Math.atan2(x - sx, z - rz),
+    phase: copWave * 0.7,
+    swingT: 0,
+    outT: 0,
+    dead: false,
+    hp: COP_HP,
+    hurtT: 0,
+    kvx: 0,
+    kvz: 0,
+    hopY: 0,
+    droppedBaton: false,
+  });
+  cops.push(pack);
 }
 
 function angDiff(from, to) {
@@ -6543,6 +6586,12 @@ function killOfficer(off, car, spd = 10, opts = {}) {
   dropOfficerBaton(off);
   if (off.rig) startCopRagdoll(off, car, spd, opts.shove || null, !!opts.mild);
   audio.hit();
+  if (opts.foot) {
+    toast("cop down · another on foot");
+    heatUp();
+    if (!passedOut) addFootCop(bodyPos.x, bodyPos.z);
+    return;
+  }
   if (opts.reinforce === false) {
     toast("cop down");
     return;
@@ -6739,10 +6788,12 @@ function tickPolice(dt) {
       car.sirenMats[0].emissiveIntensity = blink ? 1.8 : 0.12;
       car.sirenMats[1].emissiveIntensity = blink ? 0.12 : 1.8;
     }
-    if (inCar === car) {
+    if (!car) {
+      pack.arrived = true;
+    } else if (inCar === car) {
       pack.arrived = true;
       pack.hijacked = true;
-      if (car) car.speed = 0;
+      car.speed = 0;
     } else {
       driveCopCar(pack, dt, packShouldRam(pack));
     }
@@ -7654,6 +7705,16 @@ function bind() {
       }
       if (sitting) {
         standUp();
+        return;
+      }
+      if (look && look.userData.kind === "clubChair") {
+        if (houseClub?.use(look)) {
+          audio.bump();
+          toast("off the chair");
+          return;
+        }
+        sitOn(look.userData.sit || look.userData.root?.userData.sit);
+        houseClub?.claimChair(look);
         return;
       }
       if (look && look.userData.kind === "stool") {
