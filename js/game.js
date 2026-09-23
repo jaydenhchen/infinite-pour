@@ -3812,6 +3812,14 @@ function holdingBaton() {
   return held?.userData?.kind === "baton";
 }
 
+function holdingGlass() {
+  return !!(held && held.userData?.kind === "glass" && held === glassMesh);
+}
+
+function holdingDrink() {
+  return holdingGlass() || !!(held && held.userData?.kind === "bottle");
+}
+
 function takeHit(nx, nz, by) {
   const knock = applyKnock(camera.position.x, camera.position.z, nx, nz, collide, 0.28);
   lastKnock = { x: knock.dx, z: knock.dz };
@@ -4046,7 +4054,7 @@ function promptFrom(obj) {
     if (sitting.kind === "toilet") {
       return "toilet · pants down · E stand · P pee";
     }
-    return houseGames?.prompt(obj) || "stool. WASD or E stand · F sip · G chug";
+    return houseGames?.prompt(obj) || (holdingDrink() ? "stool. WASD or E stand · F sip · G chug" : "stool. WASD or E stand");
   }
   if (inCar) return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   if (!obj) {
@@ -4089,8 +4097,7 @@ function promptFrom(obj) {
       if (glassState.fill > 0.02) return "F sip  ·  G chug  ·  Q set down";
       return "cup in hand  ·  hold it in a stream  ·  4–9 swap  ·  Q set down";
     }
-    if (glassState.fill > 0.02) return "E grab cup  ·  F sip  ·  G chug";
-    return "E grab cup  ·  4–9 glassware";
+    return glassState.fill > 0.02 ? "E grab cup" : "E grab cup  ·  4–9 glassware";
   }
   if (k === "tap") return `E tap  ${drink.name}`;
   if (k === "toilet") return localGender === "f" ? "E sit · pants come off · then P pee" : "E sit · pants come off";
@@ -4690,6 +4697,7 @@ function bumpDrink() {
 }
 
 function drinkGlass(kind) {
+  if (!holdingGlass()) return;
   if (glassState.fill < 0.02) return;
   const cap = glassCapacityOz(glassState.type);
   const left = glassState.fill * cap;
@@ -7361,11 +7369,11 @@ function bind() {
     }
     if (e.code === "KeyF") {
       if (held && held.userData.kind === "bottle") drinkHeld("sip");
-      else drinkGlass("sip");
+      else if (holdingGlass()) drinkGlass("sip");
     }
     if (e.code === "KeyG") {
       if (held && held.userData.kind === "bottle") drinkHeld("chug");
-      else drinkGlass("chug");
+      else if (holdingGlass()) drinkGlass("chug");
     }
     if (e.code === "KeyY") {
       e.preventDefault();
@@ -7467,8 +7475,14 @@ window.__POUR = {
   deliver,
   spawnCustom,
   findDrinks,
-  sip: () => drinkGlass("sip"),
-  chug: () => (glassState.fill > 0.02 ? drinkGlass("chug") : drinkHeld("chug")),
+  sip: () => {
+    if (held && held.userData.kind === "bottle") drinkHeld("sip");
+    else drinkGlass("sip");
+  },
+  chug: () => {
+    if (held && held.userData.kind === "bottle") drinkHeld("chug");
+    else drinkGlass("chug");
+  },
   pour: (name) => {
     const d = spawnCustom(name);
     pourIntoGlass(d, 0.4);
