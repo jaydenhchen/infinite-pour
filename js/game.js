@@ -34,7 +34,11 @@ import {
   setPeeCupHooks,
   heldCupWorlds,
   setLocalHitHandler,
-} from "./multiplayer.js?v=107";
+  setCarHandler,
+  pokePose,
+  setCopHandler,
+  remotePeers,
+} from "./multiplayer.js?v=114";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -396,6 +400,7 @@ const dropGeo = new THREE.BoxGeometry(0.03, 0.05, 0.03);
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 8);
 const unitCyl6 = new THREE.CylinderGeometry(1, 1, 1, 6);
+const smokeGeo = new THREE.SphereGeometry(0.2, 6, 5);
 
 function makeBottle(drink) {
   const g = new THREE.Group();
@@ -713,6 +718,12 @@ const audio = {
     this.beep(90, 0.16, "sine", 0.05);
     this.burst(0.12, 0.04, 220, "lowpass", 0.5);
     this.beep(420, 0.05, "sine", 0.025);
+  },
+  screech() {
+    if (this.ctx && this._screechT && this.ctx.currentTime < this._screechT) return;
+    if (this.ctx) this._screechT = this.ctx.currentTime + 0.1;
+    this.burst(0.1, 0.018, 1900, "highpass", 0.55);
+    this.beep(240 + Math.random() * 90, 0.07, "sawtooth", 0.018);
   },
   sit() {
     this.beep(160, 0.1, "triangle", 0.05);
@@ -1052,6 +1063,12 @@ let leftHand = null;
 let viewMode = 1;
 let localPeer = null;
 let inCar = null;
+let carSeatI = 0;
+let lastPeerN = -1;
+const driftPuffs = [];
+const remotePacks = new Map();
+let lastCopKey = "";
+let copNetAcc = 0;
 const cars = [];
 const worldSolids = [];
 const carBlocks = [];
@@ -1081,6 +1098,10 @@ let heartT = 0;
 let heartKick = 0;
 const cops = [];
 let wanted = false;
+let wantedT = 0;
+const WANTED_GIVE_UP = 60;
+const COP_ARRIVE_MIN = 9;
+const COP_ARRIVE_MAX = 15;
 let stunT = 0;
 let hurtFlash = 0;
 let crashCool = 0;
@@ -1614,6 +1635,7 @@ function resetShift() {
   hurtFlash = 0;
   crashCool = 0;
   wanted = false;
+  wantedT = 0;
   if (inCar) exitCar(true);
   camera.position.set(0, eyeY(), -1.05);
   camera.rotation.set(0, 0, 0);
@@ -2209,6 +2231,20 @@ function buildTown() {
   pads.push({ x: 0, z: 58, r: 1.35 });
 }
 
+function addCarDoors(g, bodyMat, glassMat) {
+  const chrome = lambert(0xc8c4bc);
+  const mk = (side, z, len) => {
+    const hinge = new THREE.Group();
+    hinge.position.set(side * 1.08, 0.68, z);
+    g.add(hinge);
+    addBox(hinge, unitBox, bodyMat, side * 0.045, 0, len * 0.5, 0.08, 0.72, len);
+    addBox(hinge, unitBox, glassMat, side * 0.06, 0.38, len * 0.46, 0.04, 0.28, len * 0.72);
+    addBox(hinge, unitBox, chrome, side * 0.085, 0.02, 0.42, 0.04, 0.06, 0.12);
+    return hinge;
+  };
+  return { L: mk(-1, -0.62, 1.42), R: mk(1, -0.62, 1.42), LB: mk(-1, 0.78, 1.18), RB: mk(1, 0.78, 1.18) };
+}
+
 function makeCar(x, z, yaw, color) {
   const g = new THREE.Group();
   const body = lambert(color);
@@ -2238,11 +2274,18 @@ function makeCar(x, z, yaw, color) {
   addBox(g, unitBox, lambert(0xffe08a), 0.72, 0.52, -2.18, 0.16, 0.1, 0.08);
   addBox(g, unitBox, lambert(0xc41e3a), -0.72, 0.52, 2.18, 0.16, 0.1, 0.08);
   addBox(g, unitBox, lambert(0xc41e3a), 0.72, 0.52, 2.18, 0.16, 0.1, 0.08);
+  const doors = addCarDoors(g, body, glass);
   g.position.set(x, 0, z);
   g.rotation.y = yaw;
   g.userData.kind = "car";
   g.userData.root = g;
-  const car = { mesh: g, x, z, yaw, speed: 0, drift: 0 };
+  const car = {
+    nid: `s${cars.length}`,
+    mesh: g,
+    x, z, yaw, speed: 0, drift: 0, vx: 0, vz: 0,
+    doorL: doors.L, doorR: doors.R, doorLB: doors.LB, doorRB: doors.RB,
+    doorAnim: null, doorSide: -1, doorRow: 0,
+  };
   g.userData.car = car;
   registerPick(g);
   scene.add(g);
@@ -2607,6 +2650,7 @@ function makeHingeDoor(x, z, yaw, w, h, kind, swingDir = 1) {
   door.userData.want = 0;
   door.userData.open = false;
   door.userData.swingDir = swingDir;
+  door.userData.sid = `s${swingDoors.length}`;
   registerPick(door);
   swingDoors.push(door);
   const cx = x + Math.cos(yaw) * (w / 2) * swingDir;
@@ -2874,6 +2918,7 @@ function makeBathSink(x, z, yaw, room) {
   g.userData.root = g;
   g.userData.sink = g;
   g.userData.running = false;
+  g.userData.kid = `k${sinks.length}`;
   g.userData.stream = stream;
   g.userData.splash = splash;
   basin.userData.kind = "bathSink";
@@ -2902,16 +2947,25 @@ function makeBathSink(x, z, yaw, room) {
 
 function toggleBathSink(sink) {
   if (!sink) return;
-  sink.userData.running = !sink.userData.running;
-  const on = sink.userData.running;
-  if (sink.userData.stream) sink.userData.stream.visible = on;
-  if (sink.userData.splash) sink.userData.splash.visible = on;
-  if (on) {
-    audio.sinkStart();
-    audio.splash();
-  } else {
-    if (!sinks.some((s) => s.userData.running)) audio.sinkStop();
+  setBathSink(sink, !sink.userData.running);
+}
+
+function setBathSink(sink, on, fromNet) {
+  if (!sink) return;
+  const want = !!on;
+  const changed = !!sink.userData.running !== want;
+  sink.userData.running = want;
+  if (sink.userData.stream) sink.userData.stream.visible = want;
+  if (sink.userData.splash) sink.userData.splash.visible = want;
+  if (changed) {
+    if (want) {
+      audio.sinkStart();
+      audio.splash();
+    } else if (!sinks.some((s) => s.userData.running)) {
+      audio.sinkStop();
+    }
   }
+  if (!fromNet && changed && sink.userData.kid) publishWorldBit(sink.userData.kid, want);
 }
 
 function buildBathrooms() {
@@ -3105,11 +3159,18 @@ function buildBathrooms() {
 }
 
 function toggleSwing(door) {
+  setSwingDoor(door, !door?.userData?.open);
+}
+
+function setSwingDoor(door, open, silent, fromNet) {
   if (!door) return;
-  door.userData.open = !door.userData.open;
+  const next = !!open;
+  const changed = !!door.userData.open !== next;
+  door.userData.open = next;
   const dir = door.userData.swingDir || 1;
-  door.userData.want = door.userData.open ? -1.85 * dir : 0;
-  audio.doorThump();
+  door.userData.want = next ? -1.85 * dir : 0;
+  if (!silent && changed) audio.doorThump();
+  if (!fromNet && !silent && changed && door.userData.sid) publishWorldBit(door.userData.sid, next);
 }
 
 function tickBathrooms(dt) {
@@ -3278,6 +3339,32 @@ function toast(msg) {
   toastT = 2.6;
 }
 
+function takeHit(nx, nz, by) {
+  const len = Math.hypot(nx || 0, nz || 0) || 1;
+  const kx = (nx / len) * 1.28;
+  const kz = (nz / len) * 1.28;
+  stunT = Math.max(stunT, 0.55);
+  hurtFlash = 1;
+  audio.hit();
+  toast(by ? `${by} punched you` : "you got punched");
+  if (sitting) standUp();
+  if (inCar) {
+    inCar.speed *= 0.32;
+    inCar.drift += (Math.random() - 0.5) * 0.35;
+  } else {
+    const [px, pz] = collide(camera.position.x + kx, camera.position.z + kz, 0.28);
+    camera.position.x = px;
+    camera.position.z = pz;
+    bodyPos.set(px, camera.position.y, pz);
+  }
+  if (localPeer) {
+    localPeer.hurtT = 0.55;
+    localPeer.stunT = 0.42;
+    localPeer.kvx = (localPeer.kvx || 0) + kx * 3.1;
+    localPeer.kvz = (localPeer.kvz || 0) + kz * 3.1;
+  }
+}
+
 function flash(text, kind = "win") {
   const el = $("winPop");
   if (!el) return;
@@ -3441,6 +3528,10 @@ function hud() {
 
 function promptFrom(obj) {
   if (inCar) {
+    if (!driving()) {
+      if (wanted) return "riding along · E get out · lose the cops";
+      return "riding along · mouse look · E get out · F/G drink · 1/2/3 camera";
+    }
     if (wanted) return "WASD drive · mouse orbit · SHIFT drift · E get out · lose the cops";
     return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   }
@@ -3469,7 +3560,7 @@ function promptFrom(obj) {
     if (car) {
       if (standY > 1.2) return "on the roof · SPACE off · E get in";
       if (standY > 0.45) return "on the hood · SPACE onto the roof · E get in";
-      return "E get in · SPACE onto the hood or trunk";
+      return carRideHint(car);
     }
     if (held && held.userData.kind === "glass") {
       return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  hold it in a stream  ·  Q set down";
@@ -3505,8 +3596,8 @@ function promptFrom(obj) {
   if (k === "bathSink") return obj.userData.sink?.userData.running ? "E turn the sink off" : "E turn the sink on";
   if (k === "juke") return audio.juke ? "E silence the juke" : "E fire up the juke";
   if (k === "door") return frontDoorOpen ? "E close the front door" : "E open the front door";
-  if (k === "copcar") return "E steal the cop car · SPACE onto the hood · click punch";
-  if (k === "car") return inCar ? "E get out · SHIFT drift" : "E get in · SPACE onto the hood or trunk";
+  if (k === "copcar") return carOccupants(obj.userData.car).has(0) ? "E hop in · SPACE onto the hood · click punch" : "E steal the cop car · SPACE onto the hood · click punch";
+  if (k === "car") return inCar ? (driving() ? "E get out · SHIFT drift" : "E get out") : carRideHint(obj.userData.car);
   if (k === "stool") return sitting ? "E or WASD stand up" : "E sit at the bar";
   const gamePrompt = houseGames?.prompt(look) || "";
   if (gamePrompt) return gamePrompt;
@@ -4000,7 +4091,9 @@ function startShift() {
       toast(`${by} restocked the bar`);
     },
   });
-  setLocalHitHandler(() => audio.hit());
+  setLocalHitHandler((nx, nz, by) => {
+    takeHit(nx, nz, by);
+  });
   setPeeCupHooks(glassCatchVolumes, catchPeeInCup);
   setPoseSources(
     () => held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : ""),
@@ -4010,19 +4103,50 @@ function startShift() {
       x: bodyPos.x,
       y: sitting ? sitHeight() : bodyPos.y,
       z: bodyPos.z,
-      yaw: (viewMode === 2 ? view2Yaw : savedYaw) + Math.PI,
+      yaw: (inCar ? inCar.yaw : viewMode === 2 ? view2Yaw : savedYaw) + Math.PI,
       pit: viewMode === 2 ? view2Pitch : savedPitch,
       s: sitting ? 1 : 0,
       u: peeing ? 1 : 0,
       g: localGender,
       gf: glassState.fill,
       gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
+      k: punchT > 0.02 ? 1 : 0,
+      ...(inCar
+        ? {
+            v: 1,
+            ci: inCar.nid,
+            si: carSeatI,
+            ...(carSeatI === 0
+              ? {
+                  cx: inCar.x,
+                  cz: inCar.z,
+                  cy: inCar.yaw,
+                  cs: inCar.speed,
+                  cf: inCar.drift || 0,
+                }
+              : {}),
+            cp: inCar.cop ? 1 : 0,
+          }
+        : {}),
+      w: wanted ? 1 : 0,
       ...(peeing && peeTargetOf()
         ? { ax: peeTargetOf().x, ay: peeTargetOf().y, az: peeTargetOf().z }
         : {}),
     })
   );
-  setGameHandler((msg) => houseGames?.onNet(msg));
+  setGameHandler((msg) => {
+    if (msg?.t === "cops") {
+      applyRemoteCops(msg);
+      return;
+    }
+    if (msg?.t === "world") {
+      applyWorld(msg);
+      return;
+    }
+    houseGames?.onNet(msg);
+  });
+  setCarHandler(applyRemoteCar);
+  setCopHandler(applyRemoteCops);
   ensureLocalAvatar();
   bindLocalHands();
   $("title").classList.add("hidden");
@@ -4073,7 +4197,7 @@ function useLook() {
   } else if (k === "bathSink") {
     toggleBathSink(look.userData.sink || look);
   } else if (k === "juke") {
-    audio.toggleJuke();
+    setJuke(!audio.juke);
   } else if (k === "door") {
     setFrontDoor(frontDoorOpen ? false : true);
   } else if (k === "car") enterCar(look.userData.car);
@@ -4242,11 +4366,61 @@ function applyDrunkLook() {
   }
 }
 
-function setFrontDoor(open, silent) {
-  frontDoorOpen = open ? true : false;
+function setJuke(on, fromNet) {
+  const want = !!on;
+  if (!!audio.juke === want) return;
+  audio.toggleJuke();
+  if (!fromNet) publishWorldBit("juke", want);
+}
+
+function worldBits() {
+  const o = { front: frontDoorOpen ? 1 : 0, juke: audio.juke ? 1 : 0 };
+  for (const door of swingDoors) {
+    if (door.userData.sid) o[door.userData.sid] = door.userData.open ? 1 : 0;
+  }
+  for (const sink of sinks) {
+    if (sink.userData.kid) o[sink.userData.kid] = sink.userData.running ? 1 : 0;
+  }
+  return o;
+}
+
+function publishWorldBit(id, on) {
+  if (!id) return;
+  publishEvent({ t: "world", i: String(id), o: on ? 1 : 0 });
+}
+
+function publishWorldSync() {
+  publishEvent({ t: "world", a: "sync", o: worldBits() });
+}
+
+function applyWorldBit(id, on, fromNet) {
+  if (id === "front") setFrontDoor(!!on, false, true);
+  else if (id === "juke") setJuke(!!on, true);
+  else if (String(id).startsWith("s")) {
+    const door = swingDoors.find((d) => d.userData.sid === id);
+    if (door) setSwingDoor(door, !!on, false, true);
+  } else if (String(id).startsWith("k")) {
+    const sink = sinks.find((s) => s.userData.kid === id);
+    if (sink) setBathSink(sink, !!on, true);
+  }
+}
+
+function applyWorld(msg) {
+  if (!msg) return;
+  if (msg.a === "sync" && msg.o && typeof msg.o === "object") {
+    for (const [id, val] of Object.entries(msg.o)) applyWorldBit(id, val, true);
+    return;
+  }
+  if (msg.i != null) applyWorldBit(msg.i, msg.o, true);
+}
+
+function setFrontDoor(open, silent, fromNet) {
+  const next = !!open;
+  const changed = frontDoorOpen !== next;
+  frontDoorOpen = next;
   frontDoorWant = frontDoorOpen ? -1.9 : 0;
-  if (silent) return;
-  audio.doorThump();
+  if (!silent && changed) audio.doorThump();
+  if (!fromNet && !silent && changed) publishWorldBit("front", next);
 }
 
 function tickFrontDoor(dt) {
@@ -4257,16 +4431,81 @@ function tickFrontDoor(dt) {
   frontDoor.rotation.y = frontDoorAng;
 }
 
-function carSeat(car) {
+const CAR_SEATS = [
+  { side: -0.46, along: 0.16 },
+  { side: 0.46, along: 0.16 },
+  { side: -0.46, along: -0.86 },
+  { side: 0.46, along: -0.86 },
+];
+
+function driving() {
+  return !!(inCar && carSeatI === 0);
+}
+
+function seatDoorSide(i) {
+  return i === 1 || i === 3 ? 1 : -1;
+}
+
+function carSeat(car, i = 0) {
   const fx = -Math.sin(car.yaw);
   const fz = -Math.cos(car.yaw);
   const lx = Math.cos(car.yaw);
   const lz = -Math.sin(car.yaw);
+  const spec = CAR_SEATS[i] || CAR_SEATS[0];
   return {
-    x: car.x - lx * 0.46 + fx * 0.16,
+    x: car.x + lx * spec.side + fx * spec.along,
     y: 1.18,
-    z: car.z - lz * 0.46 + fz * 0.16,
+    z: car.z + lz * spec.side + fz * spec.along,
   };
+}
+
+function carOccupants(car) {
+  const taken = new Set();
+  if (!car) return taken;
+  if (inCar === car && carSeatI >= 0) taken.add(carSeatI);
+  const nid = String(car.nid || "");
+  if (!nid) return taken;
+  for (const peer of remotePeers()) {
+    if (!peer.drive) continue;
+    if (String(peer.ci || "") !== nid) continue;
+    taken.add(peer.si == null ? 0 : peer.si | 0);
+  }
+  return taken;
+}
+
+function pickCarSeat(car, px, pz) {
+  const taken = carOccupants(car);
+  if (!taken.has(0)) return 0;
+  const side = carDoorSide(car, px, pz);
+  const order = side < 0 ? [2, 1, 3] : [1, 3, 2];
+  for (const i of order) if (!taken.has(i)) return i;
+  return -1;
+}
+
+function carRideHint(car) {
+  if (!car) return "E get in · SPACE onto the hood or trunk";
+  const taken = carOccupants(car);
+  if (taken.size >= 4) return "car's full";
+  if (taken.has(0)) return "E hop in · SPACE onto the hood";
+  return "E get in · SPACE onto the hood or trunk";
+}
+
+function maybeTakeWheel() {
+  if (!inCar || carSeatI === 0) return;
+  const taken = carOccupants(inCar);
+  if (taken.has(0)) return;
+  for (const peer of remotePeers()) {
+    if (!peer.drive || String(peer.ci || "") !== String(inCar.nid)) continue;
+    const si = peer.si == null ? 0 : peer.si | 0;
+    if (si > 0 && si < carSeatI) return;
+  }
+  carSeatI = 0;
+  inCar.driverId = localId() || "me";
+  inCar.driverUntil = performance.now() + 8000;
+  audio.engineStart();
+  if (inCar.cop) hijackCopCar(inCar);
+  toast("you're driving");
+  pokePose();
 }
 
 function togglePee() {
@@ -4302,13 +4541,28 @@ function togglePee() {
 
 function enterCar(car) {
   if (car == null || inCar) return;
+  const seat = pickCarSeat(car, bodyPos.x, bodyPos.z);
+  if (seat < 0) {
+    toast("car's full");
+    return;
+  }
   bindRideCar(null);
+  swingCarDoors(car, seatDoorSide(seat), seat > 1 ? 1 : 0);
   inCar = car;
-  car.speed = 0;
+  carSeatI = seat;
+  if (seat === 0) {
+    car.speed = 0;
+    car.vx = 0;
+    car.vz = 0;
+    car.driverId = localId() || "me";
+    car.driverUntil = performance.now() + 8000;
+    audio.engineStart();
+    if (car.cop) hijackCopCar(car);
+  }
   vy = 0;
   onGround = true;
   standY = 0;
-  const s = carSeat(car);
+  const s = carSeat(car, seat);
   camera.position.set(s.x, s.y, s.z);
   bodyPos.set(s.x, s.y, s.z);
   savedYaw = car.yaw;
@@ -4319,25 +4573,36 @@ function enterCar(car) {
   camera.rotation.y = savedYaw;
   camera.rotation.x = savedPitch;
   audio.doorThump();
-  audio.engineStart();
-  if (car.cop) hijackCopCar(car);
+  pokePose();
 }
 
 function exitCar(silent) {
   if (inCar == null) return;
   const car = inCar;
-  const side = 2.4;
-  const x = car.x - Math.cos(car.yaw) * side;
-  const z = car.z + Math.sin(car.yaw) * side;
+  const wasDriver = carSeatI === 0;
+  const side = seatDoorSide(carSeatI);
+  const lx = Math.cos(car.yaw);
+  const lz = -Math.sin(car.yaw);
+  const x = car.x + lx * side * 2.4;
+  const z = car.z + lz * side * 2.4;
   const [nx, nz] = collide(x, z, 0.3);
   camera.position.set(nx, eyeY(), nz);
   bodyPos.set(nx, eyeY(), nz);
+  swingCarDoors(car, side, carSeatI > 1 ? 1 : 0);
   inCar = null;
-  car.speed = 0;
-  car.drift = 0;
+  carSeatI = 0;
   standY = 0;
   bindRideCar(null);
-  audio.engineStop();
+  if (wasDriver) {
+    car.speed = 0;
+    car.drift = 0;
+    car.vx = 0;
+    car.vz = 0;
+    car.driverId = "";
+    audio.engineStop();
+    publishParkedCar(car);
+  }
+  pokePose();
   if (silent) return;
   audio.doorThump();
 }
@@ -4375,8 +4640,271 @@ function tryPads() {
 function syncCarMesh(car) {
   if (!car?.mesh) return;
   car.mesh.position.set(car.x, car.wreckY || 0, car.z);
+  car.mesh.rotation.order = "YXZ";
   car.mesh.rotation.y = car.yaw;
-  car.mesh.rotation.z = (car.wreckRoll || 0) - (car.drift || 0) * 0.12;
+  car.mesh.rotation.x = (car.wreckPitch || 0) + Math.abs(car.drift || 0) * 0.04;
+  car.mesh.rotation.z = (car.wreckRoll || 0) - (car.drift || 0) * 0.28;
+}
+
+function carDoorSide(car, px, pz) {
+  const lx = Math.cos(car.yaw);
+  const lz = -Math.sin(car.yaw);
+  return (px - car.x) * lx + (pz - car.z) * lz >= 0 ? 1 : -1;
+}
+
+function swingCarDoors(car, side, row = 0) {
+  if (!car) return;
+  car.doorSide = side < 0 ? -1 : 1;
+  car.doorRow = row ? 1 : 0;
+  car.doorAnim = 0;
+}
+
+function tickCarDoors(dt) {
+  for (const car of cars) {
+    if (car.doorAnim == null) continue;
+    car.doorAnim += dt;
+    const u = car.doorAnim;
+    let open = 0;
+    if (u < 0.26) open = u / 0.26;
+    else if (u < 0.52) open = 1;
+    else if (u < 0.92) open = 1 - (u - 0.52) / 0.4;
+    else {
+      open = 0;
+      car.doorAnim = null;
+    }
+    const ang = open * 1.18;
+    const front = car.doorRow !== 1;
+    if (car.doorL) car.doorL.rotation.y = car.doorSide < 0 && front ? ang : 0;
+    if (car.doorR) car.doorR.rotation.y = car.doorSide > 0 && front ? -ang : 0;
+    if (car.doorLB) car.doorLB.rotation.y = car.doorSide < 0 && !front ? ang : 0;
+    if (car.doorRB) car.doorRB.rotation.y = car.doorSide > 0 && !front ? -ang : 0;
+  }
+}
+
+function spawnDriftPuff(car) {
+  if (driftPuffs.length > 36) {
+    const old = driftPuffs.shift();
+    old.parent?.remove(old);
+  }
+  const fx = -Math.sin(car.yaw);
+  const fz = -Math.cos(car.yaw);
+  const rx = Math.cos(car.yaw);
+  const rz = -Math.sin(car.yaw);
+  for (const side of [-1, 1]) {
+    const m = new THREE.Mesh(smokeGeo, lambert(0xd4ccc0, { transparent: true, opacity: 0.3 }));
+    m.position.set(car.x - fx * 1.72 + rx * side * 0.92, 0.1, car.z - fz * 1.72 + rz * side * 0.92);
+    m.userData.life = 0.42 + Math.random() * 0.22;
+    m.userData.max = m.userData.life;
+    m.userData.vx = -fx * 0.35 + (Math.random() - 0.5) * 0.7;
+    m.userData.vy = 0.5 + Math.random() * 0.45;
+    m.userData.vz = -fz * 0.35 + (Math.random() - 0.5) * 0.7;
+    scene.add(m);
+    driftPuffs.push(m);
+  }
+}
+
+function tickDriftFx(dt) {
+  for (const car of cars) {
+    const slip = Math.abs(car.drift || 0);
+    const spd = Math.hypot(car.vx || 0, car.vz || 0) || Math.abs(car.speed || 0);
+    if (slip > 0.26 && spd > 4) {
+      car.smokeAcc = (car.smokeAcc || 0) + dt * (0.7 + slip * 2.4);
+      if (car.smokeAcc > 0.046) {
+        car.smokeAcc = 0;
+        spawnDriftPuff(car);
+        if (car === inCar && slip > 0.38) audio.screech();
+      }
+    }
+  }
+  for (let i = driftPuffs.length - 1; i >= 0; i--) {
+    const m = driftPuffs[i];
+    m.userData.life -= dt;
+    if (m.userData.life <= 0) {
+      m.parent?.remove(m);
+      driftPuffs.splice(i, 1);
+      continue;
+    }
+    m.position.x += m.userData.vx * dt;
+    m.position.y += m.userData.vy * dt;
+    m.position.z += m.userData.vz * dt;
+    const u = m.userData.life / m.userData.max;
+    m.scale.setScalar(0.65 + (1 - u) * 1.9);
+    if (m.material) m.material.opacity = 0.3 * u;
+  }
+}
+
+function netRound(n, p = 2) {
+  const m = 10 ** p;
+  return Math.round(Number(n) * m) / m;
+}
+
+function carTaken(car) {
+  if (!car || car === inCar) return false;
+  if (!car.driverId) return false;
+  return performance.now() < (car.driverUntil || 0);
+}
+
+function publishParkedCar(car) {
+  if (!car?.nid) return;
+  publishEvent({
+    t: "car",
+    a: "park",
+    ci: car.nid,
+    x: netRound(car.x),
+    z: netRound(car.z),
+    yaw: netRound(car.yaw, 3),
+  });
+}
+
+function carByNid(nid) {
+  const id = String(nid ?? "");
+  if (!id) return null;
+  return cars.find((c) => String(c.nid) === id) || null;
+}
+
+function applyRemoteCar(msg) {
+  if (!msg || msg.from === localId()) return;
+  const nid = msg.ci != null ? String(msg.ci) : "";
+  if (!nid) return;
+  let car = carByNid(nid);
+  const isCop = !!msg.cp || nid.startsWith("p");
+  if (!car) {
+    car = makeCar(msg.cx ?? msg.x ?? 0, msg.cz ?? msg.z ?? 0, msg.cy ?? msg.yaw ?? 0, isCop ? 0x12141c : 0x2a2a32);
+    car.nid = nid;
+    car.remoteSpawn = true;
+    if (isCop) dressCopCar(car);
+  } else if (isCop && !car.cop) {
+    dressCopCar(car);
+  }
+  if (msg.a === "board" || msg.a === "alight") {
+    swingCarDoors(car, seatDoorSide(msg.si), (msg.si | 0) > 1 ? 1 : 0);
+    return;
+  }
+  if (driving() && car === inCar) return;
+  const park = msg.a === "park";
+  const taken = carTaken(car);
+  const arriving = !park && !taken;
+  const leaving = park && taken;
+  if (msg.si == null || msg.si === 0) car.driverId = park ? "" : msg.from || car.driverId;
+  car.driverUntil = park ? 0 : performance.now() + 4500;
+  const tx = msg.cx ?? msg.x;
+  const tz = msg.cz ?? msg.z;
+  const tyaw = msg.cy ?? msg.yaw;
+  if (Number.isFinite(Number(tx))) car.tx = Number(tx);
+  if (Number.isFinite(Number(tz))) car.tz = Number(tz);
+  if (Number.isFinite(Number(tyaw))) car.tyaw = Number(tyaw);
+  if (msg.cs != null) car.speed = Number(msg.cs) || 0;
+  if (msg.cf != null) car.drift = Number(msg.cf) || 0;
+  if (park) {
+    if (car.tx != null) car.x = car.tx;
+    if (car.tz != null) car.z = car.tz;
+    if (car.tyaw != null) car.yaw = car.tyaw;
+    car.speed = 0;
+    car.drift = 0;
+    car.vx = 0;
+    car.vz = 0;
+    car.tx = null;
+    car.tz = null;
+    car.tyaw = null;
+    syncCarMesh(car);
+  }
+  if ((arriving || leaving) && (msg.si == null || msg.si === 0)) swingCarDoors(car, -1, 0);
+}
+
+function seatRemoteDrivers() {
+  for (const peer of remotePeers()) {
+    if (!peer.drive) {
+      if (peer._carRide) {
+        const left = carByNid(peer._carRide);
+        if (left) swingCarDoors(left, seatDoorSide(peer.si), (peer.si | 0) > 1 ? 1 : 0);
+        peer._carRide = "";
+      }
+      continue;
+    }
+    const si = peer.si == null ? 0 : peer.si | 0;
+    let car = carByNid(peer.ci);
+    if (!car && si === 0 && peer.cx != null && peer.cz != null) {
+      const isCop = !!peer.copCar || String(peer.ci || "").startsWith("p");
+      car = makeCar(peer.cx, peer.cz, peer.cy || 0, isCop ? 0x12141c : 0x2a2a32);
+      car.nid = String(peer.ci || `r${peer.id}`);
+      car.remoteSpawn = true;
+      if (isCop) dressCopCar(car);
+      peer.ci = car.nid;
+    }
+    if (!car) continue;
+    if (si === 0) {
+      car.driverId = peer.id;
+      car.driverUntil = performance.now() + 4000;
+      if (peer.cx != null) car.tx = peer.cx;
+      if (peer.cz != null) car.tz = peer.cz;
+      if (peer.cy != null) car.tyaw = peer.cy;
+    }
+    if (!peer._carRide) swingCarDoors(car, seatDoorSide(si), si > 1 ? 1 : 0);
+    peer._carRide = car.nid;
+    const s = carSeat(car, si);
+    peer.tx = s.x;
+    peer.tz = s.z;
+    if (peer.rig) {
+      peer.rig.position.set(s.x, 0.12, s.z);
+      peer.byaw = car.yaw + Math.PI;
+      peer.hyaw = peer.byaw;
+      peer.rig.rotation.y = peer.byaw;
+    }
+  }
+}
+
+function tickRemoteCars(dt) {
+  const now = performance.now();
+  for (const car of cars) {
+    if (driving() && car === inCar) continue;
+    if (car.tx == null || car.tz == null) {
+      if (car.driverUntil && now > car.driverUntil) car.driverId = "";
+      continue;
+    }
+    if (car.driverUntil && now > car.driverUntil + 1600) {
+      car.tx = null;
+      car.tz = null;
+      car.tyaw = null;
+      if (!car.remoteCop) car.driverId = "";
+      continue;
+    }
+    const dx = car.tx - car.x;
+    const dz = car.tz - car.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > 8) {
+      car.x = car.tx;
+      car.z = car.tz;
+    } else {
+      const k = Math.min(1, dt * 16);
+      car.x += dx * k;
+      car.z += dz * k;
+    }
+    if (car.tyaw != null) {
+      let d = (car.tyaw - car.yaw) % (Math.PI * 2);
+      if (d > Math.PI) d -= Math.PI * 2;
+      if (d < -Math.PI) d += Math.PI * 2;
+      car.yaw += d * Math.min(1, dt * 14);
+    }
+    syncCarMesh(car);
+  }
+}
+
+function applyRemoteCops(msg) {
+  if (!msg || msg.from === localId()) return;
+  if (msg.a === "clear" || !msg.p || !msg.p.length) {
+    for (const [key, pack] of [...remotePacks]) {
+      if (!msg.from || pack.from === msg.from) {
+        for (const off of pack.officers || []) off.rig?.parent?.remove(off.rig);
+        remotePacks.delete(key);
+      }
+    }
+    return;
+  }
+  // lightweight: just toast once so remotes know heat exists
+  if (!remotePacks.has(msg.from)) {
+    remotePacks.set(msg.from, { from: msg.from, officers: [] });
+    toast(`${msg.fromName || "someone"}'s cops`);
+  }
 }
 
 function resolveDrive(car, nx, nz) {
@@ -4545,7 +5073,7 @@ function clearPolice() {
     for (const off of pack.officers) {
       off.rig?.parent?.remove(off.rig);
     }
-    if (pack.car) {
+    if (pack.car && pack.car !== inCar) {
       const i = cars.indexOf(pack.car);
       if (i >= 0) cars.splice(i, 1);
       pack.car.mesh?.parent?.remove(pack.car.mesh);
@@ -4553,11 +5081,13 @@ function clearPolice() {
   }
   cops.length = 0;
   wanted = false;
+  wantedT = 0;
   copWave = 0;
   bindRideCar(null);
 }
 
 function addCopPack(x, z) {
+  if (!wanted) wantedT = 0;
   wanted = true;
   audio.sirenStart();
   copWave += 1;
@@ -4918,6 +5448,18 @@ function arrestPlayer() {
 
 function tickPolice(dt) {
   if (!cops.length) return;
+  if (wanted) {
+    wantedT += dt;
+    if (wantedT >= WANTED_GIVE_UP) {
+      toast("cops lost interest");
+      if (inCar?.sirenMats) {
+        inCar.sirenMats[0].emissiveIntensity = 0.12;
+        inCar.sirenMats[1].emissiveIntensity = 0.12;
+      }
+      clearPolice();
+      return;
+    }
+  }
   audio.sirenTick(dt);
   const blink = tWorld * 6 % 2 < 1;
   const px = bodyPos.x;
@@ -4948,7 +5490,7 @@ function tickPolice(dt) {
         car.z = resolved.z;
       }
       const close = dist < 6.2;
-      if ((pack.driveT >= 6 && close) || pack.driveT > 12) {
+      if ((pack.driveT >= COP_ARRIVE_MIN && close) || pack.driveT > COP_ARRIVE_MAX) {
         pack.arrived = true;
         car.speed = 0;
       }
@@ -5049,30 +5591,64 @@ function tickPolice(dt) {
 function updateCar(dt) {
   const car = inCar;
   if (!car) return;
+  if (car.vx == null) car.vx = 0;
+  if (car.vz == null) car.vz = 0;
   if (car.drift == null) car.drift = 0;
   const drunk = drunkLevel();
   const throttle = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
   const steer = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
-  const shifting = !!(keys.ShiftLeft || keys.ShiftRight);
-  const maxV = 17 * (1 - Math.min(0.6, drunk * 0.48));
-  const target = throttle * maxV;
-  car.speed += (target - car.speed) * Math.min(1, dt * (throttle ? 1.8 : 3.2));
-  const wobble = (Math.random() - 0.5) * drunk * 1.6 + Math.sin(tWorld * (1.4 + drunk)) * drunk * 0.9;
-  const spd = Math.abs(car.speed);
-  const wantDrift = shifting && spd > 2.4 ? steer : 0;
-  car.drift += (wantDrift - car.drift) * Math.min(1, dt * (wantDrift ? 5.6 : 3.8));
-  if (Math.abs(car.drift) < 0.012) car.drift = 0;
-  const grip = Math.min(1, 0.25 + spd * 0.1) * (shifting ? 0.4 : 1);
-  const yawMul = 1.35 + Math.abs(car.drift) * 1.7;
-  car.yaw -= (steer + wobble * 0.35 + car.drift * 0.62) * dt * yawMul * Math.max(0.16, grip) * Math.sign(car.speed || throttle || 1);
-  if (shifting && spd > 2.4) car.speed *= 1 - dt * 0.16;
-  const fx = -Math.sin(car.yaw);
-  const fz = -Math.cos(car.yaw);
-  const rx = Math.cos(car.yaw);
-  const rz = -Math.sin(car.yaw);
-  const slip = car.drift * Math.min(11.8, 2.6 + spd * 0.74);
-  const nx = car.x + fx * car.speed * dt + rx * slip * dt;
-  const nz = car.z + fz * car.speed * dt + rz * slip * dt;
+  const hb = !!(keys.ShiftLeft || keys.ShiftRight);
+  const maxV = 18 * (1 - Math.min(0.55, drunk * 0.45));
+  let vx = car.vx;
+  let vz = car.vz;
+  let fx = -Math.sin(car.yaw);
+  let fz = -Math.cos(car.yaw);
+  let rx = Math.cos(car.yaw);
+  let rz = -Math.sin(car.yaw);
+  const power = (hb ? 16 : 24) * (1 - Math.min(0.32, drunk * 0.28));
+  if (throttle) {
+    vx += fx * throttle * power * dt;
+    vz += fz * throttle * power * dt;
+  }
+  const linDrag = hb ? 1.55 : throttle ? 0.2 : 1.08;
+  vx *= Math.max(0, 1 - linDrag * dt);
+  vz *= Math.max(0, 1 - linDrag * dt);
+  let spd = Math.hypot(vx, vz);
+  let fwd = vx * fx + vz * fz;
+  let lat = vx * rx + vz * rz;
+  const slipAng = Math.atan2(lat, Math.max(1.05, Math.abs(fwd)));
+  const sliding = (hb && spd > 2.5) || (Math.abs(slipAng) > 0.2 && spd > 5.2);
+  const steerFeel = Math.min(1.6, spd / 7.1) * (sliding ? 2.2 : 1.22);
+  const wobble = (Math.random() - 0.5) * drunk * 0.85 + Math.sin(tWorld * (1.3 + drunk)) * drunk * 0.32;
+  const moveSign = Math.sign(fwd || throttle || 1);
+  car.yaw -= (steer * steerFeel + wobble + slipAng * (sliding ? 1.4 : 0.26)) * dt * moveSign;
+  fx = -Math.sin(car.yaw);
+  fz = -Math.cos(car.yaw);
+  rx = Math.cos(car.yaw);
+  rz = -Math.sin(car.yaw);
+  fwd = vx * fx + vz * fz;
+  lat = vx * rx + vz * rz;
+  if (hb && steer && spd > 3) lat += steer * moveSign * Math.min(8.5, spd * 0.5) * dt * 9;
+  const grip = (sliding ? 1.25 + drunk * 0.22 : 8.6) * (1 - Math.min(0.25, drunk * 0.2));
+  lat *= Math.exp(-grip * dt);
+  vx = fx * fwd + rx * lat;
+  vz = fz * fwd + rz * lat;
+  spd = Math.hypot(vx, vz);
+  if (spd > maxV) {
+    vx *= maxV / spd;
+    vz *= maxV / spd;
+    spd = maxV;
+    fwd = vx * fx + vz * fz;
+    lat = vx * rx + vz * rz;
+  }
+  car.vx = vx;
+  car.vz = vz;
+  car.speed = fwd;
+  const slipAmt = spd > 0.45 ? lat / Math.max(2.3, spd) : 0;
+  car.drift += (Math.max(-1.35, Math.min(1.35, slipAmt)) - car.drift) * Math.min(1, dt * 10);
+  if (Math.abs(car.drift) < 0.01) car.drift = 0;
+  const nx = car.x + vx * dt;
+  const nz = car.z + vz * dt;
   const hit = resolveDrive(car, nx, nz);
   const bump = Math.hypot(hit.x - nx, hit.z - nz);
   if (hit.hitKind && bump > 0.012) {
@@ -5082,29 +5658,38 @@ function updateCar(dt) {
       car.z = hit.z;
       car.speed = 0;
       car.drift = 0;
+      car.vx = 0;
+      car.vz = 0;
       syncCarMesh(car);
       runOverCops(car, spd);
       beginCrash(spd, hit.hitCar);
       return;
     }
+    const inv = Math.max(dt, 0.0001);
+    car.vx = ((hit.x - car.x) / inv) * 0.4;
+    car.vz = ((hit.z - car.z) / inv) * 0.4;
     car.speed *= -0.18;
-    car.drift *= 0.35;
+    car.drift *= 0.4;
     if (hit.hitCar && spd > 2.4) shoveCar(hit.hitCar, car, spd);
   }
   car.x = hit.x;
   car.z = hit.z;
   syncCarMesh(car);
-  if (runOverCops(car, spd)) car.speed *= 0.84;
-  const s = carSeat(car);
+  if (runOverCops(car, spd)) {
+    car.speed *= 0.84;
+    car.vx *= 0.84;
+    car.vz *= 0.84;
+  }
+  const s = carSeat(car, 0);
   camera.position.set(s.x, s.y + spd * 0.008, s.z);
   bodyPos.set(s.x, s.y, s.z);
   audio.engineTick(car.speed);
-  applyDrunkCam(dt, Math.min(0.16, spd * 0.004 + Math.abs(car.drift) * 0.05));
+  applyDrunkCam(dt, Math.min(0.22, spd * 0.004 + Math.abs(car.drift) * 0.09));
 }
 
 function stashLook() {
   if (inCar) {
-    const s = carSeat(inCar);
+    const s = carSeat(inCar, carSeatI);
     bodyPos.set(s.x, s.y, s.z);
     view2Yaw = savedYaw;
     view2Pitch = savedPitch;
@@ -5253,7 +5838,7 @@ function applyView() {
     if (u.held) u.held.visible = showBody && Boolean(localPeer.held) && !cupOn;
     if (u.cup) u.cup.visible = showBody && cupOn;
     if (inCar) {
-      const s = carSeat(inCar);
+      const s = carSeat(inCar, carSeatI);
       localPeer.rig.position.set(s.x, 0.12, s.z);
       localPeer.byaw = inCar.yaw + Math.PI;
       localPeer.rig.rotation.y = localPeer.byaw;
@@ -5261,7 +5846,7 @@ function applyView() {
   }
   if (viewMode === 1) {
     if (inCar) {
-      const s = carSeat(inCar);
+      const s = carSeat(inCar, carSeatI);
       camera.position.set(s.x, s.y, s.z);
     }
     camera.rotation.y = yaw;
@@ -5286,7 +5871,15 @@ function updateLocalAvatar(dt) {
 function updatePlayer(dt) {
   if (inCar) {
     bindRideCar(null);
-    updateCar(dt);
+    maybeTakeWheel();
+    if (carSeatI === 0) updateCar(dt);
+    else {
+      const s = carSeat(inCar, carSeatI);
+      const spd = Math.hypot(inCar.vx || 0, inCar.vz || 0) || Math.abs(inCar.speed || 0);
+      camera.position.set(s.x, s.y + spd * 0.008, s.z);
+      bodyPos.set(s.x, s.y, s.z);
+      applyDrunkCam(dt, Math.min(0.16, spd * 0.004 + Math.abs(inCar.drift || 0) * 0.05));
+    }
     return;
   }
   stickToRideCar();
@@ -5486,12 +6079,15 @@ function tick() {
   if (jukeLight) jukeLight.color.setHSL((tWorld * 0.12) % 1, 0.85, 0.55);
   tickFrontDoor(dt);
   tickBathrooms(dt);
+  tickCarDoors(dt);
+  tickDriftFx(dt);
   restoreBodyPos();
   look = null;
   if (playing()) {
     const p = pick();
     look = p ? p.root : null;
     updatePlayer(dt);
+    tickRemoteCars(dt);
     tickPolice(dt);
     if (!inCar) updatePour(dt);
     stashLook();
@@ -5517,6 +6113,12 @@ function tick() {
   } catch (err) {
     console.warn("mp", err);
   }
+  const peerN = remotePeers().length;
+  if (peerN !== lastPeerN) {
+    lastPeerN = peerN;
+    if (peerN && playing()) publishWorldSync();
+  }
+  seatRemoteDrivers();
   applyView();
   applyDrunkLook();
   if (localPeer) updateLocalAvatar(dt);

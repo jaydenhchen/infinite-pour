@@ -3,9 +3,11 @@
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const BROKERS = [
+const PRIMARY = [
   "wss://broker.emqx.io:8084/mqtt",
   "wss://broker.hivemq.com:8884/mqtt",
+];
+const FALLBACK = [
   "wss://test.mosquitto.org:8081/mqtt",
   "wss://mqtt.eclipseprojects.io:443/mqtt",
 ];
@@ -34,10 +36,11 @@ export function defaultName() {
 
 export function siteKey() {
   const loc = globalThis.location || { host: "local", pathname: "/" };
+  const host = String(loc.host || "local").replace(/^127\.0\.0\.1/, "localhost");
   const path = (loc.pathname || "/")
     .replace(/\/index\.html?$/i, "")
     .replace(/\/+$/, "") || "/";
-  return slug(`${loc.host}${path}`);
+  return slug(`${host}${path}`);
 }
 
 function u16(n) {
@@ -106,9 +109,21 @@ function readStr(buf, i) {
 }
 
 export function makeClientId() {
+  try {
+    const saved = sessionStorage.getItem("infinite-pour-id");
+    if (saved && /^[a-f0-9]{12}$/.test(saved)) return saved;
+  } catch {
+    /* ignore */
+  }
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
-  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const id = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  try {
+    sessionStorage.setItem("infinite-pour-id", id);
+  } catch {
+    /* ignore */
+  }
+  return id;
 }
 
 export function connectNet(opts) {
@@ -120,13 +135,18 @@ export function connectNet(opts) {
   const stTopic = `${root}/st/${id}`;
   const evTopic = `${root}/ev`;
   const stFilter = `${root}/st/+`;
+  const willMsg = JSON.stringify({ gone: 1 });
 
   let alive = true;
   let wasOnline = false;
   let lastState = "";
   let packetId = 1;
+  let evSeq = 0;
   let pingTimer = 0;
+  let fallbackTimer = 0;
   const sockets = [];
+  const seenEv = [];
+  const seenSet = new Set();
 
   function anyReady() {
     return sockets.some((s) => s.ready && s.ws && s.ws.readyState === 1);
@@ -150,15 +170,68 @@ export function connectNet(opts) {
     }
   }
 
-  function publishOn(s, topic, payloadStr, retain) {
-    if (!s.ready || !s.ws || s.ws.readyState !== 1) return;
+  function rememberEv(k) {
+    if (seenSet.has(k)) return true;
+    seenSet.add(k);
+    seenEv.push(k);
+    if (seenEv.length > 280) {
+      const old = seenEv.shift();
+      seenSet.delete(old);
+    }
+    return false;
+  }
+
+  function publishOn(s, topic, payloadStr, retain, qos) {
+    if (!s.ready || !s.ws || s.ws.readyState !== 1) return false;
     const body = enc.encode(payloadStr);
-    const payload = concat([mqttStr(topic), body]);
     try {
-      s.ws.send(packet(retain ? 0x31 : 0x30, payload));
+      if (qos === 1) {
+        const pid = packetId++ & 0xffff || 1;
+        s.ws.send(packet(retain ? 0x33 : 0x32, concat([mqttStr(topic), u16(pid), body])));
+      } else {
+        s.ws.send(packet(retain ? 0x31 : 0x30, concat([mqttStr(topic), body])));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function publishAll(topic, payloadStr, retain, qos) {
+    let n = 0;
+    for (const s of sockets) if (publishOn(s, topic, payloadStr, retain, qos)) n += 1;
+    return n;
+  }
+
+  function startPing() {
+    if (pingTimer) return;
+    pingTimer = setInterval(() => {
+      if (!alive) return;
+      for (const s of sockets) {
+        if (s.ready && s.ws && s.ws.readyState === 1) {
+          try {
+            s.ws.send(packet(0xc0, new Uint8Array(0)));
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }, 10000);
+  }
+
+  function disconnectClean(s) {
+    try {
+      if (s.ws && s.ws.readyState === 1) s.ws.send(packet(0xe0, new Uint8Array(0)));
     } catch {
       /* ignore */
     }
+    try {
+      s.ws?.close();
+    } catch {
+      /* ignore */
+    }
+    s.ready = false;
+    s.ws = null;
   }
 
   const api = {
@@ -169,20 +242,23 @@ export function connectNet(opts) {
     ready: () => anyReady(),
     sendState(obj) {
       lastState = JSON.stringify(obj);
-      for (const s of sockets) publishOn(s, stTopic, lastState, true);
+      publishAll(stTopic, lastState, true, 0);
     },
     sendEvent(obj) {
-      const payload = JSON.stringify({ ...obj, from: id });
-      for (const s of sockets) publishOn(s, evTopic, payload, false);
+      const payload = JSON.stringify({ ...obj, from: id, eid: `${id}-${++evSeq}` });
+      publishAll(evTopic, payload, false, 0);
     },
     leave() {
       alive = false;
       clearInterval(pingTimer);
+      pingTimer = 0;
+      clearTimeout(fallbackTimer);
+      lastState = "";
       for (const s of sockets) {
         clearTimeout(s.retryTimer);
         try {
           if (s.ws && s.ws.readyState === 1) {
-            publishOn(s, stTopic, "", true);
+            publishOn(s, stTopic, JSON.stringify({ gone: 1, t: Date.now() }), true, 0);
             s.ws.send(packet(0xe0, new Uint8Array(0)));
           }
         } catch {
@@ -199,13 +275,34 @@ export function connectNet(opts) {
       wasOnline = false;
       opts.onStatus?.("offline");
     },
+    reconnect() {
+      if (anyReady()) return;
+      alive = true;
+      wasOnline = false;
+      opts.onStatus?.("connecting");
+      startPing();
+      for (const s of sockets) {
+        clearTimeout(s.retryTimer);
+        s.fails = 0;
+        s.protoTry = 0;
+        if (s.ws && s.ws.readyState === 1) continue;
+        s.ready = false;
+        try {
+          s.ws?.close();
+        } catch {
+          /* ignore */
+        }
+        s.ws = null;
+        openSock(s);
+      }
+    },
   };
 
   function handle(s, bufAll) {
     s.buf = concat([s.buf, bufAll]);
     if (s.buf.length > 1_000_000) s.buf = new Uint8Array(0);
     let guard = 0;
-    while (s.buf.length >= 2 && guard++ < 64) {
+    while (s.buf.length >= 2 && guard++ < 400) {
       let rem;
       try {
         rem = readRem(s.buf, 1);
@@ -241,11 +338,7 @@ export function connectNet(opts) {
       const code = body.length > 1 ? body[1] : 1;
       if (code !== 0) {
         s.ready = false;
-        try {
-          s.ws?.close();
-        } catch {
-          /* ignore */
-        }
+        disconnectClean(s);
         return;
       }
       const pid = packetId++ & 0xffff || 1;
@@ -265,7 +358,8 @@ export function connectNet(opts) {
     }
     if (type === 9) {
       s.ready = true;
-      if (lastState) publishOn(s, stTopic, lastState, true);
+      s.fails = 0;
+      if (lastState) publishOn(s, stTopic, lastState, true, 0);
       setStatus();
       return;
     }
@@ -273,9 +367,20 @@ export function connectNet(opts) {
       const qos = (header >> 1) & 3;
       const topic = readStr(body, 0);
       let i = topic.i;
-      if (qos > 0) i += 2;
+      let pid = 0;
+      if (qos > 0) {
+        pid = (body[i] << 8) | body[i + 1];
+        i += 2;
+      }
       const payload = dec.decode(body.subarray(i));
       onPublish(topic.s, payload);
+      if (qos === 1 && pid && s.ws && s.ws.readyState === 1) {
+        try {
+          s.ws.send(packet(0x40, u16(pid)));
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -284,7 +389,8 @@ export function connectNet(opts) {
       if (!payload) return;
       try {
         const msg = JSON.parse(payload);
-        if (msg.from === id) return;
+        if (!msg || msg.from === id) return;
+        if (msg.eid != null && rememberEv(`${msg.from}:${msg.eid}`)) return;
         opts.onEvent?.(msg);
       } catch {
         /* ignore */
@@ -295,14 +401,12 @@ export function connectNet(opts) {
     if (!topic.startsWith(prefix)) return;
     const peerId = topic.slice(prefix.length);
     if (!peerId || peerId === id) return;
-    if (!payload) {
-      opts.onPeerLeave?.(peerId);
-      return;
-    }
+    if (!payload) return;
     try {
       const state = JSON.parse(payload);
+      if (!state || typeof state !== "object") return;
       if (state.gone) {
-        opts.onPeerLeave?.(peerId);
+        opts.onPeerLeave?.(peerId, "gone", state);
         return;
       }
       opts.onPeer?.(peerId, state);
@@ -312,7 +416,7 @@ export function connectNet(opts) {
   }
 
   function openSock(s) {
-    if (!alive) return;
+    if (!alive || s.ws) return;
     s.ready = false;
     const useProto = s.protoTry === 0;
     let sock;
@@ -332,14 +436,15 @@ export function connectNet(opts) {
           /* ignore */
         }
       }
-    }, 6000);
+    }, 8000);
     sock.onopen = () => {
       clearTimeout(timeout);
       s.buf = new Uint8Array(0);
       const flags = 0x26;
-      const keep = 45;
+      const keep = 30;
+      const mqttId = `ip${id}${s.tag}`;
       const vh = concat([mqttStr("MQTT"), Uint8Array.of(4, flags, keep >> 8, keep & 255)]);
-      const pl = concat([mqttStr(`ip${id}`), mqttStr(stTopic), mqttStr("")]);
+      const pl = concat([mqttStr(mqttId.slice(0, 23)), mqttStr(stTopic), mqttStr(willMsg)]);
       try {
         sock.send(packet(0x10, concat([vh, pl])));
       } catch {
@@ -354,10 +459,9 @@ export function connectNet(opts) {
     sock.onerror = () => {};
     sock.onclose = () => {
       clearTimeout(timeout);
-      if (s.ws === sock) {
-        s.ready = false;
-        s.ws = null;
-      }
+      if (s.ws !== sock) return;
+      s.ready = false;
+      s.ws = null;
       setStatus();
       if (!alive) return;
       failOver(s);
@@ -368,13 +472,16 @@ export function connectNet(opts) {
     s.protoTry = (s.protoTry + 1) % 2;
     s.fails += 1;
     clearTimeout(s.retryTimer);
-    s.retryTimer = setTimeout(() => openSock(s), 700 + Math.min(5000, s.fails * 350));
+    const wait = 500 + Math.min(6000, s.fails * 400);
+    s.retryTimer = setTimeout(() => openSock(s), wait);
+    if (!anyReady()) startFallbacks();
   }
 
-  opts.onStatus?.("connecting");
-  for (let i = 0; i < BROKERS.length; i++) {
+  function addBroker(url, i) {
+    if (sockets.some((s) => s.url === url)) return;
     const s = {
-      url: BROKERS[i],
+      url,
+      tag: (i + 10).toString(36),
       protoTry: 0,
       ready: false,
       ws: null,
@@ -383,22 +490,33 @@ export function connectNet(opts) {
       fails: 0,
     };
     sockets.push(s);
-    setTimeout(() => openSock(s), i * 160);
+    openSock(s);
   }
 
-  pingTimer = setInterval(() => {
-    for (const s of sockets) {
-      if (s.ready && s.ws && s.ws.readyState === 1) {
-        try {
-          s.ws.send(packet(0xc0, new Uint8Array(0)));
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }, 12000);
+  function startFallbacks() {
+    if (!alive) return;
+    FALLBACK.forEach((url, i) => addBroker(url, i + 2));
+  }
 
-  window.addEventListener("pagehide", () => api.leave());
-  window.addEventListener("beforeunload", () => api.leave());
+  opts.onStatus?.("connecting");
+  PRIMARY.forEach((url, i) => {
+    const s = {
+      url,
+      tag: (i + 10).toString(36),
+      protoTry: 0,
+      ready: false,
+      ws: null,
+      buf: new Uint8Array(0),
+      retryTimer: 0,
+      fails: 0,
+    };
+    sockets.push(s);
+    setTimeout(() => openSock(s), i * 80);
+  });
+  fallbackTimer = setTimeout(() => {
+    if (alive && !anyReady()) startFallbacks();
+  }, 3200);
+
+  startPing();
   return api;
 }
