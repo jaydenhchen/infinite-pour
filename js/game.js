@@ -42,7 +42,7 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=120";
+} from "./multiplayer.js?v=121";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -1116,6 +1116,9 @@ let view2Pitch = 0;
 let peeing = false;
 let peeUntil = 0;
 let peeStart = 0;
+let pantsStart = 0;
+let viewPantDrop = 0;
+let viewPants = null;
 let punchT = 0;
 let knockVx = 0;
 let knockVz = 0;
@@ -1661,10 +1664,67 @@ function setRightGrip(on) {
   rightHand.userData.wrap.visible = !!on;
 }
 
+function makeViewPants() {
+  const g = new THREE.Group();
+  const mat = lambert(0x1d1d28);
+  const waist = addBox(g, unitBox, mat, 0, -0.5, -0.16, 0.4, 0.14, 0.2);
+  const left = addBox(g, unitBox, mat, -0.12, -0.86, -0.18, 0.18, 0.62, 0.16);
+  const right = addBox(g, unitBox, mat, 0.12, -0.86, -0.18, 0.18, 0.62, 0.16);
+  g.userData.waist = waist;
+  g.userData.left = left;
+  g.userData.right = right;
+  g.visible = false;
+  return g;
+}
+
+function poseViewPants(dt) {
+  if (!viewPants) return;
+  const want = onToilet() || peeing;
+  const rate = want ? 2.2 : 2.8;
+  if (want) viewPantDrop = Math.min(1, viewPantDrop + dt * rate);
+  else viewPantDrop = Math.max(0, viewPantDrop - dt * rate);
+  const first = viewMode === 1 && !inCar;
+  const drop = viewPantDrop;
+  viewPants.visible = first && drop > 0.01;
+  if (!viewPants.visible) return;
+  viewPants.position.set(0, -0.04 - drop * 0.7, 0.02 + drop * 0.08);
+  viewPants.userData.waist.visible = drop < 0.62;
+  viewPants.userData.waist.position.y = -0.5 - drop * 0.08;
+  const bunch = 1 - drop * 0.58;
+  viewPants.userData.left.scale.y = 0.62 * bunch;
+  viewPants.userData.right.scale.y = 0.62 * bunch;
+  viewPants.userData.left.position.y = -0.86 - drop * 0.22;
+  viewPants.userData.right.position.y = -0.86 - drop * 0.22;
+}
+
 function poseHands() {
   if (!rightHand || !leftHand) return;
   const bob = Math.sin(tWorld * 2.1) * 0.01;
   const walk = onGround && (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD) ? Math.sin(walkT) * 0.014 : 0;
+  if (onToilet()) {
+    const pull = THREE.MathUtils.clamp(viewPantDrop, 0, 1);
+    const reach = Math.min(1, pull / 0.55);
+    const hold = Math.max(0, (pull - 0.55) / 0.45);
+    const x = 0.15 - reach * 0.03;
+    const y = -0.22 - reach * 0.24 + hold * 0.1 + (peeing ? -0.04 : 0);
+    const z = -0.3 - reach * 0.1 + hold * 0.06;
+    rightHand.position.set(x, y + bob * 0.1, z);
+    rightHand.rotation.set(1.05 + reach * 0.35 - hold * 0.2, 0.12, 0.4 + reach * 0.16);
+    leftHand.position.set(-x, y + bob * 0.1, z);
+    leftHand.rotation.set(1.05 + reach * 0.35 - hold * 0.2, -0.12, -0.4 - reach * 0.16);
+    return;
+  }
+  if (!sitting && viewPantDrop > 0.05 && !peeing) {
+    const lift = viewPantDrop;
+    const x = 0.16;
+    const y = -0.44 + (1 - lift) * 0.2;
+    const z = -0.34;
+    rightHand.position.set(x, y + bob * 0.08, z);
+    rightHand.rotation.set(1.08, 0.1, 0.38);
+    leftHand.position.set(-x, y + bob * 0.08, z);
+    leftHand.rotation.set(1.08, -0.1, -0.38);
+    return;
+  }
   if (peeing) {
     const pull = THREE.MathUtils.clamp((tWorld - peeStart) / 0.55, 0, 1);
     const hold = THREE.MathUtils.clamp((tWorld - peeStart - 0.45) / 0.4, 0, 1);
@@ -1822,6 +1882,8 @@ function resetShift() {
   walkT = 0;
   peeing = false;
   peeUntil = 0;
+  pantsStart = 0;
+  viewPantDrop = 0;
   hud();
 }
 
@@ -3613,6 +3675,10 @@ function penaltyDrink(msg, oz = 1.1) {
   maybePassOut();
 }
 
+function onToilet() {
+  return sitting?.kind === "toilet";
+}
+
 function sitOn(spot) {
   if (!spot || inCar) return;
   sitting = {
@@ -3636,8 +3702,10 @@ function sitOn(spot) {
     view2Yaw = camYaw;
     camera.rotation.order = "YXZ";
     camera.rotation.y = camYaw;
+    pantsStart = tWorld;
   }
   audio.sit();
+  pokePose();
 }
 
 function standUp() {
@@ -3664,6 +3732,7 @@ function standUp() {
     audio.peeStop();
   }
   audio.stand();
+  pokePose();
 }
 
 function playing() {
@@ -3794,7 +3863,7 @@ function promptFrom(obj) {
   }
   if (sitting) {
     if (sitting.kind === "toilet") {
-      return "toilet. E stand · P pee";
+      return "toilet · pants down · E stand · P pee";
     }
     return houseGames?.prompt(obj) || "stool. WASD or E stand · F sip · G chug";
   }
@@ -3833,7 +3902,7 @@ function promptFrom(obj) {
     return "E grab cup  ·  4–9 glassware";
   }
   if (k === "tap") return `E tap  ${drink.name}`;
-  if (k === "toilet") return localGender === "f" ? "E sit · then P pee" : "E sit";
+  if (k === "toilet") return localGender === "f" ? "E sit · pants come off · then P pee" : "E sit · pants come off";
   if (k === "urinal") return localGender === "f" ? "girls sit on the toilet" : "P to pee";
   if (k === "restroomDoor") return lookDoorOpen(obj) ? "E close the restroom door" : "E open the restroom door";
   if (k === "stallDoor") return lookDoorOpen(obj) ? "E close the stall" : "E open the stall";
@@ -4367,6 +4436,7 @@ function startShift() {
       pit: viewMode === 2 ? view2Pitch : savedPitch,
       s: sitting ? 1 : 0,
       u: peeing ? 1 : 0,
+      n: onToilet() ? 1 : 0,
       g: localGender,
       gf: glassState.fill,
       gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
@@ -6144,6 +6214,7 @@ function applyView() {
     localPeer.gc = glassState.fill > 0.02 ? mixColor(glassState.parts) : 0;
     localPeer.pouring = pouring;
     localPeer.sit = Boolean(sitting);
+    localPeer.pants = onToilet();
     localPeer.pee = Boolean(peeing);
     localPeer.peeAim = peeing ? peeTargetOf() : null;
     localPeer.gender = localGender;
@@ -6475,6 +6546,7 @@ function tick() {
       if (el) el.className = "";
     }
   }
+  poseViewPants(dt);
   poseHands();
   try {
     tickMultiplayer(dt);
@@ -6785,6 +6857,8 @@ rightHand = makeHand(1);
 camera.add(rightHand);
 leftHand = makeHand(-1);
 camera.add(leftHand);
+viewPants = makeViewPants();
+camera.add(viewPants);
 poseHands();
 window.__BOOT = "world";
 try {
