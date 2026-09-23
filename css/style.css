@@ -334,6 +334,8 @@ canvas.webgl {
   background: #2a1a12;
   color: var(--foam);
   outline: 2px solid var(--cyan);
+  overflow-x: auto;
+  white-space: nowrap;
 }
 
 #results {
@@ -422,6 +424,8 @@ canvas.webgl {
   color: #fff;
   outline: none;
   user-select: text;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 
 #toast {
@@ -565,6 +569,8 @@ canvas.webgl {
   background: #2a1a12;
   color: var(--foam);
   outline: 2px solid var(--gold);
+  overflow-x: auto;
+  white-space: nowrap;
 }
 #title .hint {
   font-size: 20px;
