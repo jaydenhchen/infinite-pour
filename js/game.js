@@ -29,6 +29,7 @@ import {
   setWorldCollide,
   shirtColor,
   tryPunch,
+  poseHurt,
   eyeHeight,
   setPeeDrainFn,
   setPeeCupHooks,
@@ -42,7 +43,7 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=127";
+} from "./multiplayer.js?v=128";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -1250,7 +1251,7 @@ const ndc = new THREE.Vector2(0, 0);
 const _pickOrigin = new THREE.Vector3();
 const _pickDir = new THREE.Vector3();
 const _pickWorld = new THREE.Vector3();
-const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "darts", "cupstack"]);
+const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "darts", "cupstack", "baton"]);
 const solids = [];
 const pickables = [];
 const bottles = [];
@@ -1362,6 +1363,9 @@ let wantedT = 0;
 const WANTED_GIVE_UP = 60;
 const COP_ARRIVE_MIN = 12;
 const COP_ARRIVE_MAX = 18;
+const COP_HP = 10;
+const PUNCH_DMG = 1;
+const BATON_DMG = 3;
 let stunT = 0;
 let hurtFlash = 0;
 let crashCool = 0;
@@ -2028,6 +2032,14 @@ function restockDrinks(fromNet) {
       else scene.remove(obj);
       unregisterPick(obj);
     } else if (obj.userData.stock) scene.add(obj);
+    else if (obj.userData.kind === "baton") {
+      obj.scale.setScalar(1);
+      obj.position.set(bodyPos.x, 0.03, bodyPos.z);
+      obj.rotation.set(Math.PI / 2, 0, 0.12);
+      scene.add(obj);
+      unregisterPick(obj);
+      registerPick(obj);
+    }
   }
   deliveries.length = 0;
   for (const drop of drops) scene.remove(drop);
@@ -3854,6 +3866,17 @@ function toast(msg) {
   toastT = 2.6;
 }
 
+function heldLabel() {
+  if (!held) return "";
+  if (held.userData.kind === "baton") return "baton";
+  if (held.userData.kind === "glass") return "cup";
+  return held.userData.drink?.name || "";
+}
+
+function holdingBaton() {
+  return held?.userData?.kind === "baton";
+}
+
 function takeHit(nx, nz, by) {
   const knock = applyKnock(camera.position.x, camera.position.z, nx, nz, collide, 0.28);
   lastKnock = { x: knock.dx, z: knock.dz };
@@ -3997,6 +4020,9 @@ function hud() {
     const n = glassState.fill > 0.02 ? nameMix(glassState.parts) : `empty ${glassState.type}`;
     $("heldName").textContent = n;
     $("heldMeta").textContent = `cup in hand · ${glassState.type} · ${fillPct}% · Q set down`;
+  } else if (held && held.userData.kind === "baton") {
+    $("heldName").textContent = "baton";
+    $("heldMeta").textContent = "3 damage · click swing · Q set down";
   } else if (held && held.userData.drink) {
     $("heldName").textContent = held.userData.drink.name;
     $("heldMeta").textContent = `${held.userData.drink.type} · ${held.userData.drink.abv}% ABV · ${Math.round(held.userData.volume * 100)}% left`;
@@ -4066,6 +4092,7 @@ function promptFrom(obj) {
     return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   }
   if (wanted) {
+    if (obj?.userData?.kind === "baton") return "E grab baton · click punch";
     const near = nearestCar(3.4);
     const stand = standCarPrompt(near);
     if (stand) return stand;
@@ -4099,6 +4126,7 @@ function promptFrom(obj) {
     if (held && held.userData.kind === "glass") {
       return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  hold it in a stream  ·  Q set down";
     }
+    if (held && held.userData.kind === "baton") return "baton · click swing · Q set down";
     if (inBathroom(camera.position.x, camera.position.z)) {
       return localGender === "f" ? "restrooms · E sit · P pee on the toilet" : "restrooms · E sit or open doors · P pee";
     }
@@ -4110,6 +4138,10 @@ function promptFrom(obj) {
   if (k === "bottle" && drink) {
     if (held && held.userData.kind === "glass") return `E pour  ${drink.name}  into cup`;
     return `E grab  ${drink.name}`;
+  }
+  if (k === "baton") {
+    if (held && held.userData.kind === "baton") return "baton in hand · click swing · Q set down";
+    return "E grab baton";
   }
   if (k === "cupstack") {
     const n = cupStacks[obj.userData.stack] || 0;
@@ -4319,6 +4351,18 @@ function attachHeld(obj) {
     audio.clink();
     return;
   }
+  if (obj.userData.kind === "baton") {
+    obj.scale.setScalar(0.82);
+    obj.position.set(0.02, -0.1, 0.04);
+    obj.rotation.set(0.95, 0.12, 0.22);
+    rightHand.userData.grip.add(obj);
+    held = obj;
+    setRightGrip(true);
+    poseHands();
+    pokePose();
+    audio.clink();
+    return;
+  }
   const kind = obj.userData.drink?.bottle || "spirit";
   const y = kind === "can" ? 0.08 : kind === "wine" ? -0.09 : kind === "beer" ? -0.06 : -0.07;
   obj.scale.setScalar(kind === "can" ? 0.92 : 0.72);
@@ -4358,6 +4402,17 @@ function dropHeld() {
     glassMesh = obj;
     trackLooseGlass(obj);
     poseHands();
+    return;
+  }
+  if (obj.userData.kind === "baton") {
+    obj.scale.setScalar(1);
+    p.y = 0.03;
+    obj.position.copy(p);
+    obj.rotation.set(Math.PI / 2, camera.rotation.y, 0.12);
+    scene.add(obj);
+    registerPick(obj);
+    poseHands();
+    pokePose();
     return;
   }
   if (nearWell) {
@@ -4816,7 +4871,7 @@ function startShift() {
   });
   setPeeCupHooks(glassCatchVolumes, (amt) => (peeing ? 0 : catchPeeInCup(amt)));
   setPoseSources(
-    () => held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : ""),
+    () => heldLabel(),
     () => pouring,
     () => drunkLevel(),
     () => ({
@@ -4921,6 +4976,8 @@ function useLook() {
     grabCupFromStack(look.userData.stack);
   } else if (k === "glass") {
     if (held && held.userData.kind === "bottle") return;
+    attachHeld(look);
+  } else if (k === "baton") {
     attachHeld(look);
   }
   else if (k === "tap" && look.userData.drink) {
@@ -5791,41 +5848,100 @@ function punchAim() {
   return { fx: -Math.sin(yaw), fz: -Math.cos(yaw) };
 }
 
+function makeBatonMesh() {
+  const g = new THREE.Group();
+  g.userData.kind = "baton";
+  const wood = lambert(0x4a2c14);
+  const grip = lambert(0x1a120c);
+  const tip = lambert(0x2a1a10);
+  addBox(g, unitBox, wood, 0, 0.24, 0, 0.045, 0.42, 0.045);
+  addBox(g, unitBox, grip, 0, 0.02, 0, 0.055, 0.1, 0.055);
+  addBox(g, unitBox, tip, 0, 0.47, 0, 0.05, 0.06, 0.05);
+  return g;
+}
+
+function dropOfficerBaton(off) {
+  if (!off || off.droppedBaton) return;
+  off.droppedBaton = true;
+  const heldMesh = off.rig?.userData?.held;
+  if (heldMesh) heldMesh.visible = false;
+  const baton = makeBatonMesh();
+  const x = off.rd ? off.rd.x : off.x;
+  const z = off.rd ? off.rd.z : off.z;
+  const [nx, nz] = collideWorld(x + (Math.random() - 0.5) * 0.25, z + (Math.random() - 0.5) * 0.25, 0.18);
+  baton.position.set(nx, 0.03, nz);
+  baton.rotation.set(Math.PI / 2, off.yaw || 0, 0.16);
+  scene.add(baton);
+  registerPick(baton);
+}
+
+function hitOfficer(off, fx, fz, dmg) {
+  if (!off || off.dead) return false;
+  if (off.state === "ride") {
+    const car = off.car;
+    if (car) {
+      const side = off.seat < 0 ? -1 : 1;
+      const lx = Math.cos(car.yaw);
+      const lz = -Math.sin(car.yaw);
+      off.x = car.x + lx * side * 2.2;
+      off.z = car.z + lz * side * 2.2;
+      [off.x, off.z] = collideWorld(off.x, off.z, 0.28);
+    }
+    off.state = "chase";
+    off.outT = 1;
+  }
+  off.swingT = 0;
+  const knock = applyKnock(off.x, off.z, fx, fz, collideWorld, 0.28);
+  off.kvx = (off.kvx || 0) + knock.vx;
+  off.kvz = (off.kvz || 0) + knock.vz;
+  off.hopY = Math.max(off.hopY || 0, 0.14);
+  off.hurtT = 0.28;
+  off.yaw = Math.atan2(bodyPos.x - off.x, bodyPos.z - off.z);
+  off.hp = Math.max(0, (off.hp ?? COP_HP) - dmg);
+  if (holdingBaton()) audio.baton();
+  if (off.hp <= 0) {
+    killOfficer(off, null, 3.4, { reinforce: false, mild: true, shove: { fx, fz } });
+    return true;
+  }
+  return true;
+}
+
 function punchCops() {
   if (!cops.length || inCar) return false;
   const { fx, fz } = punchAim();
   const x = bodyPos.x;
   const z = bodyPos.z;
-  let hit = false;
+  let best = null;
+  let bestDist = 2.35;
   for (const pack of cops) {
     for (const off of pack.officers) {
       if (off.dead) continue;
       const dx = off.x - x;
       const dz = off.z - z;
       const dist = Math.hypot(dx, dz);
-      if (dist > 2.85 || dist < 0.04) continue;
+      if (dist < 0.04 || dist > bestDist) continue;
       const aim = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
-      if (aim < -0.05) continue;
+      if (aim < 0.15) continue;
       if (worldBlocked(x, z, off.x, off.z)) continue;
-      const push = 2.35 + Math.max(0, 2.35 - dist) * 0.4;
-      const [nx, nz] = sweepPush(off.x, off.z, fx, fz, push, 0.28);
-      off.x = nx;
-      off.z = nz;
-      off.state = "stagger";
-      off.staggerT = 1.2;
-      off.swingT = 0;
-      off.yaw = Math.atan2(x - off.x, z - off.z);
-      off.rig.position.set(off.x, 0, off.z);
-      off.rig.rotation.y = off.yaw;
-      hit = true;
+      best = off;
+      bestDist = dist;
     }
   }
-  return hit;
+  if (!best) return false;
+  return hitOfficer(best, fx, fz, holdingBaton() ? BATON_DMG : PUNCH_DMG);
 }
 
 function makeOfficer() {
   const rig = makeAvatar(`cop-${++copSerial}`, "P.D.", "m");
-  if (rig.userData.shirt) rig.userData.shirt.color.setHex(0x1b2d55);
+  if (rig.userData.shirt) {
+    rig.userData.shirt.color.setHex(0x1b2d55);
+    const fb = rig.userData.flashBase?.find((b) => b.m === rig.userData.shirt);
+    if (fb) {
+      fb.r = rig.userData.shirt.color.r;
+      fb.g = rig.userData.shirt.color.g;
+      fb.b = rig.userData.shirt.color.b;
+    }
+  }
   if (rig.userData.tag) {
     rig.userData.tag.visible = false;
     rig.userData.tag.userData.locked = true;
@@ -5918,6 +6034,12 @@ function addCopPack(x, z) {
       swingT: 0,
       outT: 0,
       dead: false,
+      hp: COP_HP,
+      hurtT: 0,
+      kvx: 0,
+      kvz: 0,
+      hopY: 0,
+      droppedBaton: false,
     });
   }
   cops.push(pack);
@@ -5970,7 +6092,7 @@ function applyCopRagdoll(off) {
   rig.rotation.set(rd.rx, rd.ry, rd.rz);
 }
 
-function startCopRagdoll(off, car, spd) {
+function startCopRagdoll(off, car, spd, shove = null, mild = false) {
   const rig = off.rig;
   if (!rig) return;
   const u = rig.userData;
@@ -5998,9 +6120,13 @@ function startCopRagdoll(off, car, spd) {
     const len = Math.hypot(fx, fz) || 1;
     fx /= len;
     fz /= len;
+  } else if (shove && (shove.fx || shove.fz)) {
+    const len = Math.hypot(shove.fx, shove.fz) || 1;
+    fx = shove.fx / len;
+    fz = shove.fz / len;
   }
-  const kick = 7.2 + Math.min(18, spd) * 0.82;
-  const up = 5.6 + Math.min(16, spd) * 0.22;
+  const kick = mild ? 2.4 + Math.min(6, spd) * 0.25 : 7.2 + Math.min(18, spd) * 0.82;
+  const up = mild ? 2.1 : 5.6 + Math.min(16, spd) * 0.22;
   const side = Math.random() - 0.5;
   const keep = off.rd && !off.rd.settled;
   off.rd = {
@@ -6138,12 +6264,17 @@ function tickRagdoll(off, dt) {
   applyCopRagdoll(off);
 }
 
-function killOfficer(off, car, spd = 10) {
+function killOfficer(off, car, spd = 10, opts = {}) {
   if (!off || off.dead) return;
   off.dead = true;
   off.state = "dead";
-  if (off.rig) startCopRagdoll(off, car, spd);
+  dropOfficerBaton(off);
+  if (off.rig) startCopRagdoll(off, car, spd, opts.shove || null, !!opts.mild);
   audio.hit();
+  if (opts.reinforce === false) {
+    toast("cop down");
+    return;
+  }
   toast("cop down · two more inbound");
   heatUp();
   if (!passedOut) addCopPack(bodyPos.x, bodyPos.z);
@@ -6202,28 +6333,38 @@ function beginCrash(spd, hitCar) {
   if (!cops.length && !passedOut) spawnPolice(bodyPos.x, bodyPos.z);
 }
 
+function flashOfficerHurt(off) {
+  const u = off.rig?.userData;
+  if (!u) return;
+  const bases = u.flashBase || [];
+  for (const b of bases) b.m.color.setRGB(b.r, b.g, b.b);
+  if ((off.hurtT || 0) <= 0) return;
+  const a = Math.min(1, off.hurtT / 0.12);
+  for (const b of bases) b.m.color.setRGB(1, 0.28 * (1 - a), 0.28 * (1 - a));
+  if (u.skin) u.skin.color.setRGB(1, 0.32, 0.32);
+}
+
 function poseCop(off, dt, moving) {
   const u = off.rig?.userData;
   if (!u) return;
   off.phase += dt * (moving ? 9.2 : 3);
   const swing = Math.sin(off.phase) * (moving ? 0.62 : 0.08);
-  if (u.body) u.body.rotation.x = off.state === "stagger" ? -0.28 : 0;
-  if (u.legL) u.legL.rotation.x = swing;
-  if (u.legR) u.legR.rotation.x = -swing;
-  if (u.armL) u.armL.rotation.x = off.state === "stagger" ? -1.15 + Math.sin(off.phase * 2) * 0.3 : -swing * 0.55;
+  if (u.body) u.body.rotation.set(off.state === "stagger" ? -0.28 : 0, 0, 0);
+  if (u.legL) u.legL.rotation.set(swing, 0, 0);
+  if (u.legR) u.legR.rotation.set(-swing, 0, 0);
+  if (u.armL) u.armL.rotation.set(off.state === "stagger" ? -1.15 + Math.sin(off.phase * 2) * 0.3 : -swing * 0.55, 0, 0);
   if (u.armR) {
     if (off.state === "stagger") {
-      u.armR.rotation.x = -0.85;
-      u.armR.rotation.z = 0.72;
+      u.armR.rotation.set(-0.85, 0, 0.72);
     } else if (off.state === "swing") {
       const a = Math.sin(Math.min(1, off.swingT / 0.28) * Math.PI);
-      u.armR.rotation.x = -0.2 - a * 1.7;
-      u.armR.rotation.z = 0.15 + a * 0.5;
+      u.armR.rotation.set(-0.2 - a * 1.7, 0, 0.15 + a * 0.5);
     } else {
-      u.armR.rotation.x = 0.35;
-      u.armR.rotation.z = -0.45;
+      u.armR.rotation.set(0.35, 0, -0.45);
     }
   }
+  if ((off.hurtT || 0) > 0) poseHurt(u, off.hurtT);
+  flashOfficerHurt(off);
 }
 
 function arrestPlayer() {
@@ -6303,6 +6444,15 @@ function tickPolice(dt) {
         tickRagdoll(off, dt);
         continue;
       }
+      if (off.hurtT > 0) off.hurtT = Math.max(0, off.hurtT - dt);
+      if (off.kvx || off.kvz) {
+        const [kx, kz, nvx, nvz] = stepKnock(off.x, off.z, off.kvx || 0, off.kvz || 0, dt, collideWorld, 0.28);
+        off.x = kx;
+        off.z = kz;
+        off.kvx = nvx;
+        off.kvz = nvz;
+      }
+      if (off.hopY > 0) off.hopY = Math.max(0, off.hopY - dt * 1.8);
       if (off.state === "ride") {
         const fx = -Math.sin(car.yaw);
         const fz = -Math.cos(car.yaw);
@@ -6331,7 +6481,7 @@ function tickPolice(dt) {
         off.z += (destZ - off.z) * Math.min(1, dt * 5);
         off.yaw = Math.atan2(px - off.x, pz - off.z);
         if (off.outT > 0.42) off.state = "chase";
-        off.rig.position.set(off.x, 0, off.z);
+        off.rig.position.set(off.x, off.hopY || 0, off.z);
         off.rig.rotation.y = off.yaw;
         poseCop(off, dt, true);
         continue;
@@ -6347,7 +6497,7 @@ function tickPolice(dt) {
         off.x = nx;
         off.z = nz;
         off.yaw = Math.atan2(px - off.x, pz - off.z);
-        off.rig.position.set(off.x, 0, off.z);
+        off.rig.position.set(off.x, off.hopY || 0, off.z);
         off.rig.rotation.y = off.yaw;
         poseCop(off, dt, false);
         if (off.staggerT <= 0) off.state = "chase";
@@ -6361,7 +6511,7 @@ function tickPolice(dt) {
       const tooFast = inCar && carSpd > 3.5;
       const reach = inCar ? 1.72 : 1.08;
       if (off.state === "chase") {
-        if (dist > 0.8) {
+        if (dist > 0.8 && (off.hurtT || 0) <= 0.08) {
           let nx = off.x + (dx / (dist || 1)) * 3.28 * dt;
           let nz = off.z + (dz / (dist || 1)) * 3.28 * dt;
           [nx, nz] = collideWorld(nx, nz, 0.28);
@@ -6382,7 +6532,7 @@ function tickPolice(dt) {
         }
         if (off.swingT > 0.52 || tooFast) off.state = "chase";
       }
-      off.rig.position.set(off.x, 0, off.z);
+      off.rig.position.set(off.x, off.hopY || 0, off.z);
       off.rig.rotation.y = off.yaw;
       poseCop(off, dt, off.state === "chase");
     }
@@ -6616,7 +6766,7 @@ function applyView() {
     localPeer.tyaw = (inCar ? inCar.yaw : yaw) + Math.PI;
     localPeer.tpit = inCar ? 0 : pitch;
     localPeer.bac = drunk;
-    localPeer.held = held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : "");
+    localPeer.held = heldLabel();
     localPeer.gf = glassState.fill;
     localPeer.gc = glassState.fill > 0.02 ? mixColor(glassState.parts) : 0;
     localPeer.pouring = pouring;
@@ -7050,6 +7200,7 @@ function bind() {
         if (!(held && held.userData.kind === "glass")) attachHeld(look);
       } else if (look.userData.kind === "glass" && !(held && held.userData.kind === "bottle")) attachHeld(look);
       else if (look.userData.kind === "cupstack") grabCupFromStack(look.userData.stack);
+      else if (look.userData.kind === "baton") attachHeld(look);
     }
   });
   window.addEventListener("mouseup", () => {
