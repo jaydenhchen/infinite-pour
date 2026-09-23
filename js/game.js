@@ -44,9 +44,9 @@ import {
   setWorldBlock,
   makeBatonMesh,
   seatBatonOnArm,
-} from "./multiplayer.js?v=132";
+} from "./multiplayer.js?v=133";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=10";
+import { createClub } from "./club.js?v=13";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1372,6 +1372,9 @@ let bacDecayFrom = 0;
 let bacHoldUntil = 0;
 let bacDecayStart = 0;
 let sipT = 0;
+let sipKind = "sip";
+let sipDur = 0.62;
+let dumpAfterSwig = false;
 let neonA, neonB, jukeLight;
 let hatchDoor;
 let frontDoor = null;
@@ -2004,25 +2007,82 @@ function poseHands() {
   if (pouring && held && held.userData.kind === "bottle") {
     rightHand.position.set(0.1, -0.13 + bob, -0.36);
     rightHand.rotation.set(1.08, 0.42, 0.7);
-  } else if (held && held.userData.kind === "glass") {
-    const lift = sipT > 0 ? 0.14 : 0;
-    rightHand.position.set(0.2, -0.16 + bob + walk + lift, -0.38 - lift * 0.35);
-    rightHand.rotation.set(0.12 + (sipT > 0 ? 0.72 : 0), 0.04, 0.08);
+    gripHeldDrink(0);
+  } else if (held && (held.userData.kind === "glass" || held.userData.kind === "bottle")) {
+    const swig = swigAmount();
+    const gulp = sipKind === "chug" && swig > 0.72 ? Math.sin(tWorld * 24) * 0.05 : 0;
+    const can = held.userData.drink?.bottle === "can";
+    const glass = held.userData.kind === "glass";
+    const rest = glass
+      ? { x: 0.2, y: -0.16, z: -0.38, rx: 0.12, ry: 0.04, rz: 0.08 }
+      : can
+        ? { x: 0.16, y: -0.1, z: -0.34, rx: 0.22, ry: 0.08, rz: 0.16 }
+        : { x: 0.2, y: -0.24, z: -0.4, rx: 0.52, ry: 0.2, rz: 0.38 };
+    const mouth = glass
+      ? { x: 0.06, y: 0.04, z: -0.15, rx: 1.18, ry: 0.02, rz: 0.04 }
+      : can
+        ? { x: 0.07, y: 0.05, z: -0.16, rx: 1.12, ry: 0.02, rz: 0.06 }
+        : { x: 0.08, y: 0.03, z: -0.17, rx: 1.28, ry: 0.04, rz: 0.1 };
+    const u = swig;
+    rightHand.position.set(
+      rest.x + (mouth.x - rest.x) * u + bob * (1 - u * 0.6) + walk * (1 - u),
+      rest.y + (mouth.y - rest.y) * u + gulp,
+      rest.z + (mouth.z - rest.z) * u
+    );
+    rightHand.rotation.set(
+      rest.rx + (mouth.rx - rest.rx) * u,
+      rest.ry + (mouth.ry - rest.ry) * u,
+      rest.rz + (mouth.rz - rest.rz) * u + gulp * 0.4
+    );
+    gripHeldDrink(u);
   } else if (held && held.userData.kind === "baton") {
     rightHand.position.set(0.17, -0.12 + bob + walk, -0.3);
     rightHand.rotation.set(0.18, 0.32, 0.78);
-  } else if (held && held.userData.drink?.bottle === "can") {
-    rightHand.position.set(0.16, -0.1 + bob + walk, -0.34);
-    rightHand.rotation.set(0.22, 0.08, 0.16);
-  } else if (held) {
-    rightHand.position.set(0.2, -0.24 + bob + walk, -0.4);
-    rightHand.rotation.set(0.52, 0.2, 0.38);
   } else {
     rightHand.position.set(0.26, -0.33 + bob + walk, -0.46);
     rightHand.rotation.set(0.3, 0.1, 0.18);
   }
   leftHand.position.set(-0.27, -0.36 + bob - walk, -0.5);
   leftHand.rotation.set(0.24, -0.14, -0.2);
+}
+
+function startSwig(kind = "sip") {
+  sipKind = kind === "chug" ? "chug" : "sip";
+  sipDur = sipKind === "chug" ? 1.08 : 0.64;
+  sipT = sipDur;
+  pokePose();
+}
+
+function swigAmount() {
+  if (sipT <= 0 || sipDur <= 0) return 0;
+  const u = 1 - Math.min(1, sipT / sipDur);
+  const upEnd = 0.24;
+  const holdEnd = sipKind === "chug" ? 0.78 : 0.56;
+  if (u < upEnd) {
+    const a = u / upEnd;
+    return a * a * (3 - 2 * a);
+  }
+  if (u < holdEnd) return 1;
+  const a = (u - holdEnd) / (1 - holdEnd || 1);
+  return 1 - a * a * (3 - 2 * a);
+}
+
+function gripHeldDrink(swig = 0) {
+  if (!held) return;
+  const glass = held.userData.kind === "glass";
+  const kind = glass ? "glass" : held.userData.drink?.bottle || "spirit";
+  const tilt = swig * (kind === "glass" ? 0.58 : kind === "can" ? 0.72 : 0.9);
+  const lift = swig * 0.018;
+  if (glass) {
+    const type = glassState.type;
+    const y = type === "shot" ? 0.012 : type === "wine" || type === "coupe" ? -0.03 : 0.018;
+    held.position.set(0.012, y + lift, 0.055);
+    held.rotation.set(-0.42 + tilt, 0.18, 0.1);
+    return;
+  }
+  const y = kind === "can" ? 0.08 : kind === "wine" ? -0.09 : kind === "beer" ? -0.06 : -0.07;
+  held.position.set(kind === "can" ? 0.012 : 0, y + lift, kind === "can" ? 0.03 : 0.01);
+  held.rotation.set((kind === "can" ? 0.04 : 0.12) + tilt, kind === "can" ? 0.08 : 0.4, kind === "can" ? 0.04 : 0.08);
 }
 
 function removeBottle(b) {
@@ -2100,6 +2160,9 @@ function resetShift() {
   bacHoldUntil = 0;
   bacDecayStart = 0;
   sipT = 0;
+  sipKind = "sip";
+  sipDur = 0.62;
+  dumpAfterSwig = false;
   score = 0;
   pours = 0;
   pourBank = 0;
@@ -4660,6 +4723,8 @@ function attachHeld(obj) {
 }
 
 function dropHeld() {
+  dumpAfterSwig = false;
+  sipT = 0;
   if (!held) return;
   const obj = held;
   detachHeld();
@@ -4706,6 +4771,7 @@ function dropHeld() {
 }
 
 function dumpHeldEmpty() {
+  dumpAfterSwig = false;
   if (!held) return;
   const empty = held;
   detachHeld();
@@ -5073,7 +5139,6 @@ function bumpDrink() {
   bacDecayFrom = 0;
   bacHoldUntil = tWorld + BAC_HOLD;
   bacDecayStart = 0;
-  sipT = 0.38;
 }
 
 function drinkGlass(kind) {
@@ -5097,9 +5162,8 @@ function drinkGlass(kind) {
     bumpDrink();
     score += drinkScore(abv, alcOz);
     addPours(abv, alcOz);
-  } else {
-    sipT = 0.38;
   }
+  startSwig(kind);
   if (peeDrinks > 0) purgeBac(peeDrinks);
   glassState.fill = Math.max(0, glassState.fill - frac);
   if (glassState.fill < 0.03) {
@@ -5128,7 +5192,6 @@ function drinkHeld(kind) {
       toast("you drank piss");
     }
     purgeBac(frac);
-    sipT = 0.38;
   } else {
     bac += ((Number(drink.abv) || 0) / 40) * (oz / 1.2) * 0.028;
     bumpDrink();
@@ -5136,13 +5199,13 @@ function drinkHeld(kind) {
     addPours(drink.abv, oz);
   }
   held.userData.volume = Math.max(0, held.userData.volume - frac);
-  if (kind === "chug" || held.userData.volume <= 0.02) {
-    if (!/piss/i.test(drink.name || "") && !unique.has(drink.name)) {
-      unique.add(drink.name);
-      score += uniqueScore(drink.abv);
-    }
-    dumpHeldEmpty();
+  const empty = kind === "chug" || held.userData.volume <= 0.02;
+  if (empty && !/piss/i.test(drink.name || "") && !unique.has(drink.name)) {
+    unique.add(drink.name);
+    score += uniqueScore(drink.abv);
   }
+  startSwig(kind);
+  dumpAfterSwig = empty;
   audio.gulp(kind);
   hud();
   maybePassOut();
@@ -5210,6 +5273,8 @@ function startShift() {
       g: localGender,
       gf: glassState.fill,
       gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
+      sip: sipT,
+      sk: sipKind === "chug" ? 1 : 0,
       k: punchT > 0.02 ? 1 : 0,
       pk: punchGen,
       aimx: punchAim().fx,
@@ -7261,6 +7326,8 @@ function applyView() {
     localPeer.gf = glassState.fill;
     localPeer.gc = glassState.fill > 0.02 ? mixColor(glassState.parts) : 0;
     localPeer.pouring = pouring;
+    localPeer.sipT = sipT;
+    localPeer.sipKind = sipKind;
     localPeer.sit = Boolean(sitting);
     localPeer.pants = onToilet();
     localPeer.pee = Boolean(peeing);
@@ -7497,6 +7564,7 @@ function tick() {
   const dt = Math.min(0.05, clock.getDelta());
   tWorld += dt;
   if (sipT > 0) sipT = Math.max(0, sipT - dt);
+  else if (dumpAfterSwig) dumpHeldEmpty();
   if (punchT > 0) punchT = Math.max(0, punchT - dt);
   if (stunT > 0) stunT = Math.max(0, stunT - dt);
   if (crashCool > 0) crashCool = Math.max(0, crashCool - dt);
