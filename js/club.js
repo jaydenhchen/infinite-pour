@@ -174,6 +174,20 @@ export function createClub(api) {
     return { style, top, bot, skinny: style === 0 || style === 3 || style === 5, mini: style === 2 || style === 6 };
   }
 
+  function dressGuard(body, skin) {
+    const shirt = lambert(0xf4ead0);
+    const jacket = lambert(0x0c0c10);
+    const pants = lambert(0x101014);
+    const tie = lambert(0x1a1014);
+    addMesh(body, unitBox, skin, 0, 0.98, 0, 0.32, 0.36, 0.18);
+    addMesh(body, unitBox, skin, 0, 1.2, 0, 0.15, 0.14, 0.13);
+    addMesh(body, unitBox, shirt, 0, 0.98, 0.03, 0.3, 0.4, 0.16);
+    addMesh(body, unitBox, jacket, 0, 0.97, 0.0, 0.44, 0.52, 0.24);
+    addMesh(body, unitBox, tie, 0, 0.94, 0.12, 0.05, 0.28, 0.02);
+    addMesh(body, unitBox, pants, 0, 0.68, 0, 0.38, 0.2, 0.22);
+    return { shirt: jacket, pants };
+  }
+
   function dressMan(body, skin, seed, dj) {
     const style = dj ? 4 : (hash01(seed, 6) * 6) | 0;
     const shirtHex = dj ? 0x121014 : SHIRTS[(hash01(seed, 3) * SHIRTS.length) | 0];
@@ -207,13 +221,14 @@ export function createClub(api) {
     g.add(body);
     const girl = kind === "f" || kind === "djf";
     const dj = kind === "dj" || kind === "djf";
-    const skinHex = SKINS[(hash01(seed, 1) * SKINS.length) | 0];
+    const guard = kind === "guard";
+    const skinHex = guard ? 0x8a5a3a : SKINS[(hash01(seed, 1) * SKINS.length) | 0];
     const hairHex = HAIRS[(hash01(seed, 2) * HAIRS.length) | 0];
     const skin = lambert(skinHex, { emissive: 0x3a1810, emissiveIntensity: 0.12 });
-    const hair = lambert(hairHex);
+    const hair = lambert(guard ? 0x1a100c : hairHex);
     const shoe = lambert(girl ? 0x1a0a10 : 0x121014);
     const eye = lambert(0x140808);
-    const fit = girl ? dressWoman(body, skin, seed) : dressMan(body, skin, seed, dj);
+    const fit = girl ? dressWoman(body, skin, seed) : guard ? dressGuard(body, skin) : dressMan(body, skin, seed, dj);
     const sleeve = girl ? skin : fit.shirt;
     const legMat = girl && (fit.skinny || fit.mini) ? skin : fit.bot || fit.pants;
     const skinny = !!(girl && fit.skinny);
@@ -233,6 +248,11 @@ export function createClub(api) {
         addMesh(head, unitBox, lambert(0xe8c547), -0.14, 0.0, 0.04, 0.03, 0.08, 0.03);
         addMesh(head, unitBox, lambert(0xe8c547), 0.14, 0.0, 0.04, 0.03, 0.08, 0.03);
       }
+    } else if (guard) {
+      addMesh(head, unitBox, hair, 0, 0.12, -0.01, 0.27, 0.05, 0.27);
+      addMesh(head, unitBox, lambert(0x121014), 0, 0.03, 0.14, 0.17, 0.04, 0.03);
+      addMesh(head, unitBox, lambert(0x2a2a32), 0.14, 0.02, 0.02, 0.03, 0.04, 0.03);
+      addMesh(head, unitBox, lambert(0x2a2a32), 0.13, -0.08, -0.02, 0.012, 0.16, 0.012);
     } else {
       addMesh(head, unitBox, hair, 0, 0.12, -0.02, 0.28, 0.08, 0.28);
     }
@@ -253,7 +273,7 @@ export function createClub(api) {
     addMesh(armR, unitBox, skin, 0, -0.28, 0, 0.09, 0.14, 0.09);
     const heldRoll = hash01(seed, 8);
     let held = null;
-    if (!dj && heldRoll > 0.58) {
+    if (!dj && !guard && heldRoll > 0.58) {
       held = heldRoll > 0.82 ? holdBottle() : holdCup();
       if (held) armR.add(held);
     }
@@ -273,6 +293,7 @@ export function createClub(api) {
     body.add(legR);
 
     if (girl) body.scale.setScalar(0.98);
+    if (guard) body.scale.set(1.14, 1.1, 1.16);
     const stars = new THREE.Group();
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * Math.PI * 2;
@@ -302,8 +323,8 @@ export function createClub(api) {
       tx: x,
       tz: z,
       drunk,
-      gender: kind.startsWith("dj") ? (kind === "djf" ? "f" : "m") : kind,
-      r: kind.startsWith("dj") ? 0.4 : 0.36,
+      gender: kind === "f" || kind === "djf" ? "f" : "m",
+      r: kind === "guard" ? 0.5 : kind.startsWith("dj") ? 0.4 : 0.36,
       phase: hash01(seed, 21) * Math.PI * 2,
       style: (hash01(seed, 22) * 4) | 0,
       mode,
@@ -691,6 +712,16 @@ export function createClub(api) {
       const p = placePerson(girl ? "f" : "m", s[0], s[1], BALC_Y, 0, 0.2 + hash01(i, 76) * 0.7, i + 180, "mingle");
       pickTarget(p);
     });
+    placePerson("guard", 17.72, 7.32, 0, 0, 0, 200, "guard");
+    const gold = lambert(0xc9a227, { emissive: 0x6a4a10, emissiveIntensity: 0.18 });
+    const rope = lambert(0x6b1020);
+    addMesh(scene, unitCyl, gold, 16.85, 0.48, 7.55, 0.04, 0.96, 0.04);
+    addMesh(scene, unitCyl, gold, 16.85, 0.98, 7.55, 0.07, 0.04, 0.07);
+    addMesh(scene, unitCyl, gold, 15.55, 0.48, 7.55, 0.04, 0.96, 0.04);
+    addMesh(scene, unitCyl, gold, 15.55, 0.98, 7.55, 0.07, 0.04, 0.07);
+    addMesh(scene, unitBox, rope, 16.2, 0.86, 7.55, 1.22, 0.04, 0.04);
+    worldSolid(16.85, 7.55, 0.16, 0.16, 1.0);
+    worldSolid(15.55, 7.55, 0.16, 0.16, 1.0);
   }
 
   function buildRoom() {
@@ -843,6 +874,26 @@ export function createClub(api) {
     u.head.rotation.set(0.05, 0, 0);
   }
 
+  function poseGuard(p, t) {
+    const u = p.rig.userData;
+    const pos = playerPos();
+    const dx = pos.x - p.x;
+    const dz = pos.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    const look = dist < 4.6 ? Math.atan2(dx, dz) - p.yaw : 0;
+    const yaw = THREE.MathUtils.clamp(look, -0.72, 0.72);
+    u.body.position.set(0, 0, 0);
+    u.body.rotation.set(0.04, 0, 0);
+    u.armL.position.set(0.22, 1.02, 0.08);
+    u.armL.rotation.set(-1.18, 0.18, 0.88);
+    u.armR.position.set(-0.22, 1.02, 0.08);
+    u.armR.rotation.set(-1.18, -0.18, -0.88);
+    u.legL.rotation.set(0.05, 0, 0.07);
+    u.legR.rotation.set(-0.03, 0, -0.04);
+    u.head.rotation.set(0.05, yaw, 0);
+    if (u.stars) u.stars.visible = false;
+  }
+
   function poseKiss(p, t) {
     const u = p.rig.userData;
     const lean = 0.22 + Math.sin(t * 1.3 + p.phase) * 0.03;
@@ -889,6 +940,7 @@ export function createClub(api) {
   }
 
   function flushSkin(p) {
+    if (p.mode === "guard") return;
     const flush = Math.min(1, p.drunk * 0.7);
     p.rig.userData.skin.color.setRGB(0.91 + flush * 0.08, 0.7 - flush * 0.42, 0.54 - flush * 0.38);
   }
@@ -898,7 +950,7 @@ export function createClub(api) {
     const feet = Math.max(0, (pos.y || 0) - 1.5);
     for (let i = 0; i < crowd.length; i++) {
       const a = crowd[i];
-      if (a.mode === "sit" || a.mode === "dj") continue;
+      if (a.mode === "sit" || a.mode === "dj" || a.mode === "guard") continue;
       for (let j = i + 1; j < crowd.length; j++) {
         const b = crowd[j];
         if (a.partner === b || b.partner === a) continue;
@@ -1004,6 +1056,7 @@ export function createClub(api) {
       else if (p.mode === "sit") poseSit(p, t);
       else if (p.mode === "dj") poseDj(p, t);
       else if (p.mode === "kiss") poseKiss(p, t);
+      else if (p.mode === "guard") poseGuard(p, t);
       else poseSway(p, t);
       flushSkin(p);
     }
