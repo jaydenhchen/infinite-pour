@@ -7305,6 +7305,10 @@ function tick() {
   restoreBodyLook();
 }
 
+function browserChord(e) {
+  return !!(e.metaKey || e.ctrlKey || e.altKey);
+}
+
 function bind() {
   window.addEventListener("resize", resize);
   const ident = loadIdentity();
@@ -7411,6 +7415,7 @@ function bind() {
     camera.rotation.x = THREE.MathUtils.clamp(camera.rotation.x - e.movementY * 0.0024, -1.2, 1.2);
   });
   window.addEventListener("keydown", (e) => {
+    if (browserChord(e)) return;
     const typing =
       chatOpen ||
       e.target === $("q") ||
