@@ -42,7 +42,7 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=124";
+} from "./multiplayer.js?v=126";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -126,6 +126,32 @@ const GLYPH = {
   X: ["101", "101", "010", "101", "101"],
   Y: ["101", "101", "010", "010", "010"],
   Z: ["111", "001", "010", "100", "111"],
+  a: ["000", "011", "101", "101", "011"],
+  b: ["100", "110", "101", "101", "110"],
+  c: ["000", "011", "100", "100", "011"],
+  d: ["001", "011", "101", "101", "011"],
+  e: ["000", "010", "111", "100", "011"],
+  f: ["001", "010", "111", "010", "010"],
+  g: ["011", "101", "011", "001", "110"],
+  h: ["100", "100", "110", "101", "101"],
+  i: ["010", "000", "010", "010", "010"],
+  j: ["001", "000", "001", "001", "110"],
+  k: ["100", "101", "110", "101", "101"],
+  l: ["110", "010", "010", "010", "111"],
+  m: ["000", "101", "111", "101", "101"],
+  n: ["000", "110", "101", "101", "101"],
+  o: ["000", "010", "101", "101", "010"],
+  p: ["000", "110", "101", "110", "100"],
+  q: ["000", "011", "101", "011", "001"],
+  r: ["000", "110", "100", "100", "100"],
+  s: ["000", "011", "010", "100", "110"],
+  t: ["010", "111", "010", "010", "001"],
+  u: ["000", "101", "101", "101", "011"],
+  v: ["000", "101", "101", "101", "010"],
+  w: ["000", "101", "101", "111", "101"],
+  x: ["000", "101", "010", "101", "000"],
+  y: ["000", "101", "101", "011", "001"],
+  z: ["000", "111", "010", "100", "111"],
   "&": ["010", "101", "010", "101", "011"],
   "+": ["000", "010", "111", "010", "000"],
   "-": ["000", "000", "111", "000", "000"],
@@ -143,13 +169,13 @@ const GLYPH = {
 function blitText(ctx, text, x, y, color, scale = 1) {
   ctx.fillStyle = color;
   let cx = x;
-  const s = String(text).toUpperCase();
+  const s = String(text);
   for (const ch of s) {
     if (ch === " ") {
-      cx += 3 * scale;
+      cx += 5 * scale;
       continue;
     }
-    const g = GLYPH[ch];
+    const g = GLYPH[ch] || GLYPH[ch.toUpperCase()] || GLYPH[ch.toLowerCase()];
     if (!g) {
       cx += 4 * scale;
       continue;
@@ -4438,7 +4464,7 @@ function neighborKey(ch) {
     const i = rows[r].indexOf(lower);
     if (i < 0) continue;
     const opts = [];
-    for (const [dr, dc] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+    for (const [dr, dc] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
       const row = rows[r + dr];
       if (!row) continue;
       const n = row[i + dc];
@@ -4455,7 +4481,7 @@ function neighborKey(ch) {
 function drunkTypeChar(ch) {
   if (!/[a-zA-Z0-9]/.test(ch)) return ch;
   const d = drunkLevel();
-  const chance = THREE.MathUtils.clamp((d - 0.16) / 3.6, 0, 0.7);
+  const chance = THREE.MathUtils.clamp((d - 0.42) / 8.5, 0, 0.24);
   if (Math.random() >= chance) return ch;
   return neighborKey(ch);
 }
@@ -4801,7 +4827,7 @@ function startShift() {
       pit: viewMode === 2 ? view2Pitch : savedPitch,
       s: sitting ? 1 : 0,
       u: peeing ? 1 : 0,
-      n: onToilet() ? 1 : 0,
+      pn: onToilet() ? 1 : 0,
       g: localGender,
       gf: glassState.fill,
       gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
@@ -4985,6 +5011,7 @@ function ensureLocalAvatar() {
       localPeer = null;
     } else {
       if (localPeer.id !== sid) localPeer.id = sid;
+      localPeer.name = playerName();
       const hex = shirtColor(sid);
       if (localPeer.rig?.userData?.shirt) localPeer.rig.userData.shirt.color.setHex(hex);
       return;
