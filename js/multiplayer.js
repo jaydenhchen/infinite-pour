@@ -732,6 +732,8 @@ function spawnPeer(id, state) {
     hurtT: 0,
     stunT: 0,
     punchT: 0,
+    punchGen: 0,
+    punchOn: false,
     kvx: 0,
     kvz: 0,
   };
@@ -878,7 +880,9 @@ function applyState(id, state) {
     }
     peer.gender = nextG;
   }
-  if (state.k) peer.punchT = Math.max(peer.punchT || 0, PUNCH_T);
+  if (state.pk != null) startPeerPunch(peer, state.pk);
+  else if (state.k && !peer.punchOn) startPeerPunch(peer);
+  peer.punchOn = !!state.k;
   if (state.hid && state.hto && net?.id && state.hto === net.id) {
     handleHitEvent({
       id: state.hid,
@@ -1101,6 +1105,7 @@ function sendPose() {
     pose.az = round(extra.az, 2);
   }
   if (extra.k) pose.k = 1;
+  if (extra.pk) pose.pk = extra.pk | 0;
   if (extra.w) pose.w = 1;
   if (extra.v) {
     pose.v = 1;
@@ -1121,7 +1126,7 @@ function sendPose() {
     pose.hnx = lastHit.nx;
     pose.hnz = lastHit.nz;
   }
-  const key = `${pose.n}|${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.pn || 0}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
+  const key = `${pose.n}|${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.pn || 0}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.pk || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -1199,14 +1204,34 @@ export function poseHurt(u, hurtT) {
   return true;
 }
 
+function easePunch(a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a || 1)));
+  return t * t * (3 - 2 * t);
+}
+
 function poseRightPunch(u, punchT) {
   if (!u?.armR || punchT <= 0) return false;
-  const dur = PUNCH_T;
-  const uPunch = 1 - Math.min(dur, punchT) / dur;
-  const swing = uPunch < 0.38 ? uPunch / 0.38 : 1 - (uPunch - 0.38) / 0.62;
-  u.armR.rotation.set(-1.75 * swing, -0.28 * swing, 0.48 * swing);
-  if (u.armL) u.armL.rotation.set(0.32 * swing, 0.1 * swing, -0.22);
+  const p = 1 - Math.min(PUNCH_T, punchT) / PUNCH_T;
+  const swing = p < 0.3 ? easePunch(0, 0.3, p) : 1 - easePunch(0.3, 1, p);
+  u.armR.rotation.set(-1.85 * swing, -0.22 * swing, 0.42 * swing);
+  if (u.armL) u.armL.rotation.set(0.28 * swing, 0.08 * swing, -0.18);
   return true;
+}
+
+function startPeerPunch(peer, gen) {
+  if (!peer) return;
+  const g = Number(gen);
+  const hasGen = Number.isFinite(g) && g > 0;
+  if (hasGen) {
+    if (g < (peer.punchGen || 0)) return;
+    if (g === peer.punchGen) return;
+    const adopt = (peer.punchGen || 0) === 0 && (peer.punchT || 0) > 0.1;
+    peer.punchGen = g;
+    if (adopt) return;
+  } else if ((peer.punchT || 0) > 0.05) {
+    return;
+  }
+  peer.punchT = PUNCH_T;
 }
 
 function makePeerCup() {
@@ -1507,7 +1532,7 @@ function applyHurt(peer, nx, nz) {
 }
 
 function swingPunch(peer) {
-  if (peer) peer.punchT = PUNCH_T;
+  startPeerPunch(peer);
 }
 
 function handleHitEvent(msg) {
@@ -1650,6 +1675,7 @@ function animatePeer(peer, dt, t) {
   const gait = u.walk;
   const warped = gait + Math.sin(gait) * limp * 0.55;
   const amp = moving ? Math.min(0.9, 0.22 + vel * 0.22) : drunk * 0.18;
+  const punching = (peer.punchT || 0) > 0 && !peer.pee;
   const leftSwing = Math.sin(warped) * amp * (1 - limp * 0.58);
   const rightSwing = Math.sin(warped + Math.PI) * amp * (1 + limp * 0.28);
   const hitch = moving ? Math.max(0, -Math.sin(warped)) * limp * 0.07 : Math.sin(t * 1.3 + phase) * drunk * 0.03;
@@ -1663,19 +1689,23 @@ function animatePeer(peer, dt, t) {
     const loft = Math.min(1, rig.position.y / 0.45);
     u.legL.rotation.set(-0.55 - loft * 0.2, 0, limp * 0.08);
     u.legR.rotation.set(-0.32 - loft * 0.15, 0, -limp * 0.04);
-    u.armL.rotation.set(0.55 + loft * 0.35, 0, 0.15);
-    u.armR.rotation.set(peer.pouring ? -1.1 : 0.42 + loft * 0.25, 0, -0.12);
+    if (!punching) {
+      u.armL.rotation.set(0.55 + loft * 0.35, 0, 0.15);
+      u.armR.rotation.set(peer.pouring ? -1.1 : 0.42 + loft * 0.25, 0, -0.12);
+    }
     u.body.position.y = 0;
     u.body.rotation.set(0.12 * loft, 0, 0);
   } else {
     u.legL.rotation.set(leftSwing, 0, limp * 0.2);
     u.legR.rotation.set(rightSwing, 0, -limp * 0.06);
-    u.armL.rotation.set(-rightSwing * (0.7 - limp * 0.2) + Math.sin(t * 2.4 + phase) * drunk * 0.12, 0, -drunk * 0.07);
-    u.armR.rotation.set(
-      peer.pouring ? -1.1 : -leftSwing * 0.65 + Math.sin(t * 1.7 + phase) * drunk * 0.1,
-      0,
-      drunk * 0.05
-    );
+    if (!punching) {
+      u.armL.rotation.set(-rightSwing * (0.7 - limp * 0.2) + Math.sin(t * 2.4 + phase) * drunk * 0.12, 0, -drunk * 0.07);
+      u.armR.rotation.set(
+        peer.pouring ? -1.1 : -leftSwing * 0.65 + Math.sin(t * 1.7 + phase) * drunk * 0.1,
+        0,
+        drunk * 0.05
+      );
+    }
     u.body.position.y = hitch;
     u.body.rotation.set(
       moving ? Math.sin(warped) * Math.min(0.07, 0.03 + drunk * 0.03) : Math.sin(t * 0.9 + phase) * Math.min(0.04, drunk * 0.02),
@@ -1747,7 +1777,7 @@ function animatePeer(peer, dt, t) {
     u.armR.rotation.set(0.34 + ready, 0.04, -0.44);
   }
 
-  if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);
+  if (punching) poseRightPunch(u, peer.punchT);
 
   if (!peer.freezeHead) {
     const sway = drunkSway(drunk, t, phase, moving, u.walk);

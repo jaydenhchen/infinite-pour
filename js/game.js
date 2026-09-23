@@ -44,7 +44,7 @@ import {
   setWorldBlock,
   makeBatonMesh,
   seatBatonOnArm,
-} from "./multiplayer.js?v=130";
+} from "./multiplayer.js?v=131";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -1390,6 +1390,7 @@ let pantsStart = 0;
 let viewPantDrop = 0;
 let viewPants = null;
 let punchT = 0;
+let punchGen = 0;
 let knockVx = 0;
 let knockVz = 0;
 let lastKnock = { x: 0, z: 0 };
@@ -5017,6 +5018,7 @@ function startShift() {
       gf: glassState.fill,
       gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
       k: punchT > 0.02 ? 1 : 0,
+      pk: punchGen,
       aimx: punchAim().fx,
       aimz: punchAim().fz,
       ...(inCar
@@ -7365,8 +7367,13 @@ function bind() {
     }
     if (playing() && houseGames?.playing?.() == null && inCar == null && sitting == null && !peeing) {
       punchT = 0.32;
-      if (localPeer) localPeer.punchT = 0.32;
+      punchGen += 1;
+      if (localPeer) {
+        localPeer.punchT = 0.32;
+        localPeer.punchGen = punchGen;
+      }
       audio.punch();
+      pokePose();
       if (tryPunch() || punchCops()) audio.hit();
     }
     if (playing() && look && look !== held) {
