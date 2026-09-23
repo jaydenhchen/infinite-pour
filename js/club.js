@@ -11,7 +11,7 @@ const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 10);
 
 const SKINS = [0xe8b48a, 0xd4a07a, 0xc48a62, 0xf0c4a0, 0x8a5a3a, 0xb88858];
-const HAIRS = [0x1a100c, 0x3a1a12, 0xc9a227, 0x8a2018, 0x0c0c12, 0x4a2040, 0xf4ead0];
+const HAIRS = [0x1a100c, 0x3a1a12, 0xc9a227, 0x8a2018, 0x0c0c12, 0x4a2040, 0x2a140c, 0x5a3018, 0xc47820];
 const TOPS = [0x120814, 0xff3dac, 0xc41e3a, 0xf4ead0, 0x3dfff2, 0x6b1c9a, 0xe8c547, 0x1a1a28, 0x2e6bff, 0x8a1028];
 const BOTS = [0x121014, 0x1a1220, 0x2a1a14, 0x0c0c12, 0x3a2030, 0x1c2438];
 const SHIRTS = [0x121014, 0xf4ead0, 0x2e6bff, 0xc41e3a, 0x3a2030, 0x1a2a38, 0x4a3020, 0x202028];
@@ -51,17 +51,16 @@ export function createClub(api) {
     makeBottle,
     makeGlassMesh,
     randomDrink,
+    trackLooseGlass,
   } = api;
 
   const crowd = [];
   const chairs = [];
   const strobes = [];
   const spots = [];
-  const beams = [];
   const platters = [];
   const knobs = [];
   let ledWall = null;
-  let haze = [];
   let fader = null;
   let built = false;
 
@@ -75,7 +74,7 @@ export function createClub(api) {
 
   function onBalcony(x, z) {
     const south = z < -3.72 && x > CX0 + 0.3 && x < CX1 - 0.3;
-    const east = x > 24.55 && z < 2.05 && z > CZ0 + 0.3;
+    const east = x > 24.55 && z < 1.42 && z > CZ0 + 0.3;
     const west = x < 13.05 && z < 2.85 && z > CZ0 + 0.3;
     return south || east || west;
   }
@@ -110,6 +109,10 @@ export function createClub(api) {
         label: 0xd4af37,
       }
     );
+  }
+
+  function floorDrink() {
+    return randomDrink?.() || spiritDrink();
   }
 
   function holdCup() {
@@ -233,27 +236,31 @@ export function createClub(api) {
     const skinny = !!(girl && fit.skinny);
 
     const head = new THREE.Group();
-    head.position.set(0, 1.32, 0);
+    head.position.set(0, 1.3, 0);
     head.rotation.order = "YXZ";
-    addMesh(head, unitBox, skin, 0, 0, 0, 0.26, 0.26, 0.26);
-    addMesh(head, unitBox, eye, -0.055, 0.02, 0.13, 0.045, 0.035, 0.03);
-    addMesh(head, unitBox, eye, 0.055, 0.02, 0.13, 0.045, 0.035, 0.03);
+    head.scale.setScalar(1.06);
+    addMesh(head, unitBox, skin, 0, 0, 0, 0.25, 0.25, 0.25);
+    addMesh(head, unitBox, eye, -0.052, 0.03, 0.128, 0.055, 0.042, 0.03);
+    addMesh(head, unitBox, eye, 0.052, 0.03, 0.128, 0.055, 0.042, 0.03);
     if (girl) {
-      addMesh(head, unitBox, hair, 0, 0.1, -0.04, 0.3, 0.14, 0.32);
-      addMesh(head, unitBox, hair, 0, -0.04, -0.15, 0.12, 0.28, 0.12);
-      addMesh(head, unitBox, hair, 0.12, 0.04, 0.04, 0.08, 0.16, 0.16);
-      addMesh(head, unitBox, hair, -0.12, 0.04, 0.04, 0.08, 0.16, 0.16);
+      addMesh(head, unitBox, hair, 0, 0.12, -0.03, 0.32, 0.16, 0.34);
+      addMesh(head, unitBox, hair, 0, -0.02, -0.16, 0.14, 0.3, 0.14);
+      addMesh(head, unitBox, hair, 0.13, 0.05, 0.05, 0.09, 0.18, 0.18);
+      addMesh(head, unitBox, hair, -0.13, 0.05, 0.05, 0.09, 0.18, 0.18);
       if (hash01(seed, 14) > 0.45) {
         addMesh(head, unitBox, lambert(0xe8c547), -0.14, 0.0, 0.04, 0.03, 0.08, 0.03);
         addMesh(head, unitBox, lambert(0xe8c547), 0.14, 0.0, 0.04, 0.03, 0.08, 0.03);
       }
     } else if (guard) {
-      addMesh(head, unitBox, hair, 0, 0.12, -0.01, 0.27, 0.05, 0.27);
+      addMesh(head, unitBox, hair, 0, 0.11, -0.01, 0.28, 0.12, 0.28);
+      addMesh(head, unitBox, hair, 0, 0.04, -0.12, 0.26, 0.12, 0.1);
       addMesh(head, unitBox, lambert(0x121014), 0, 0.03, 0.14, 0.17, 0.04, 0.03);
       addMesh(head, unitBox, lambert(0x2a2a32), 0.14, 0.02, 0.02, 0.03, 0.04, 0.03);
       addMesh(head, unitBox, lambert(0x2a2a32), 0.13, -0.08, -0.02, 0.012, 0.16, 0.012);
     } else {
-      addMesh(head, unitBox, hair, 0, 0.12, -0.02, 0.28, 0.08, 0.28);
+      addMesh(head, unitBox, hair, 0, 0.12, -0.02, 0.3, 0.14, 0.3);
+      addMesh(head, unitBox, hair, 0, 0.04, -0.13, 0.28, 0.14, 0.1);
+      if (hash01(seed, 14) > 0.55) addMesh(head, unitBox, hair, 0, 0.02, 0.1, 0.2, 0.08, 0.08);
     }
     if (dj) {
       addMesh(head, unitBox, lambert(0x121014), 0, 0.02, 0, 0.3, 0.08, 0.22);
@@ -291,8 +298,9 @@ export function createClub(api) {
     legR.position.set(0.09, 0.72, 0);
     body.add(legR);
 
-    if (girl) body.scale.setScalar(0.98);
-    if (guard) body.scale.set(1.14, 1.1, 1.16);
+    if (girl) body.scale.setScalar(0.93);
+    else if (guard) body.scale.set(1.04, 1.02, 1.04);
+    else body.scale.setScalar(0.95);
     const stars = new THREE.Group();
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * Math.PI * 2;
@@ -323,13 +331,13 @@ export function createClub(api) {
       tz: z,
       drunk,
       gender: kind === "f" || kind === "djf" ? "f" : "m",
-      r: kind === "guard" ? 0.5 : kind.startsWith("dj") ? 0.4 : 0.36,
+      r: kind === "guard" ? 0.46 : kind.startsWith("dj") ? 0.4 : 0.4,
       phase: hash01(seed, 21) * Math.PI * 2,
       style: (hash01(seed, 22) * 4) | 0,
       mode,
       walk: hash01(seed, 23) * 10,
-      wait: hash01(seed, 24) * 2,
-      speed: 0.7 + hash01(seed, 25) * 0.55,
+      wait: hash01(seed, 24) * 0.6,
+      speed: 0.95 + hash01(seed, 25) * 0.7,
       partner: extra.partner || null,
       chair: extra.chair || null,
       kissSide: extra.kissSide || 0,
@@ -338,25 +346,45 @@ export function createClub(api) {
     return person;
   }
 
-  function packSpots(cx, cz, w, d, n, minR, avoid) {
+  function packSpots(cx, cz, w, d, n, minR, avoid, taken = []) {
     const out = [];
     let tries = 0;
-    while (out.length < n && tries < n * 50) {
+    const blocked = (x, z) =>
+      !!(avoid && avoid(x, z)) ||
+      out.some((s) => Math.hypot(s.x - x, s.z - z) < minR) ||
+      taken.some((s) => Math.hypot(s.x - x, s.z - z) < minR);
+    while (out.length < n && tries < n * 90) {
       tries++;
       const x = cx + (hash01(tries, n, 3) - 0.5) * w;
       const z = cz + (hash01(tries, n, 7) - 0.5) * d;
-      if (avoid && avoid(x, z)) continue;
-      if (out.some((s) => Math.hypot(s.x - x, s.z - z) < minR)) continue;
+      if (blocked(x, z)) continue;
       out.push({ x, z });
     }
+    taken.push(...out);
+    return out;
+  }
+
+  function packLine(x0, z0, x1, z1, n, minR, avoid, taken, yaw) {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const u = n <= 1 ? 0.5 : i / (n - 1);
+      const x = x0 + (x1 - x0) * u;
+      const z = z0 + (z1 - z0) * u;
+      if (avoid && avoid(x, z)) continue;
+      if (taken.some((s) => Math.hypot(s.x - x, s.z - z) < minR)) continue;
+      out.push({ x, z, yaw });
+    }
+    taken.push(...out);
     return out;
   }
 
   function blockedFloor(x, z) {
-    if (x > 24.5) return true;
-    if (z < -3.55) return true;
-    if (x < 13.4 && z > 2.4) return true;
-    if (Math.abs(x - 19) < 1.1 && z > 5.2) return true;
+    if (x > 25.15 && z > 1.35) return true;
+    if (z < -3.4 && x > 15.1 && x < 22.9) return true;
+    if (x < 12.6 && z > 2.85) return true;
+    if (Math.abs(x - 19) < 1.2 && z > 5.05) return true;
+    if (x < CX0 + 0.55 || x > CX1 - 0.55) return true;
+    if (z < CZ0 + 0.55 || z > CZ1 - 0.55) return true;
     return false;
   }
 
@@ -405,24 +433,26 @@ export function createClub(api) {
   function buildStairs() {
     const wood = lambert(0x1a1218);
     const rail = lambert(0x3dfff2, { emissive: 0x3dfff2, emissiveIntensity: 0.35 });
-    const n = 16;
+    const n = 14;
     const rise = BALC_Y / n;
-    const run = 0.28;
+    const run = 0.3;
     const x = 26.15;
-    const z0 = 5.55;
+    const zTop = 1.56;
     for (let i = 0; i < n; i++) {
-      const z = z0 - i * run;
+      const z = zTop + (n - 1 - i) * run;
       const h = (i + 1) * rise;
-      addMesh(scene, unitBox, wood, x, h / 2, z, 1.55, h, run - 0.02);
-      climbSolid(x, z, 1.6, run + 0.03, h);
-      camBox(x, h / 2, z, 1.6, h, run);
+      addMesh(scene, unitBox, wood, x, h / 2, z, 1.7, h, run - 0.02);
+      climbSolid(x, z, 1.76, run + 0.04, h);
+      camBox(x, h / 2, z, 1.76, h, run);
     }
-    const midZ = z0 - ((n - 1) * run) / 2;
-    const span = n * run + 0.12;
-    addMesh(scene, unitBox, rail, 25.38, 1.22, midZ, 0.05, 2.42, span);
-    addMesh(scene, unitBox, rail, 26.92, 1.22, midZ, 0.05, 2.42, span);
-    worldSolid(25.38, midZ, 0.12, span, 2.42);
-    worldSolid(26.92, midZ, 0.12, span, 2.42);
+    const midZ = zTop + ((n - 1) * run) / 2;
+    const span = n * run + 0.08;
+    addMesh(scene, unitBox, rail, 25.22, 1.22, midZ, 0.05, 2.42, span);
+    addMesh(scene, unitBox, rail, 27.08, 1.22, midZ, 0.05, 2.42, span);
+    worldSolid(25.22, midZ, 0.12, span, 2.42);
+    worldSolid(27.08, midZ, 0.12, span, 2.42);
+    addMesh(scene, unitBox, wood, x, BALC_Y - 0.07, zTop - 0.2, 1.7, 0.14, 0.38);
+    floorSolid(x, zTop - 0.2, 1.76, 0.4, BALC_Y, 0.16);
   }
 
   function makeChair(x, z, yaw) {
@@ -454,7 +484,7 @@ export function createClub(api) {
     const glow = lambert(0xff3dac, { emissive: 0xff3dac, emissiveIntensity: 0.45 });
     const decks = [
       { x: 19.02, z: -5.05, w: 17.2, d: 2.55 },
-      { x: 26.15, z: -1.55, w: 3.15, d: 7.15 },
+      { x: 26.15, z: -1.85, w: 3.15, d: 6.5 },
       { x: 11.55, z: -1.15, w: 2.55, d: 6.35 },
     ];
     for (const d of decks) {
@@ -465,10 +495,10 @@ export function createClub(api) {
     }
     const rails = [
       { x: 19.02, z: -3.8, w: 16.9, d: 0.08 },
-      { x: 24.6, z: -0.85, w: 0.08, d: 5.7 },
+      { x: 24.6, z: -1.2, w: 0.08, d: 5.1 },
       { x: 12.8, z: -0.55, w: 0.08, d: 5.1 },
       { x: 10.42, z: -1.2, w: 0.08, d: 6.4 },
-      { x: 27.55, z: -1.55, w: 0.08, d: 7.1 },
+      { x: 27.55, z: -1.85, w: 0.08, d: 6.5 },
       { x: 11.55, z: 2.0, w: 2.5, d: 0.08 },
     ];
     for (const r of rails) {
@@ -487,24 +517,12 @@ export function createClub(api) {
   }
 
   function addSkySpot(x, z, phase, hex) {
-    const sl = new THREE.SpotLight(hex, 3.4, 18, 0.3, 0.42, 1.15);
-    sl.position.set(x, 5.08, z);
-    sl.target.position.set(x + 1.2, 0.15, z - 0.4);
+    const sl = new THREE.SpotLight(hex, 4.8, 22, 0.48, 0.58, 1.02);
+    sl.position.set(x, 5.02, z);
+    sl.target.position.set(x, 0.95, z);
     scene.add(sl);
     scene.add(sl.target);
     spots.push({ light: sl, hex, phase, ax: x, az: z });
-    const beam = addMesh(
-      scene,
-      unitCyl,
-      lambert(hex, { transparent: true, opacity: 0.08, emissive: hex, emissiveIntensity: 0.4, depthWrite: false }),
-      x,
-      5.08,
-      z,
-      0.16,
-      2.7,
-      0.16
-    );
-    beams.push({ mesh: beam, light: sl, hex, phase });
   }
 
   function buildLights() {
@@ -541,51 +559,51 @@ export function createClub(api) {
       scene.add(pl);
       strobes.push({ light: pl, hex: SKY[i % SKY.length], phase: i * 0.9 });
     }
-    for (let i = 0; i < 3; i++) {
-      const h = new THREE.Mesh(
-        new THREE.PlaneGeometry(12, 2.6),
-        lambert(0x6622aa, { transparent: true, opacity: 0.04, side: THREE.DoubleSide, depthWrite: false })
-      );
-      h.position.set(19.0, 1.15 + i * 0.55, 0.15);
-      h.rotation.x = -0.12;
-      scene.add(h);
-      haze.push(h);
-    }
   }
 
   function scatterTrash() {
-    const puddleCols = [0xc41e3a, 0xe8c547, 0x3dfff2, 0xf4ead0, 0x6b1c9a];
-    for (let i = 0; i < 22; i++) {
-      const x = 13.6 + hash01(i, 2) * 10.2;
-      const z = -2.8 + hash01(i, 5) * 7.0;
+    const puddleCols = [0xc41e3a, 0xe8c547, 0x3dfff2, 0xf4ead0, 0x6b1c9a, 0xff3dac];
+    for (let i = 0; i < 52; i++) {
+      const x = 11.05 + hash01(i, 2) * 13.2;
+      const z = -3.25 + hash01(i, 5) * 8.8;
       if (blockedFloor(x, z)) continue;
       const roll = hash01(i, 8);
-      if (makeGlassMesh && roll > 0.28) {
-        const cup = makeGlassMesh(hash01(i, 9) > 0.7 ? "shot" : "pint");
+      if (makeGlassMesh && roll > 0.32) {
+        const type = hash01(i, 9) > 0.64 ? "shot" : hash01(i, 10) > 0.5 ? "rocks" : "pint";
+        const cup = makeGlassMesh(type);
         cup.scale.multiplyScalar(0.9);
-        cup.position.set(x, 0.03, z);
-        cup.rotation.set(Math.PI / 2, hash01(i, 11) * 6, 0.18);
+        const tipped = roll > 0.68;
+        cup.position.set(x, tipped ? 0.03 : 0.07, z);
+        cup.rotation.set(tipped ? Math.PI / 2 : 0.06, hash01(i, 11) * 6, tipped ? 0.18 : 0.04);
+        cup.userData.type = type;
+        cup.userData.gtype = type;
+        cup.userData.gfill = 0.14 + hash01(i, 14) * 0.5;
+        cup.userData.gparts = [{ name: "Club pour", amount: cup.userData.gfill, color: 0xe8c547 }];
         scene.add(cup);
-      } else if (makeBottle && roll > 0.08) {
-        const bot = makeBottle(spiritDrink());
+        registerPick(cup);
+        trackLooseGlass?.(cup);
+      } else if (makeBottle) {
+        const bot = makeBottle(hash01(i, 15) > 0.38 ? floorDrink() : spiritDrink());
         bot.scale.multiplyScalar(0.72);
         bot.position.set(x, 0.04, z);
         bot.rotation.set(Math.PI / 2, hash01(i, 12) * 4, 0.15);
+        bot.userData.stock = false;
         scene.add(bot);
+        registerPick(bot);
       }
     }
-    for (let i = 0; i < 14; i++) {
-      const x = 13.4 + hash01(i, 20) * 10.4;
-      const z = -3.0 + hash01(i, 21) * 7.2;
+    for (let i = 0; i < 38; i++) {
+      const x = 11.0 + hash01(i, 20) * 13.3;
+      const z = -3.2 + hash01(i, 21) * 8.7;
       if (blockedFloor(x, z)) continue;
       const col = puddleCols[i % puddleCols.length];
-      const p = new THREE.Mesh(
-        new THREE.CircleGeometry(0.12 + hash01(i, 22) * 0.18, 10),
-        lambert(col, { transparent: true, opacity: 0.3, emissive: col, emissiveIntensity: 0.14 })
+      const puddle = new THREE.Mesh(
+        new THREE.CircleGeometry(0.11 + hash01(i, 22) * 0.22, 10),
+        lambert(col, { transparent: true, opacity: 0.32, emissive: col, emissiveIntensity: 0.16 })
       );
-      p.rotation.x = -Math.PI / 2;
-      p.position.set(x, 0.015, z);
-      scene.add(p);
+      puddle.rotation.x = -Math.PI / 2;
+      puddle.position.set(x, 0.015, z);
+      scene.add(puddle);
     }
   }
 
@@ -607,9 +625,9 @@ export function createClub(api) {
 
   function floorTargets() {
     const out = [];
-    for (let i = 0; i < 22; i++) {
-      const x = 14.0 + hash01(i, 40) * 9.2;
-      const z = -2.4 + hash01(i, 41) * 6.2;
+    for (let i = 0; i < 40; i++) {
+      const x = 11.2 + hash01(i, 40) * 13.0;
+      const z = -3.1 + hash01(i, 41) * 8.4;
       if (!blockedFloor(x, z)) out.push([x, z]);
     }
     return out.length ? out : [[16.5, 0.4]];
@@ -647,31 +665,61 @@ export function createClub(api) {
     return true;
   }
 
+  function facePartner(p) {
+    if (!p.partner) return;
+    p.yaw = Math.atan2(p.partner.x - p.x, p.partner.z - p.z);
+    p.rig.rotation.y = p.yaw;
+  }
+
   function addKiss(x, z, yaw, seed, y = 0) {
     if (y < 1 && blockedFloor(x, z)) return;
     const fx = Math.sin(yaw);
     const fz = Math.cos(yaw);
-    const a = placePerson("f", x + fx * 0.2, z + fz * 0.2, y, yaw + Math.PI, 0.4 + hash01(seed, 60) * 0.5, seed, "kiss", {
+    const gap = 0.39;
+    const a = placePerson("f", x + fx * gap, z + fz * gap, y, yaw + Math.PI, 0.4 + hash01(seed, 60) * 0.5, seed, "kiss", {
       kissSide: -1,
     });
-    const b = placePerson(hash01(seed, 61) > 0.25 ? "m" : "f", x - fx * 0.2, z - fz * 0.2, y, yaw, 0.35 + hash01(seed, 62) * 0.5, seed + 10, "kiss", {
+    const b = placePerson(hash01(seed, 61) > 0.25 ? "m" : "f", x - fx * gap, z - fz * gap, y, yaw, 0.35 + hash01(seed, 62) * 0.5, seed + 10, "kiss", {
       kissSide: 1,
     });
     a.partner = b;
     b.partner = a;
+    a.r = 0.28;
+    b.r = 0.28;
+    facePartner(a);
+    facePartner(b);
   }
 
   function buildCrowd() {
-    const dancers = packSpots(18.6, 0.55, 9.6, 5.8, 34, 0.7, blockedFloor);
+    const taken = [
+      { x: 15.2, z: 1.8 },
+      { x: 21.4, z: -0.6 },
+      { x: 17.8, z: 3.1 },
+      { x: 19.6, z: 0.8 },
+    ];
+    const dancers = packSpots(18.35, 0.9, 14.6, 8.3, 64, 0.8, blockedFloor, taken);
     dancers.forEach((s, i) => {
       const girl = hash01(i, 4) > 0.4;
       placePerson(girl ? "f" : "m", s.x, s.z, 0, (hash01(i, 11) - 0.5) * 2.2, 0.2 + hash01(i, 9) * 1.2, i + 3, "dance");
     });
-    const minglers = packSpots(18.2, 0.7, 9.8, 6.0, 18, 0.82, blockedFloor);
+    const minglers = packSpots(18.3, 0.95, 14.8, 8.4, 22, 0.86, blockedFloor, taken);
     minglers.forEach((s, i) => {
       const girl = hash01(i, 50) > 0.42;
       const p = placePerson(girl ? "f" : "m", s.x, s.z, 0, hash01(i, 51) * 6, 0.15 + hash01(i, 52) * 0.9, i + 80, "mingle");
       pickTarget(p);
+    });
+    const walls = [
+      ...packLine(10.9, -3.15, 10.9, 2.45, 8, 0.8, blockedFloor, taken, Math.PI / 2),
+      ...packLine(11.5, 5.52, 17.25, 5.52, 7, 0.8, blockedFloor, taken, Math.PI),
+      ...packLine(20.75, 5.52, 24.05, 5.52, 5, 0.8, blockedFloor, taken, Math.PI),
+      ...packLine(13.35, -3.22, 24.05, -3.22, 10, 0.8, blockedFloor, taken, 0),
+      ...packLine(24.4, -3.05, 24.4, 1.05, 6, 0.8, blockedFloor, taken, -Math.PI / 2),
+    ];
+    walls.forEach((s, i) => {
+      const girl = hash01(i, 88) > 0.38;
+      const dance = hash01(i, 89) > 0.28;
+      const p = placePerson(girl ? "f" : "m", s.x, s.z, 0, s.yaw || 0, 0.18 + hash01(i, 90) * 0.9, i + 240, dance ? "dance" : "mingle");
+      if (!dance) pickTarget(p);
     });
     addKiss(15.2, 1.8, 0.4, 120);
     addKiss(21.4, -0.6, -0.7, 121);
@@ -694,22 +742,24 @@ export function createClub(api) {
       [12.4, -0.9],
       [18.4, -4.35],
       [23.8, -4.1],
+      [16.2, -4.5],
+      [25.5, -2.4],
     ];
     vipWalk.forEach((s, i) => {
       const girl = hash01(i, 75) > 0.4;
       const p = placePerson(girl ? "f" : "m", s[0], s[1], BALC_Y, 0, 0.2 + hash01(i, 76) * 0.7, i + 180, "mingle");
       pickTarget(p);
     });
-    placePerson("guard", 17.72, 7.32, 0, 0, 0, 200, "guard");
+    placePerson("guard", 20.92, 7.32, 0, 0, 0, 200, "guard");
     const gold = lambert(0xc9a227, { emissive: 0x6a4a10, emissiveIntensity: 0.18 });
     const rope = lambert(0x6b1020);
-    addMesh(scene, unitCyl, gold, 16.85, 0.48, 7.55, 0.04, 0.96, 0.04);
-    addMesh(scene, unitCyl, gold, 16.85, 0.98, 7.55, 0.07, 0.04, 0.07);
-    addMesh(scene, unitCyl, gold, 15.55, 0.48, 7.55, 0.04, 0.96, 0.04);
-    addMesh(scene, unitCyl, gold, 15.55, 0.98, 7.55, 0.07, 0.04, 0.07);
-    addMesh(scene, unitBox, rope, 16.2, 0.86, 7.55, 1.22, 0.04, 0.04);
-    worldSolid(16.85, 7.55, 0.16, 0.16, 1.0);
-    worldSolid(15.55, 7.55, 0.16, 0.16, 1.0);
+    addMesh(scene, unitCyl, gold, 21.75, 0.48, 7.55, 0.04, 0.96, 0.04);
+    addMesh(scene, unitCyl, gold, 21.75, 0.98, 7.55, 0.07, 0.04, 0.07);
+    addMesh(scene, unitCyl, gold, 23.05, 0.48, 7.55, 0.04, 0.96, 0.04);
+    addMesh(scene, unitCyl, gold, 23.05, 0.98, 7.55, 0.07, 0.04, 0.07);
+    addMesh(scene, unitBox, rope, 22.4, 0.86, 7.55, 1.22, 0.04, 0.04);
+    worldSolid(21.75, 7.55, 0.16, 0.16, 1.0);
+    worldSolid(23.05, 7.55, 0.16, 0.16, 1.0);
   }
 
   function buildRoom() {
@@ -788,21 +838,27 @@ export function createClub(api) {
     const u = p.rig.userData;
     const d = p.drunk;
     const beat = t * 2.15 + p.phase;
-    const bounce = Math.abs(Math.sin(beat * Math.PI)) * (0.03 + (p.style === 2 ? 0.02 : 0.01));
-    u.body.position.y = bounce;
-    u.body.rotation.set(Math.sin(beat) * 0.05, 0, Math.sin(beat * 0.5) * (0.08 + d * 0.05));
+    const hop = Math.max(0, Math.sin(beat * Math.PI));
+    const jump = hop * hop;
+    u.body.position.y = jump * (0.16 + (p.style === 2 || p.style === 3 ? 0.08 : 0.03) + d * 0.04);
+    u.body.position.x = Math.sin(beat * 0.5) * 0.03;
+    u.body.rotation.set(Math.sin(beat) * 0.08, 0, Math.sin(beat * 0.5) * (0.12 + d * 0.06));
     if (p.style === 0) {
-      u.armL.rotation.set(-1.05 + Math.sin(beat) * 0.65, 0.1, 0.35);
-      u.armR.rotation.set(-0.95 + Math.cos(beat) * 0.6, -0.1, -0.3);
+      u.armL.rotation.set(-1.25 + Math.sin(beat) * 0.85, 0.1, 0.45);
+      u.armR.rotation.set(-1.15 + Math.cos(beat) * 0.8, -0.1, -0.4);
     } else if (p.style === 1) {
-      u.armL.rotation.set(-0.35, 0.15, 1.05 + Math.sin(beat) * 0.3);
-      u.armR.rotation.set(-0.35, -0.15, -1.05 + Math.cos(beat) * 0.3);
+      u.armL.rotation.set(-0.55 - jump * 0.7, 0.15, 1.15 + Math.sin(beat) * 0.4);
+      u.armR.rotation.set(-0.55 - jump * 0.7, -0.15, -1.15 + Math.cos(beat) * 0.4);
+    } else if (p.style === 3) {
+      u.armL.rotation.set(-1.65 + jump * 0.95, 0.2, 0.35);
+      u.armR.rotation.set(-1.65 + jump * 0.95, -0.2, -0.35);
     } else {
-      u.armL.rotation.set(-0.75 + Math.sin(beat + 1) * 0.45, 0, 0.5);
-      u.armR.rotation.set(-0.75 + Math.cos(beat + 1) * 0.45, 0, -0.5);
+      u.armL.rotation.set(-0.95 + Math.sin(beat + 1) * 0.65, 0, 0.6);
+      u.armR.rotation.set(-0.95 + Math.cos(beat + 1) * 0.65, 0, -0.6);
     }
-    u.legL.rotation.set(Math.sin(beat) * 0.26, 0, 0.06);
-    u.legR.rotation.set(Math.sin(beat + Math.PI) * 0.22, 0, -0.04);
+    const tuck = jump * 0.48;
+    u.legL.rotation.set(Math.sin(beat) * 0.22 - tuck, 0, 0.06);
+    u.legR.rotation.set(Math.sin(beat + Math.PI) * 0.2 - tuck, 0, -0.04);
     const spin = d > 0.95 ? t * (0.5 + d) + p.phase : Math.sin(t * (0.7 + d) + p.phase) * d * 0.4;
     u.head.rotation.set(Math.sin(t * 1.3 + p.phase) * (0.1 + d * 0.14), spin * (d > 0.95 ? 1 : 0.3), Math.sin(t * 1.5 + p.phase) * d * 0.16);
     if (u.stars) u.stars.visible = d > 0.95;
@@ -826,7 +882,7 @@ export function createClub(api) {
     const beat = t * 2.15;
     const scratch = Math.sin(t * 7.2);
     const slide = Math.sin(t * 1.35);
-    const hop = Math.abs(Math.sin(beat * Math.PI)) * 0.018;
+    const hop = Math.abs(Math.sin(beat * Math.PI)) * 0.04;
     u.body.position.set(slide * 0.07, hop, 0.08);
     u.body.rotation.set(-0.26, slide * 0.14, 0);
     u.armL.position.set(0.2, 0.82, 0.26);
@@ -840,25 +896,25 @@ export function createClub(api) {
 
   function poseSway(p, t) {
     const u = p.rig.userData;
-    u.body.position.y = Math.sin(t * 1.15 + p.phase) * 0.02;
-    u.body.rotation.set(0.04, 0, Math.sin(t * 0.75 + p.phase) * (0.05 + p.drunk * 0.04));
-    u.armL.rotation.set(-0.22, 0, 0.32 + Math.sin(t + p.phase) * 0.12);
-    u.armR.rotation.set(-0.35, 0, -0.22);
-    u.legL.rotation.set(0.04, 0, 0.06);
-    u.legR.rotation.set(-0.03, 0, -0.04);
+    u.body.position.y = Math.abs(Math.sin(t * 2.3 + p.phase)) * 0.055;
+    u.body.rotation.set(0.05, 0, Math.sin(t * 0.9 + p.phase) * (0.08 + p.drunk * 0.05));
+    u.armL.rotation.set(-0.35 + Math.sin(t * 1.4 + p.phase) * 0.28, 0, 0.4 + Math.sin(t + p.phase) * 0.18);
+    u.armR.rotation.set(-0.45 + Math.cos(t * 1.4 + p.phase) * 0.22, 0, -0.3);
+    u.legL.rotation.set(0.06, 0, 0.06);
+    u.legR.rotation.set(-0.05, 0, -0.04);
     u.head.rotation.set(Math.sin(t * 1.05 + p.phase) * p.drunk * 0.12, Math.sin(t * 0.55 + p.phase) * 0.22, 0);
     if (u.stars) u.stars.visible = p.drunk > 1.0;
   }
 
   function poseWalk(p, t) {
     const u = p.rig.userData;
-    const gait = t * 5.4 + p.phase;
-    u.body.position.y = Math.abs(Math.sin(gait)) * 0.03;
-    u.body.rotation.set(0.04, 0, Math.sin(gait) * 0.04);
-    u.armL.rotation.set(Math.sin(gait + Math.PI) * 0.55, 0, 0.12);
-    u.armR.rotation.set(Math.sin(gait) * 0.55, 0, -0.12);
-    u.legL.rotation.set(Math.sin(gait) * 0.5, 0, 0);
-    u.legR.rotation.set(Math.sin(gait + Math.PI) * 0.5, 0, 0);
+    const gait = t * 6.2 + p.phase;
+    u.body.position.y = Math.abs(Math.sin(gait)) * 0.075;
+    u.body.rotation.set(0.06, 0, Math.sin(gait) * 0.06);
+    u.armL.rotation.set(Math.sin(gait + Math.PI) * 0.7, 0, 0.14);
+    u.armR.rotation.set(Math.sin(gait) * 0.7, 0, -0.14);
+    u.legL.rotation.set(Math.sin(gait) * 0.62, 0, 0);
+    u.legR.rotation.set(Math.sin(gait + Math.PI) * 0.62, 0, 0);
     u.head.rotation.set(0.05, 0, 0);
   }
 
@@ -884,14 +940,32 @@ export function createClub(api) {
 
   function poseKiss(p, t) {
     const u = p.rig.userData;
-    const lean = 0.22 + Math.sin(t * 1.3 + p.phase) * 0.03;
-    u.body.position.y = 0.01;
-    u.body.rotation.set(lean, 0, p.kissSide * 0.04);
-    u.armL.rotation.set(-0.85, 0.35, 0.75);
-    u.armR.rotation.set(-0.7, -0.25, -0.55);
-    u.legL.rotation.set(0.08, 0, 0.1);
-    u.legR.rotation.set(-0.05, 0, -0.06);
-    u.head.rotation.set(0.28, -p.kissSide * 0.12, p.kissSide * 0.08);
+    if (p.partner) {
+      p.yaw = Math.atan2(p.partner.x - p.x, p.partner.z - p.z);
+      const dx = p.partner.x - p.x;
+      const dz = p.partner.z - p.z;
+      const dist = Math.hypot(dx, dz) || 0.0001;
+      const want = 0.78;
+      if (Math.abs(dist - want) > 0.01) {
+        const midX = (p.x + p.partner.x) * 0.5;
+        const midZ = (p.z + p.partner.z) * 0.5;
+        const ux = dx / dist;
+        const uz = dz / dist;
+        p.x = midX - ux * (want * 0.5);
+        p.z = midZ - uz * (want * 0.5);
+        p.partner.x = midX + ux * (want * 0.5);
+        p.partner.z = midZ + uz * (want * 0.5);
+        p.partner.yaw = Math.atan2(p.x - p.partner.x, p.z - p.partner.z);
+      }
+    }
+    const sway = Math.sin(t * 1.35 + p.phase) * 0.025;
+    u.body.position.set(0, 0.01, 0.02);
+    u.body.rotation.set(-0.12 + sway, 0, p.kissSide * 0.03);
+    u.armL.rotation.set(-0.55, 0.72, 1.28);
+    u.armR.rotation.set(-0.48, -0.62, -1.18);
+    u.legL.rotation.set(0.1, 0, 0.08);
+    u.legR.rotation.set(-0.04, 0, -0.06);
+    u.head.rotation.set(-0.16 + sway * 0.5, 0, p.kissSide * 0.04);
     if (u.stars) u.stars.visible = p.drunk > 1.05;
   }
 
@@ -905,7 +979,7 @@ export function createClub(api) {
     const dz = p.tz - p.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 0.16) {
-      p.wait = 1.1 + hash01(p.x, p.z, p.phase) * 3.2;
+      p.wait = 0.35 + hash01(p.x, p.z, p.phase) * 1.35;
       return false;
     }
     const step = Math.min(dist, p.speed * dt);
@@ -948,7 +1022,7 @@ export function createClub(api) {
         const dist = Math.hypot(dx, dz) || 0.0001;
         const need = a.r + b.r;
         if (dist >= need) continue;
-        const push = (need - dist) * 0.55;
+        const push = (need - dist) * 0.82;
         const ux = dx / dist;
         const uz = dz / dist;
         if (a.mode !== "kiss") {
@@ -966,15 +1040,17 @@ export function createClub(api) {
         const dist = Math.hypot(dx, dz) || 0.0001;
         const need = a.r + 0.32;
         if (dist < need) {
-          a.x += (dx / dist) * (need - dist) * 0.8;
-          a.z += (dz / dist) * (need - dist) * 0.8;
+          a.x += (dx / dist) * (need - dist) * 0.85;
+          a.z += (dz / dist) * (need - dist) * 0.85;
         }
       }
       if (a.mode === "dance") {
-        a.x += (a.homeX - a.x) * Math.min(1, dt * 0.28);
-        a.z += (a.homeZ - a.z) * Math.min(1, dt * 0.28);
-        a.x = THREE.MathUtils.clamp(a.x, 13.6, 24.2);
-        a.z = THREE.MathUtils.clamp(a.z, -3.2, 4.6);
+        a.x += (a.homeX - a.x) * Math.min(1, dt * 0.16);
+        a.z += (a.homeZ - a.z) * Math.min(1, dt * 0.16);
+        if (a.y < 1) {
+          a.x = THREE.MathUtils.clamp(a.x, CX0 + 0.7, CX1 - 0.7);
+          a.z = THREE.MathUtils.clamp(a.z, CZ0 + 0.7, CZ1 - 0.7);
+        }
       }
       a.rig.position.set(a.x, a.y, a.z);
       if (a.mode !== "sit") a.rig.rotation.y = a.yaw;
@@ -1001,9 +1077,7 @@ export function createClub(api) {
     if (!built) return;
     const pos = playerPos();
     const inHere = inside(pos.x, pos.z);
-    const dist = Math.hypot(pos.x - 19.0, pos.z - 0.1);
-    const vol = inHere ? 1 : THREE.MathUtils.clamp(1.2 - dist / 16, 0, 0.5);
-    audio.clubTick?.(dt, vol);
+    audio.clubTick?.(dt, inHere ? 1 : 0);
 
     const beat = (t * 2.15) % 1;
     const flash = beat < 0.08 || (beat > 0.5 && beat < 0.58) || (beat > 0.75 && beat < 0.8);
@@ -1014,25 +1088,25 @@ export function createClub(api) {
         s.light.color.setHex(SKY[(Math.floor(t * 2.4 + s.phase) + (flash ? 1 : 0)) % SKY.length]);
       }
     }
+    const lit = crowd.filter((p) => p.mode === "dance" || p.mode === "mingle" || p.mode === "kiss");
     for (const s of spots) {
       const hue = SKY[(Math.floor(t * 1.8 + s.phase) + (flash ? 1 : 0)) % SKY.length];
       s.light.color.setHex(hue);
-      s.light.intensity = flash ? 7.2 : 2.2 + Math.sin(t * 7 + s.phase) * 0.7;
-      s.light.target.position.set(19 + Math.sin(t * 0.55 + s.phase) * 5.5, 0.15, Math.cos(t * 0.4 + s.phase) * 3.4);
-    }
-    for (const b of beams) {
-      b.mesh.position.copy(b.light.position);
-      b.mesh.lookAt(b.light.target.position);
-      b.mesh.rotateX(Math.PI / 2);
-      b.mesh.material.color.set(b.light.color);
-      b.mesh.material.emissive.copy(b.light.color);
-      b.mesh.material.opacity = flash ? 0.16 : 0.055;
+      s.light.intensity = flash ? 8.4 : 3.4 + Math.sin(t * 7 + s.phase) * 0.9;
+      if (lit.length) {
+        const i = (Math.floor(t * 0.55 + s.phase * 2.2) + spots.indexOf(s) * 3) % lit.length;
+        const a = lit[i];
+        const b = lit[(i + 1) % lit.length];
+        const u = 0.5 + 0.5 * Math.sin(t * 1.15 + s.phase);
+        s.light.target.position.set(a.x + (b.x - a.x) * u, 0.95 + a.y, a.z + (b.z - a.z) * u);
+      } else {
+        s.light.target.position.set(19 + Math.sin(t * 0.55 + s.phase) * 5.5, 0.95, Math.cos(t * 0.4 + s.phase) * 3.4);
+      }
     }
     if (ledWall) ledWall.material.color.setHSL((t * 0.22) % 1, 0.9, 0.48);
     for (const p of platters) p.rotation.y = t * 4.8;
     for (let i = 0; i < knobs.length; i++) knobs[i].rotation.y = t * (1.6 + i * 0.35);
     if (fader) fader.position.x = 19.0 + Math.sin(t * 1.3) * 0.16;
-    for (const h of haze) h.material.opacity = 0.028 + Math.sin(t * 0.7) * 0.012;
 
     for (const p of crowd) {
       if (p.mode === "mingle") {
