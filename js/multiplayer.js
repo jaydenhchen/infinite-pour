@@ -1148,8 +1148,26 @@ function poseDrive(peer) {
   u.armR.rotation.set(peer.pouring ? -1.1 : -0.98, -0.16, 0.4);
 }
 
-function poseHurt(_u, _hurtT) {
-  return false;
+export function poseHurt(u, hurtT) {
+  if (!u || hurtT <= 0) return false;
+  const a = Math.min(1, hurtT / 0.18);
+  if (u.head) {
+    u.head.rotation.x += 0.34 * a;
+    u.head.rotation.z += 0.12 * a;
+  }
+  if (u.body) {
+    u.body.rotation.x += -0.22 * a;
+    u.body.rotation.z += 0.08 * a;
+  }
+  if (u.armL) {
+    u.armL.rotation.x += 0.55 * a;
+    u.armL.rotation.z += 0.42 * a;
+  }
+  if (u.armR) {
+    u.armR.rotation.x += 0.4 * a;
+    u.armR.rotation.z += -0.32 * a;
+  }
+  return true;
 }
 
 function poseRightPunch(u, punchT) {
@@ -1196,7 +1214,19 @@ function poseHeld(peer) {
   const u = peer.rig && peer.rig.userData;
   if (!u) return;
   const cupOn = isCupHeld(peer.held);
-  if (u.held) u.held.visible = !!peer.held && !cupOn;
+  const batonOn = String(peer.held || "") === "baton";
+  if (u.held) {
+    u.held.visible = !!peer.held && !cupOn;
+    if (batonOn) {
+      u.held.position.set(0.08, -0.55, 0.04);
+      u.held.scale.set(0.045, 0.62, 0.045);
+      if (u.held.material?.color) u.held.material.color.setHex(0x4a2c14);
+    } else {
+      u.held.position.set(0, -0.42, 0.02);
+      u.held.scale.set(0.08, 0.16, 0.08);
+      if (u.held.material?.color && !cupOn) u.held.material.color.setHex(0xc47b20);
+    }
+  }
   if (!u.cup) return;
   u.cup.visible = cupOn;
   if (!cupOn) return;
@@ -1692,6 +1722,8 @@ function animatePeer(peer, dt, t) {
     u.head.rotation.order = "YXZ";
     u.head.rotation.set(-peer.pit + sway.pit, headYawOffset(peer) + sway.yaw, sway.roll * 0.65);
   }
+
+  if ((peer.hurtT || 0) > 0) poseHurt(u, peer.hurtT);
 
   const bases = u.flashBase || [];
   if (bases.length) {
