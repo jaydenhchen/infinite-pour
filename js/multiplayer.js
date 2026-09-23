@@ -5,11 +5,12 @@ const SHIRTS = [0x3d6ea8, 0xc44b3c, 0x2e8b57, 0xb8860b, 0x7b4b9a, 0xd46aa0, 0x2c
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const DRUNK_NET = 6.75;
 const PUNCH_T = 0.32;
-const HURT_T = 0.55;
+const HURT_T = 0.28;
 const STUN_T = 0.48;
-const KNOCK_VEL = 3.2;
-const KNOCK_POP = 0.42;
-const KNOCK_DRAG = 8;
+const KNOCK_VEL = 2.8;
+const KNOCK_POP = 0;
+const KNOCK_UP = 0.14;
+const KNOCK_DRAG = 6;
 const peeDropGeo = new THREE.SphereGeometry(0.012, 7, 6);
 const peePuddleGeo = new THREE.CircleGeometry(0.15, 14);
 const _peeOrigin = new THREE.Vector3();
@@ -832,11 +833,6 @@ function applyState(id, state) {
     peer.gender = nextG;
   }
   if (state.k) peer.punchT = Math.max(peer.punchT || 0, PUNCH_T);
-  if (state.hurt && (peer.hurtT || 0) <= 0.12 && (state.rdx || state.rdz)) {
-    applyHurt(peer, state.rdx, state.rdz);
-  } else if (state.hurt) {
-    peer.hurtT = Math.max(peer.hurtT || 0, 0.28);
-  }
   if (state.hid && state.hto && net?.id && state.hto === net.id) {
     handleHitEvent({
       id: state.hid,
@@ -1134,25 +1130,8 @@ function poseDrive(peer) {
   u.armR.rotation.set(peer.pouring ? -1.1 : -0.98, -0.16, 0.4);
 }
 
-function poseHurt(u, hurtT) {
-  if (!u || hurtT <= 0) return false;
-  const p = 1 - Math.min(HURT_T, hurtT) / HURT_T;
-  const rec = p < 0.28 ? p / 0.28 : 1 - (p - 0.28) / 0.72;
-  const hit = Math.sin(Math.min(1, Math.max(0, rec)) * Math.PI);
-  if (u.body) {
-    u.body.rotation.x = -0.5 * hit;
-    u.body.rotation.z = 0.2 * hit;
-    u.body.position.y = (u.body.position.y || 0) - 0.045 * hit;
-  }
-  if (u.armL) u.armL.rotation.set(-1.08 * hit, 0.14 * hit, 0.76 * hit);
-  if (u.armR) u.armR.rotation.set(-0.58 * hit, -0.12 * hit, -0.66 * hit);
-  if (u.legL) u.legL.rotation.set(-0.3 * hit, 0, 0.2 * hit);
-  if (u.legR) u.legR.rotation.set(0.24 * hit, 0, -0.14 * hit);
-  if (u.head) {
-    u.head.rotation.x += 0.4 * hit;
-    u.head.rotation.z -= 0.18 * hit;
-  }
-  return true;
+function poseHurt(_u, _hurtT) {
+  return false;
 }
 
 function poseRightPunch(u, punchT) {
@@ -1439,23 +1418,16 @@ function findPeer(id) {
 }
 
 function applyHurt(peer, nx, nz) {
-  if (!peer || (peer.hurtT || 0) > 0.16) return false;
+  if (!peer || (peer.hurtT || 0) > 0.1) return false;
   const knock = applyKnock(peer.tx ?? peer.rig?.position.x ?? 0, peer.tz ?? peer.rig?.position.z ?? 0, nx, nz, collideFn, 0.32);
   peer.hurtT = HURT_T;
-  peer.stunT = STUN_T;
   peer.rdx = knock.dx;
   peer.rdz = knock.dz;
   if (peer.drive) return true;
   peer.kvx = (peer.kvx || 0) + knock.vx;
   peer.kvz = (peer.kvz || 0) + knock.vz;
-  if (!peer.local) {
-    peer.tx = knock.x;
-    peer.tz = knock.z;
-    if (peer.rig) {
-      peer.rig.position.x = knock.x;
-      peer.rig.position.z = knock.z;
-    }
-  }
+  const eye = eyeHeight(peer.gender);
+  peer.ty = Math.max(peer.ty ?? eye, eye) + KNOCK_UP;
   return true;
 }
 
@@ -1685,8 +1657,7 @@ function animatePeer(peer, dt, t) {
     u.pecker.visible = drop > 0.32;
   }
 
-  if ((peer.hurtT || 0) > 0) poseHurt(u, peer.hurtT);
-  else if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);
+  if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);
 
   if (!peer.freezeHead) {
     u.head.rotation.order = "YXZ";
@@ -1700,9 +1671,9 @@ function animatePeer(peer, dt, t) {
   const flush = Math.min(1, drunk * 0.85);
   u.skin.color.setRGB(0.91 + flush * 0.09, 0.706 - flush * 0.5, 0.541 - flush * 0.44);
   if ((peer.hurtT || 0) > 0) {
-    const flash = peer.hurtT > 0.18 ? 1 : 0.55 + 0.45 * Math.sin(peer.hurtT * 55);
-    for (const b of bases) b.m.color.setRGB(1, 0.08 * (1 - flash * 0.35), 0.08 * (1 - flash * 0.35));
-    u.skin.color.setRGB(1, 0.12, 0.12);
+    const a = Math.min(1, peer.hurtT / 0.12);
+    for (const b of bases) b.m.color.setRGB(1, 0.28 * (1 - a), 0.28 * (1 - a));
+    u.skin.color.setRGB(1, 0.32, 0.32);
   }
 
   if (u.tag && !u.tag.userData.locked) {
