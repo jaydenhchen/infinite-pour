@@ -372,6 +372,25 @@ function lambert(color, extra = {}) {
   return new THREE.MeshLambertMaterial({ color, ...extra });
 }
 
+export function makeBatonMesh() {
+  const g = new THREE.Group();
+  g.userData.kind = "baton";
+  const wood = lambert(0x4a2c14);
+  const grip = lambert(0x1a120c);
+  const tip = lambert(0x2a1a10);
+  addBox(g, wood, 0, 0.24, 0, 0.045, 0.42, 0.045);
+  addBox(g, grip, 0, 0.02, 0, 0.055, 0.1, 0.055);
+  addBox(g, tip, 0, 0.47, 0, 0.05, 0.06, 0.05);
+  return g;
+}
+
+export function seatBatonOnArm(baton) {
+  if (!baton) return;
+  baton.position.set(0.03, -0.36, 0.04);
+  baton.rotation.set(Math.PI, 0.06, 0.18);
+  baton.scale.setScalar(1.08);
+}
+
 function addBox(parent, mat, x, y, z, sx, sy, sz) {
   const m = new THREE.Mesh(unitBox, mat);
   m.position.set(x, y, z);
@@ -542,6 +561,10 @@ function makeBartender(id, name, gender = "m") {
   addBox(armR, skin, 0, -0.3, 0, 0.11, 0.16, 0.11);
   const held = addBox(armR, lambert(0xc47b20), 0, -0.42, 0.02, 0.08, 0.16, 0.08);
   held.visible = false;
+  const baton = makeBatonMesh();
+  seatBatonOnArm(baton);
+  baton.visible = false;
+  armR.add(baton);
   const cup = makePeerCup();
   armR.add(cup);
   armR.position.set(-0.24, 1.1, 0);
@@ -606,6 +629,7 @@ function makeBartender(id, name, gender = "m") {
     legL,
     legR,
     held,
+    baton,
     cup,
     tag,
     stars,
@@ -1220,17 +1244,15 @@ function poseHeld(peer) {
   if (!u) return;
   const cupOn = isCupHeld(peer.held);
   const batonOn = String(peer.held || "") === "baton";
+  if (u.baton) {
+    u.baton.visible = batonOn;
+    if (batonOn) seatBatonOnArm(u.baton);
+  }
   if (u.held) {
-    u.held.visible = !!peer.held && !cupOn;
-    if (batonOn) {
-      u.held.position.set(0.08, -0.55, 0.04);
-      u.held.scale.set(0.045, 0.62, 0.045);
-      if (u.held.material?.color) u.held.material.color.setHex(0x4a2c14);
-    } else {
-      u.held.position.set(0, -0.42, 0.02);
-      u.held.scale.set(0.08, 0.16, 0.08);
-      if (u.held.material?.color && !cupOn) u.held.material.color.setHex(0xc47b20);
-    }
+    u.held.visible = !!peer.held && !cupOn && !batonOn;
+    u.held.position.set(0, -0.42, 0.02);
+    u.held.scale.set(0.08, 0.16, 0.08);
+    if (u.held.material?.color && !cupOn && !batonOn) u.held.material.color.setHex(0xc47b20);
   }
   if (!u.cup) return;
   u.cup.visible = cupOn;
@@ -1718,6 +1740,11 @@ function animatePeer(peer, dt, t) {
   if (u.pecker) {
     u.pecker.rotation.set(-Math.PI / 6, 0, 0);
     u.pecker.visible = drop > 0.32;
+  }
+
+  if (String(peer.held || "") === "baton" && (peer.punchT || 0) <= 0 && !peer.pouring && !peer.sit && !peer.drive && pull <= 0.001) {
+    const ready = moving ? leftSwing * 0.16 : 0;
+    u.armR.rotation.set(0.34 + ready, 0.04, -0.44);
   }
 
   if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);

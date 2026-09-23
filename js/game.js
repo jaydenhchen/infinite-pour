@@ -42,7 +42,9 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=129";
+  makeBatonMesh,
+  seatBatonOnArm,
+} from "./multiplayer.js?v=130";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -869,6 +871,12 @@ function makeHand(side) {
   g.userData.skin = skin;
   g.userData.sleeve = sleeve;
   g.userData.palm = palm;
+
+  addBox(wrap, unitBox, skin, 0.018 * side, 0.036, -0.05, 0.03, 0.042, 0.08);
+  addBox(wrap, unitBox, skin, -0.004 * side, 0.034, -0.048, 0.026, 0.038, 0.074);
+  addBox(wrap, unitBox, skin, 0.038 * side, 0.028, -0.036, 0.024, 0.034, 0.06);
+  addBox(wrap, unitBox, skin, -0.028 * side, 0.026, -0.032, 0.022, 0.03, 0.052);
+  addBox(wrap, unitBox, skin, -0.058 * side, -0.006, -0.012, 0.03, 0.042, 0.058);
 
   const grip = new THREE.Group();
   grip.position.set(-0.012 * side, -0.018, -0.048);
@@ -1953,6 +1961,9 @@ function poseHands() {
     const lift = sipT > 0 ? 0.14 : 0;
     rightHand.position.set(0.2, -0.16 + bob + walk + lift, -0.38 - lift * 0.35);
     rightHand.rotation.set(0.12 + (sipT > 0 ? 0.72 : 0), 0.04, 0.08);
+  } else if (held && held.userData.kind === "baton") {
+    rightHand.position.set(0.17, -0.12 + bob + walk, -0.3);
+    rightHand.rotation.set(0.18, 0.32, 0.78);
   } else if (held && held.userData.drink?.bottle === "can") {
     rightHand.position.set(0.16, -0.1 + bob + walk, -0.34);
     rightHand.rotation.set(0.22, 0.08, 0.16);
@@ -4463,9 +4474,9 @@ function attachHeld(obj) {
     return;
   }
   if (obj.userData.kind === "baton") {
-    obj.scale.setScalar(0.82);
-    obj.position.set(0.02, -0.1, 0.04);
-    obj.rotation.set(0.95, 0.12, 0.22);
+    obj.scale.setScalar(1.22);
+    obj.position.set(0.012, 0.028, 0.01);
+    obj.rotation.set(0.22, 0.12, 1.42);
     rightHand.userData.grip.add(obj);
     held = obj;
     setRightGrip(true);
@@ -5967,23 +5978,12 @@ function punchAim() {
   return { fx: -Math.sin(yaw), fz: -Math.cos(yaw) };
 }
 
-function makeBatonMesh() {
-  const g = new THREE.Group();
-  g.userData.kind = "baton";
-  const wood = lambert(0x4a2c14);
-  const grip = lambert(0x1a120c);
-  const tip = lambert(0x2a1a10);
-  addBox(g, unitBox, wood, 0, 0.24, 0, 0.045, 0.42, 0.045);
-  addBox(g, unitBox, grip, 0, 0.02, 0, 0.055, 0.1, 0.055);
-  addBox(g, unitBox, tip, 0, 0.47, 0, 0.05, 0.06, 0.05);
-  return g;
-}
-
 function dropOfficerBaton(off) {
   if (!off || off.droppedBaton) return;
   off.droppedBaton = true;
-  const heldMesh = off.rig?.userData?.held;
-  if (heldMesh) heldMesh.visible = false;
+  const u = off.rig?.userData;
+  if (u?.held) u.held.visible = false;
+  if (u?.baton) u.baton.visible = false;
   const baton = makeBatonMesh();
   const x = off.rd ? off.rd.x : off.x;
   const z = off.rd ? off.rd.z : off.z;
@@ -6071,12 +6071,10 @@ function makeOfficer() {
     addBox(head, unitBox, lambert(0x111318), 0, 0.12, 0.12, 0.32, 0.04, 0.12);
     addBox(head, unitBox, lambert(0xc9a227), 0, 0.16, 0.15, 0.08, 0.04, 0.02);
   }
-  const held = rig.userData.held;
-  if (held) {
-    held.visible = true;
-    held.material = lambert(0x4a2c14);
-    held.scale.set(0.045, 0.62, 0.045);
-    held.position.set(0.08, -0.55, 0.04);
+  if (rig.userData.held) rig.userData.held.visible = false;
+  if (rig.userData.baton) {
+    seatBatonOnArm(rig.userData.baton);
+    rig.userData.baton.visible = true;
   }
   scene.add(rig);
   return rig;
@@ -6972,7 +6970,9 @@ function applyView() {
     if (u.armR) u.armR.visible = showBody;
     if (u.tag) u.tag.visible = showBody;
     const cupOn = localPeer.held === "cup";
-    if (u.held) u.held.visible = showBody && Boolean(localPeer.held) && !cupOn;
+    const batonOn = localPeer.held === "baton";
+    if (u.held) u.held.visible = showBody && Boolean(localPeer.held) && !cupOn && !batonOn;
+    if (u.baton) u.baton.visible = showBody && batonOn;
     if (u.cup) u.cup.visible = showBody && cupOn;
     if (inCar) {
       const s = carSeat(inCar, carSeatI);
