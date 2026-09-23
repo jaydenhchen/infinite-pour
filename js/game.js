@@ -1385,9 +1385,9 @@ function collide(px, pz, r = 0.28, feet = 0, airborne = false, skipCar = null) {
 }
 
 const CAR_PADS = [
-  { kind: "hood", lx: 0, lz: -1.54, hw: 0.98, hd: 0.66, top: 0.73 },
-  { kind: "trunk", lx: 0, lz: 1.82, hw: 0.98, hd: 0.36, top: 0.73 },
-  { kind: "roof", lx: 0, lz: 0.28, hw: 0.90, hd: 1.22, top: 1.47 },
+  { kind: "hood", lx: 0, lz: -1.64, hw: 1.08, hd: 0.82, top: 0.73 },
+  { kind: "trunk", lx: 0, lz: 1.86, hw: 1.08, hd: 0.56, top: 0.73 },
+  { kind: "roof", lx: 0, lz: 0.28, hw: 1.02, hd: 1.32, top: 1.47 },
 ];
 
 function carWorldToLocal(car, px, pz) {
@@ -1411,25 +1411,54 @@ function carPadAt(car, lx, lz, grow = 0.06) {
   return null;
 }
 
+function padClearance(loc, pad) {
+  const dx = Math.max(0, Math.abs(loc.lx - pad.lx) - pad.hw);
+  const dz = Math.max(0, Math.abs(loc.lz - pad.lz) - pad.hd);
+  return Math.hypot(dx, dz);
+}
+
+function nearestCarPad(px, pz, kinds = null) {
+  let best = null;
+  let bestD = 1.45;
+  for (const car of cars) {
+    if (car === inCar) continue;
+    const loc = carWorldToLocal(car, px, pz);
+    for (const pad of CAR_PADS) {
+      if (kinds && !kinds.includes(pad.kind)) continue;
+      const d = padClearance(loc, pad);
+      if (d < bestD) {
+        bestD = d;
+        best = { car, pad, loc, d };
+      }
+    }
+  }
+  return best;
+}
+
 function collideCarsWalk(px, pz, r, skip, feet, airborne) {
   for (const car of cars) {
     if (car === inCar || car === skip) continue;
     const loc = carWorldToLocal(car, px, pz);
-    if (Math.abs(loc.lx) > 1.4 + r || Math.abs(loc.lz) > 2.5 + r) continue;
-    const pad = carPadAt(car, loc.lx, loc.lz, airborne ? 0.12 : 0.05);
+    if (Math.abs(loc.lx) > 1.55 + r || Math.abs(loc.lz) > 2.7 + r) continue;
+    const pad = carPadAt(car, loc.lx, loc.lz, airborne ? 0.32 : 0.12);
+    const vaulting = airborne && standY > 0.45;
     const onPad = pad && (
-      feet >= pad.top - 0.16
-      || (airborne && (pad.kind !== "roof" || feet + 0.52 >= pad.top))
+      feet >= pad.top - 0.2
+      || (airborne && pad.kind !== "roof")
+      || (airborne && feet + 0.78 >= pad.top)
     );
     if (onPad) {
-      if (pad.kind !== "roof" && feet < 1.28) {
-        const [lx, lz] = pushSolid(loc.lx, loc.lz, r, { minx: -0.95, maxx: 0.95, minz: -1.0, maxz: 1.56 });
+      const cabinBlocks = pad.kind !== "roof" && !airborne && feet < pad.top + 0.38;
+      if (cabinBlocks) {
+        const [lx, lz] = pushSolid(loc.lx, loc.lz, r, { minx: -0.95, maxx: 0.95, minz: -1.08, maxz: 1.52 });
         const w = carLocalToWorld(car, lx, lz);
         px = w.x;
         pz = w.z;
       }
       continue;
     }
+    const frontOrRear = Math.abs(loc.lx) < 1.22 && (loc.lz < -1.02 || loc.lz > 1.26);
+    if (airborne && (frontOrRear || vaulting)) continue;
     const [lx, lz] = pushSolid(loc.lx, loc.lz, r, { minx: -1.08, maxx: 1.08, minz: -2.18, maxz: 2.18 });
     const w = carLocalToWorld(car, lx, lz);
     px = w.x;
@@ -1441,13 +1470,16 @@ function collideCarsWalk(px, pz, r, skip, feet, airborne) {
 function carClimbAt(px, pz, feet, airborne) {
   let best = 0;
   let bestCar = null;
+  const grow = airborne ? 0.34 : 0.12;
+  const reach = airborne ? 0.78 : 0.18;
   for (const car of cars) {
     if (car === inCar) continue;
     const loc = carWorldToLocal(car, px, pz);
     for (const pad of CAR_PADS) {
-      if (Math.abs(loc.lx - pad.lx) > pad.hw + 0.06) continue;
-      if (Math.abs(loc.lz - pad.lz) > pad.hd + 0.06) continue;
-      if (feet >= pad.top - 0.14 || (airborne && feet + 0.44 >= pad.top)) {
+      if (Math.abs(loc.lx - pad.lx) > pad.hw + grow) continue;
+      if (Math.abs(loc.lz - pad.lz) > pad.hd + grow) continue;
+      if (pad.kind === "roof" && standY < 0.45 && feet < 0.96) continue;
+      if (feet >= pad.top - 0.2 || (airborne && feet + reach >= pad.top)) {
         if (pad.top > best) {
           best = pad.top;
           bestCar = car;
@@ -1456,6 +1488,77 @@ function carClimbAt(px, pz, feet, airborne) {
     }
   }
   return { top: best, car: bestCar };
+}
+
+function facingToward(x, z) {
+  const yaw = viewMode === 2 ? view2Yaw : savedYaw;
+  const fx = -Math.sin(yaw);
+  const fz = -Math.cos(yaw);
+  const dx = x - camera.position.x;
+  const dz = z - camera.position.z;
+  const dist = Math.hypot(dx, dz) || 1;
+  return fx * (dx / dist) + fz * (dz / dist);
+}
+
+function pullTowardCarPad() {
+  const toRoof = standY > 0.45;
+  const hit = nearestCarPad(camera.position.x, camera.position.z, toRoof ? ["roof"] : ["hood", "trunk"]);
+  if (!hit) return;
+  if (!toRoof && hit.d > 0.98) return;
+  if (toRoof && hit.d > 1.4) return;
+  if (!toRoof && Math.abs(hit.loc.lz) < 1.08) return;
+  const target = carLocalToWorld(hit.car, hit.pad.lx, hit.pad.lz);
+  if (toRoof) {
+    const aim = facingToward(target.x, target.z);
+    if (keys.KeyS && aim < 0.4) return;
+    if (!keys.KeyW && aim < 0.1) return;
+  }
+  const dx = target.x - camera.position.x;
+  const dz = target.z - camera.position.z;
+  const dist = Math.hypot(dx, dz) || 1;
+  const pull = Math.min(toRoof ? 0.7 : 0.58, dist * 0.55);
+  camera.position.x += (dx / dist) * pull;
+  camera.position.z += (dz / dist) * pull;
+}
+
+function keepOnCarPad(car, top) {
+  if (!car || top < 0.2) return;
+  const loc = carWorldToLocal(car, camera.position.x, camera.position.z);
+  let pad = null;
+  let best = 99;
+  for (const p of CAR_PADS) {
+    if (Math.abs(p.top - top) > 0.06) continue;
+    const d = padClearance(loc, p);
+    if (d < best) {
+      best = d;
+      pad = p;
+    }
+  }
+  if (!pad || best < 0.001 || best > 0.42) return;
+  const lx = THREE.MathUtils.clamp(loc.lx, pad.lx - pad.hw * 0.86, pad.lx + pad.hw * 0.86);
+  const lz = THREE.MathUtils.clamp(loc.lz, pad.lz - pad.hd * 0.86, pad.lz + pad.hd * 0.86);
+  const w = carLocalToWorld(car, lx, lz);
+  camera.position.x = w.x;
+  camera.position.z = w.z;
+}
+
+function standSurface() {
+  if (standY > 1.2) return "roof";
+  if (standY < 0.45) return "";
+  const car = rideCar || nearestCar(2.8);
+  if (!car) return "hood";
+  const loc = carWorldToLocal(car, camera.position.x, camera.position.z);
+  const pad = carPadAt(car, loc.lx, loc.lz, 0.24);
+  return pad?.kind || "hood";
+}
+
+function standCarPrompt(car) {
+  const surf = standSurface();
+  if (!surf) return "";
+  const cops = !!(car && copsInCar(car));
+  if (surf === "roof") return cops ? "on the roof · SPACE off · cops are still in it" : "on the roof · SPACE off · E get in";
+  if (surf === "trunk") return cops ? "on the trunk · SPACE onto the roof · cops are still in it" : "on the trunk · SPACE onto the roof · E get in";
+  return cops ? "on the hood · SPACE onto the roof · cops are still in it" : "on the hood · SPACE onto the roof · E get in";
 }
 
 function bindRideCar(car) {
@@ -3615,15 +3718,17 @@ function promptFrom(obj) {
   }
   if (wanted) {
     const near = nearestCar(3.4);
+    const stand = standCarPrompt(near);
+    if (stand) return stand;
     if (stunT > 0) {
       if (near?.cop && copsInCar(near)) return "stunned · cops are still in the car · click punch";
       if (near?.cop) return "stunned · E steal the cop car · click punch to keep them back";
       if (near) return "stunned · E get in · click punch to keep them back";
       return "stunned · cops inbound · click punch to keep them back";
     }
-    if (near?.cop && copsInCar(near)) return "cops are in it · punch them out first · SPACE onto the hood";
-    if (near?.cop) return "E steal the cop car · SPACE onto the hood · click punch";
-    if (near) return "E get in · SPACE onto the hood · click punch";
+    if (near?.cop && copsInCar(near)) return "cops are in it · punch them out first · SPACE onto the hood or trunk";
+    if (near?.cop) return "E steal the cop car · SPACE onto the hood or trunk · click punch";
+    if (near) return "E get in · SPACE onto the hood or trunk · click punch";
     return "cops on you · click punch · RUN · E still gets you in a car";
   }
   if (sitting) {
@@ -3638,13 +3743,8 @@ function promptFrom(obj) {
     if (gamePrompt) return gamePrompt;
     const car = nearestCar(3.4);
     if (car) {
-      if (copsInCar(car)) {
-        if (standY > 1.2) return "on the roof · SPACE off · cops are still in it";
-        if (standY > 0.45) return "on the hood · SPACE onto the roof · cops are still in it";
-      } else {
-        if (standY > 1.2) return "on the roof · SPACE off · E get in";
-        if (standY > 0.45) return "on the hood · SPACE onto the roof · E get in";
-      }
+      const stand = standCarPrompt(car);
+      if (stand) return stand;
       return carRideHint(car);
     }
     if (held && held.userData.kind === "glass") {
@@ -3683,10 +3783,15 @@ function promptFrom(obj) {
   if (k === "door") return frontDoorOpen ? "E close the front door" : "E open the front door";
   if (k === "copcar") {
     const car = obj.userData.car;
-    if (copsInCar(car)) return "cops are in it · punch them out first · SPACE onto the hood";
-    return carOccupants(car).has(0) ? "E hop in · SPACE onto the hood · click punch" : "E steal the cop car · SPACE onto the hood · click punch";
+    const stand = standCarPrompt(car);
+    if (stand) return stand;
+    if (copsInCar(car)) return "cops are in it · punch them out first · SPACE onto the hood or trunk";
+    return carOccupants(car).has(0) ? "E hop in · SPACE onto the hood or trunk · click punch" : "E steal the cop car · SPACE onto the hood or trunk · click punch";
   }
-  if (k === "car") return inCar ? (driving() ? "E get out · SHIFT drift" : "E get out") : carRideHint(obj.userData.car);
+  if (k === "car") {
+    if (inCar) return driving() ? "E get out · SHIFT drift" : "E get out";
+    return standCarPrompt(obj.userData.car) || carRideHint(obj.userData.car);
+  }
   if (k === "stool") return sitting ? "E or WASD stand up" : "E sit at the bar";
   const gamePrompt = houseGames?.prompt(look) || "";
   if (gamePrompt) return gamePrompt;
@@ -4595,13 +4700,13 @@ function pickCarSeat(car, px, pz) {
 }
 
 function carRideHint(car) {
-  if (!car) return "E get in · SPACE onto the hood or trunk";
-  if (copsInCar(car)) return "cops are in it · punch them out first";
+  if (!car) return "E get in · SPACE onto the hood or trunk, then the roof";
+  if (copsInCar(car)) return "cops are in it · punch them out first · SPACE onto the hood or trunk";
   const taken = carOccupants(car);
-  if (taken.size >= 4) return "car's full";
-  if (car.cop && !taken.has(0)) return "E steal the cop car · SPACE onto the hood";
-  if (taken.has(0)) return "E hop in · SPACE onto the hood";
-  return "E get in · SPACE onto the hood or trunk";
+  if (taken.size >= 4) return "car's full · SPACE onto the hood or trunk";
+  if (car.cop && !taken.has(0)) return "E steal the cop car · SPACE onto the hood or trunk";
+  if (taken.has(0)) return "E hop in · SPACE onto the hood or trunk";
+  return "E get in · SPACE onto the hood or trunk, then the roof";
 }
 
 function maybeTakeWheel() {
@@ -6067,9 +6172,10 @@ function updatePlayer(dt) {
   }
   const eye = eyeY();
   if (keys.Space && onGround && !peeing) {
-    vy = 5.5;
+    vy = standY > 0.5 ? 6.55 : 5.85;
     onGround = false;
     audio.jump();
+    pullTowardCarPad();
   }
   if (!onGround) {
     vy -= 18 * dt;
@@ -6082,14 +6188,15 @@ function updatePlayer(dt) {
   const top = climbTopUnder(nx, nz, onGround ? standY : feet, !onGround);
   if (!onGround) {
     const want = eye + top;
-    const canVault = top > standY + 0.08 && feet + 0.44 >= top && (vy <= 0 || feet >= top - 0.58);
-    if (canVault || (vy <= 0 && camera.position.y <= want + 0.02)) {
+    const canVault = top > standY + 0.05 && feet + 0.72 >= top && (vy <= 0.55 || feet >= top - 0.74);
+    if (canVault || (vy <= 0 && camera.position.y <= want + 0.04)) {
       audio.land(top > standY + 0.15 || vy < -2.6);
       standY = top;
       camera.position.y = want;
       vy = 0;
       onGround = true;
       bindRideCar(top > 0.2 ? climbCarHit : null);
+      if (top > 0.2 && climbCarHit) keepOnCarPad(climbCarHit, top);
     }
   } else if (top < standY - 0.05) {
     onGround = false;
