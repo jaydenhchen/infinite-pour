@@ -4459,7 +4459,8 @@ function escChat(s) {
 
 function neighborKey(ch) {
   const lower = ch.toLowerCase();
-  const rows = ["1234567890-=", "qwertyuiop[]\\", "asdfghjkl;'", "zxcvbnm,./"];
+  if (!/[a-z]/.test(lower)) return ch;
+  const rows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
   for (let r = 0; r < rows.length; r++) {
     const i = rows[r].indexOf(lower);
     if (i < 0) continue;
@@ -4468,18 +4469,17 @@ function neighborKey(ch) {
       const row = rows[r + dr];
       if (!row) continue;
       const n = row[i + dc];
-      if (n) opts.push(n);
+      if (n && /[a-z]/.test(n)) opts.push(n);
     }
     if (!opts.length) return ch;
     const pick = opts[(Math.random() * opts.length) | 0];
-    if (ch !== lower && /[a-z]/.test(pick)) return pick.toUpperCase();
-    return pick;
+    return ch !== lower ? pick.toUpperCase() : pick;
   }
   return ch;
 }
 
 function drunkTypeChar(ch) {
-  if (!/[a-zA-Z0-9]/.test(ch)) return ch;
+  if (!/[a-zA-Z]/.test(ch)) return ch;
   const d = drunkLevel();
   const chance = THREE.MathUtils.clamp((d - 0.42) / 8.5, 0, 0.24);
   if (Math.random() >= chance) return ch;
