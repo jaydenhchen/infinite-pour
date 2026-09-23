@@ -6447,7 +6447,7 @@ function beginCrash(spd, hitCar) {
     exitCar(true);
   }
   heatUp();
-  if (!cops.length && !passedOut) spawnPolice(bodyPos.x, bodyPos.z);
+  if (!passedOut) spawnPolice(bodyPos.x, bodyPos.z);
 }
 
 function flashOfficerHurt(off) {
