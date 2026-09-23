@@ -39,9 +39,10 @@ import {
   setCopHandler,
   remotePeers,
   shirtKey,
-  hitImpulse,
   stepKnock,
-} from "./multiplayer.js?v=118";
+  applyKnock,
+  setWorldBlock,
+} from "./multiplayer.js?v=119";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -1241,14 +1242,42 @@ function rayAabb(ox, oy, oz, dx, dy, dz, maxT, b) {
   return tmin;
 }
 
-function camRayHit(ox, oy, oz, dx, dy, dz, maxT) {
+function camRayHit(ox, oy, oz, dx, dy, dz, maxT, skip = 0) {
   let hit = maxT;
   for (const b of camSolids) {
     if (doorIsOpen(b)) continue;
     const t = rayAabb(ox, oy, oz, dx, dy, dz, hit, b);
-    if (t != null && t < hit) hit = Math.max(0, t);
+    if (t != null && t >= skip && t < hit) hit = t;
   }
   return hit;
+}
+
+function worldBlocked(x0, z0, x1, z1) {
+  const dx = (x1 || 0) - (x0 || 0);
+  const dz = (z1 || 0) - (z0 || 0);
+  const dist = Math.hypot(dx, dz);
+  if (dist < 0.32) return false;
+  const inv = 1 / dist;
+  return camRayHit(x0, 1.22, z0, dx * inv, 0, dz * inv, dist, 0.12) < dist - 0.28;
+}
+
+function sweepPush(x, z, fx, fz, dist, r = 0.28) {
+  const len = Math.hypot(fx, fz) || 1;
+  const ux = fx / len;
+  const uz = fz / len;
+  const steps = Math.max(2, Math.ceil(Math.max(0.01, dist) / 0.1));
+  let cx = x;
+  let cz = z;
+  for (let i = 1; i <= steps; i++) {
+    const wx = x + ux * dist * (i / steps);
+    const wz = z + uz * dist * (i / steps);
+    const [kx, kz] = collide(wx, wz, r);
+    const progressed = Math.hypot(kx - cx, kz - cz);
+    cx = kx;
+    cz = kz;
+    if (progressed < (dist / steps) * 0.28) break;
+  }
+  return [cx, cz];
 }
 
 function drunkLevel() {
@@ -2068,6 +2097,7 @@ function buildWorld() {
   });
   houseGames.build();
   setWorldCollide(collide);
+  setWorldBlock(worldBlocked);
 }
 
 function asphalt(x, z, w, d, mat = mats.asphalt, y = 0.004) {
@@ -3510,8 +3540,8 @@ function toast(msg) {
 }
 
 function takeHit(nx, nz, by) {
-  const imp = hitImpulse(nx, nz);
-  lastKnock = { x: imp.dx, z: imp.dz };
+  const knock = applyKnock(camera.position.x, camera.position.z, nx, nz, collide, 0.28);
+  lastKnock = { x: knock.dx, z: knock.dz };
   stunT = Math.max(stunT, 0.55);
   hurtFlash = 1;
   audio.hit();
@@ -3521,18 +3551,17 @@ function takeHit(nx, nz, by) {
     inCar.speed *= 0.32;
     inCar.drift += (Math.random() - 0.5) * 0.35;
   } else {
-    const [px, pz] = collide(camera.position.x + imp.px, camera.position.z + imp.pz, 0.28);
-    camera.position.x = px;
-    camera.position.z = pz;
-    bodyPos.set(px, camera.position.y, pz);
-    knockVx += imp.vx;
-    knockVz += imp.vz;
+    camera.position.x = knock.x;
+    camera.position.z = knock.z;
+    bodyPos.set(knock.x, camera.position.y, knock.z);
+    knockVx += knock.vx;
+    knockVz += knock.vz;
   }
   if (localPeer) {
     localPeer.hurtT = 0.55;
     localPeer.stunT = 0.48;
-    localPeer.kvx = (localPeer.kvx || 0) + imp.vx;
-    localPeer.kvz = (localPeer.kvz || 0) + imp.vz;
+    localPeer.kvx = (localPeer.kvx || 0) + knock.vx;
+    localPeer.kvz = (localPeer.kvz || 0) + knock.vz;
   }
 }
 
@@ -5258,10 +5287,9 @@ function punchCops() {
       if (dist > 2.85 || dist < 0.04) continue;
       const aim = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
       if (aim < -0.05) continue;
+      if (worldBlocked(x, z, off.x, off.z)) continue;
       const push = 2.35 + Math.max(0, 2.35 - dist) * 0.4;
-      let nx = off.x + fx * push;
-      let nz = off.z + fz * push;
-      [nx, nz] = collideWorld(nx, nz, 0.28);
+      const [nx, nz] = sweepPush(off.x, off.z, fx, fz, push, 0.28);
       off.x = nx;
       off.z = nz;
       off.state = "stagger";

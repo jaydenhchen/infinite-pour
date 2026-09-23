@@ -59,6 +59,7 @@ let gameHandler = null;
 let carFn = null;
 let copFn = null;
 let collideFn = (x, z) => [x, z];
+let blockFn = null;
 let bot = null;
 let botAI = null;
 let localHitFn = null;
@@ -115,6 +116,27 @@ export function pokePose() {
 
 export function setWorldCollide(fn) {
   collideFn = fn || ((x, z) => [x, z]);
+}
+
+export function setWorldBlock(fn) {
+  blockFn = typeof fn === "function" ? fn : null;
+}
+
+export function pathBlocked(x0, z0, x1, z1) {
+  if (blockFn) return !!blockFn(x0, z0, x1, z1);
+  const dx = (x1 || 0) - (x0 || 0);
+  const dz = (z1 || 0) - (z0 || 0);
+  const dist = Math.hypot(dx, dz);
+  if (dist < 0.34) return false;
+  const steps = Math.max(4, Math.ceil(dist / 0.12));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const sx = x0 + dx * t;
+    const sz = z0 + dz * t;
+    const kept = collideFn(sx, sz, 0.16);
+    if (Math.hypot(kept[0] - sx, kept[1] - sz) > 0.08) return true;
+  }
+  return false;
 }
 
 let peeDrainFn = () => false;
@@ -208,16 +230,67 @@ export function hitImpulse(nx, nz) {
   return { dx, dz, vx: dx * KNOCK_VEL, vz: dz * KNOCK_VEL, px: dx * KNOCK_POP, pz: dz * KNOCK_POP };
 }
 
+function killIntoWall(vx, vz, lostX, lostZ) {
+  const lost = Math.hypot(lostX, lostZ);
+  if (lost < 0.002) return [vx, vz];
+  const nx = lostX / lost;
+  const nz = lostZ / lost;
+  const into = vx * nx + vz * nz;
+  if (into > 0) {
+    vx -= nx * into;
+    vz -= nz * into;
+  }
+  return [vx, vz];
+}
+
 export function stepKnock(x, z, vx, vz, dt, collide, radius = 0.28) {
   const fn = collide || collideFn;
-  const kept = fn(x + vx * dt, z + vz * dt, radius);
+  const wx = x + vx * dt;
+  const wz = z + vz * dt;
+  const kept = fn(wx, wz, radius);
+  const want = Math.hypot(wx - x, wz - z);
+  const got = Math.hypot(kept[0] - x, kept[1] - z);
   let nvx = vx * Math.max(0, 1 - KNOCK_DRAG * dt);
   let nvz = vz * Math.max(0, 1 - KNOCK_DRAG * dt);
+  [nvx, nvz] = killIntoWall(nvx, nvz, wx - kept[0], wz - kept[1]);
+  if (want > 0.0001 && got < want * 0.4) {
+    nvx = 0;
+    nvz = 0;
+  }
   if (Math.hypot(nvx, nvz) < 0.04) {
     nvx = 0;
     nvz = 0;
   }
   return [kept[0], kept[1], nvx, nvz];
+}
+
+export function applyKnock(x, z, nx, nz, collide, radius = 0.28) {
+  const imp = hitImpulse(nx, nz);
+  const fn = collide || collideFn;
+  const steps = 6;
+  let cx = x;
+  let cz = z;
+  for (let i = 1; i <= steps; i++) {
+    const wx = x + imp.px * (i / steps);
+    const wz = z + imp.pz * (i / steps);
+    const kept = fn(wx, wz, radius);
+    const progressed = Math.hypot(kept[0] - cx, kept[1] - cz);
+    cx = kept[0];
+    cz = kept[1];
+    if (progressed < (KNOCK_POP / steps) * 0.3) break;
+  }
+  let vx = imp.vx;
+  let vz = imp.vz;
+  [vx, vz] = killIntoWall(vx, vz, x + imp.px - cx, z + imp.pz - cz);
+  if (Math.hypot(cx - x, cz - z) < KNOCK_POP * 0.28) {
+    vx = 0;
+    vz = 0;
+  }
+  if (Math.hypot(vx, vz) < 0.04) {
+    vx = 0;
+    vz = 0;
+  }
+  return { x: cx, z: cz, vx, vz, dx: imp.dx, dz: imp.dz };
 }
 
 export function shirtKey() {
@@ -1324,23 +1397,20 @@ function findPeer(id) {
 
 function applyHurt(peer, nx, nz) {
   if (!peer || (peer.hurtT || 0) > 0.16) return false;
-  const imp = hitImpulse(nx, nz);
+  const knock = applyKnock(peer.tx ?? peer.rig?.position.x ?? 0, peer.tz ?? peer.rig?.position.z ?? 0, nx, nz, collideFn, 0.32);
   peer.hurtT = HURT_T;
   peer.stunT = STUN_T;
-  peer.rdx = imp.dx;
-  peer.rdz = imp.dz;
+  peer.rdx = knock.dx;
+  peer.rdz = knock.dz;
   if (peer.drive) return true;
-  peer.kvx = (peer.kvx || 0) + imp.vx;
-  peer.kvz = (peer.kvz || 0) + imp.vz;
+  peer.kvx = (peer.kvx || 0) + knock.vx;
+  peer.kvz = (peer.kvz || 0) + knock.vz;
   if (!peer.local) {
-    peer.tx += imp.px;
-    peer.tz += imp.pz;
-    const kept = collideFn(peer.tx, peer.tz, 0.36);
-    peer.tx = kept[0];
-    peer.tz = kept[1];
+    peer.tx = knock.x;
+    peer.tz = knock.z;
     if (peer.rig) {
-      peer.rig.position.x += imp.px;
-      peer.rig.position.z += imp.pz;
+      peer.rig.position.x = knock.x;
+      peer.rig.position.z = knock.z;
     }
   }
   return true;
@@ -1361,13 +1431,18 @@ function handleHitEvent(msg) {
   const me = net?.id || "";
   const nx = Number(msg.nx) || 0;
   const nz = Number(msg.nz) || 0;
-  swingPunch(findPeer(msg.from));
-  if (msg.to && me && msg.to === me) {
-    const by = msg.n || findPeer(msg.from)?.name || "";
-    localHitFn?.(nx, nz, by);
+  const from = findPeer(msg.from);
+  swingPunch(from);
+  const mine = !!(msg.to && me && msg.to === me);
+  const target = mine ? null : findPeer(msg.to);
+  const toX = mine ? camera?.position.x : target?.tx ?? target?.rig?.position.x;
+  const toZ = mine ? camera?.position.z : target?.tz ?? target?.rig?.position.z;
+  if (from && toX != null && toZ != null && pathBlocked(from.tx ?? from.rig?.position.x, from.tz ?? from.rig?.position.z, toX, toZ)) return;
+  if (mine) {
+    localHitFn?.(nx, nz, msg.n || from?.name || "");
     return;
   }
-  applyHurt(findPeer(msg.to), nx, nz);
+  applyHurt(target, nx, nz);
 }
 
 export function tryPunch() {
@@ -1394,6 +1469,9 @@ export function tryPunch() {
     if (dist < 0.2 || dist > bestDist) continue;
     const aim = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
     if (aim < 0.22) continue;
+    const tx = peer.tx ?? peer.rig.position.x;
+    const tz = peer.tz ?? peer.rig.position.z;
+    if (pathBlocked(x, z, tx, tz)) continue;
     best = peer;
     bestDist = dist;
   }
