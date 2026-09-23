@@ -205,12 +205,17 @@ function dropHitsCup(pos, cup) {
 
 function catchPeeDrop(drop, cups) {
   if (!cups || !cups.length) return false;
+  let hit = false;
+  const filled = new Set();
   for (const cup of cups) {
     if (!dropHitsCup(drop.position, cup)) continue;
-    if (cup.local) peeFillFn && peeFillFn(0.0025);
-    return true;
+    hit = true;
+    const key = cup.mesh || cup.id || cup;
+    if (filled.has(key)) continue;
+    filled.add(key);
+    if (cup.local) peeFillFn && peeFillFn(0.0025, cup);
   }
-  return false;
+  return hit;
 }
 
 export function setLocalHitHandler(fn) {
