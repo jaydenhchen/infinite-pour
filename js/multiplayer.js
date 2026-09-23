@@ -378,12 +378,12 @@ function addBox(parent, mat, x, y, z, sx, sy, sz) {
 }
 
 function nameLabel(name) {
-  return String(name || "?").toUpperCase().slice(0, 16);
+  return String(name || "?").slice(0, 16);
 }
 
 function measureLabel(text, scale) {
   let w = 0;
-  for (const ch of text) w += ch === " " ? 3 * scale : 4 * scale;
+  for (const ch of text) w += ch === " " ? 5 * scale : 4 * scale;
   return w;
 }
 
@@ -641,8 +641,15 @@ function setNametag(peer, name) {
   tag.visible = true;
 }
 
+function liveName(n, fallback) {
+  if (typeof n !== "string") return sanitizeName(fallback || "regular");
+  const s = n.replace(/\s+/g, " ").trim();
+  if (!s || s === "0" || s === "1") return sanitizeName(fallback || "regular");
+  return sanitizeName(s);
+}
+
 function spawnPeer(id, state) {
-  const name = sanitizeName(state.n || "regular");
+  const name = liveName(typeof state.nm === "string" ? state.nm : state.n, "regular");
   const gender = state.g === "f" ? "f" : "m";
   const rig = makeBartender(id, name, gender);
   const yaw = state.yaw || 0;
@@ -674,7 +681,7 @@ function spawnPeer(id, state) {
     lx: state.x || 0,
     lz: state.z || 0,
     sit: !!state.s || !!state.v,
-    pants: !!state.n || !!state.u,
+    pants: !!state.pn || !!state.u,
     drive: !!state.v,
     si: state.si == null ? (state.v ? 0 : -1) : (Number(state.si) | 0),
     ci: state.ci != null ? String(state.ci) : "",
@@ -753,7 +760,8 @@ function applyState(id, state) {
     peer.rig.visible = true;
     peer.rig.frustumCulled = false;
   }
-  peer.name = sanitizeName(state.n || peer.name);
+  const incomingName = typeof state.nm === "string" ? state.nm : typeof state.n === "string" ? state.n : "";
+  if (incomingName) peer.name = liveName(incomingName, peer.name);
   setNametag(peer, peer.name);
   peer.ty = state.y ?? peer.ty;
   if ((peer.stunT || 0) <= 0 && (peer.hurtT || 0) <= 0.12) {
@@ -772,7 +780,7 @@ function applyState(id, state) {
   peer.drive = !!state.v;
   peer.si = state.si == null ? (peer.drive ? 0 : -1) : (Number(state.si) | 0);
   peer.sit = !!state.s || peer.drive;
-  peer.pants = !!state.n || !!state.u;
+  peer.pants = !!state.pn || !!state.u;
   if (state.ci != null) peer.ci = String(state.ci);
   if (state.cx != null) peer.cx = state.cx;
   if (state.cz != null) peer.cz = state.cz;
@@ -1025,6 +1033,7 @@ function sendPose() {
   const extra = poseFn?.() || {};
   const pose = {
     n: local.name,
+    nm: local.name,
     x: round(extra.x ?? camera.position.x),
     y: round(extra.y ?? camera.position.y),
     z: round(extra.z ?? camera.position.z),
@@ -1035,7 +1044,7 @@ function sendPose() {
     p: pouringFn() ? 1 : 0,
     s: extra.s ? 1 : 0,
     u: extra.u ? 1 : 0,
-    n: extra.n ? 1 : 0,
+    pn: extra.pn || extra.n ? 1 : 0,
     g: extra.g === "f" || local.gender === "f" ? "f" : "m",
     gf: extra.gf != null ? round(clamp(extra.gf, 0, 1), 2) : 0,
     gc: extra.gc ? (Number(extra.gc) || 0) : 0,
@@ -1074,7 +1083,7 @@ function sendPose() {
     pose.hnx = lastHit.nx;
     pose.hnz = lastHit.nz;
   }
-  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.n || 0}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
+  const key = `${pose.n}|${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.pn || 0}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -1501,6 +1510,16 @@ export function tryPunch() {
   return { id: best.id, name: best.name, nx, nz };
 }
 
+function drunkSway(drunk, t, phase, moving, walk) {
+  const amp = Math.max(0, drunk);
+  if (amp < 0.03) return { yaw: 0, pit: 0, roll: 0 };
+  return {
+    yaw: (Math.sin((t + phase) * 0.73) * 0.16 + Math.sin((t + phase) * 1.85) * 0.05) * amp,
+    pit: (Math.cos((t + phase) * 0.61) * 0.1 + Math.sin(walk) * 0.035 * (moving ? 1 : 0.2)) * amp,
+    roll: (Math.sin(t + phase) * 0.2 + Math.sin(walk) * 0.055 * (moving ? 1 : 0.1)) * amp,
+  };
+}
+
 function animatePeer(peer, dt, t) {
   const rig = peer.rig;
   const u = rig.userData;
@@ -1585,17 +1604,17 @@ function animatePeer(peer, dt, t) {
   } else {
     u.legL.rotation.set(leftSwing, 0, limp * 0.2);
     u.legR.rotation.set(rightSwing, 0, -limp * 0.06);
-    u.armL.rotation.set(-rightSwing * (0.7 - limp * 0.2) + Math.sin(t * 2.4 + phase) * drunk * 0.32, 0, -drunk * 0.16);
+    u.armL.rotation.set(-rightSwing * (0.7 - limp * 0.2) + Math.sin(t * 2.4 + phase) * drunk * 0.12, 0, -drunk * 0.07);
     u.armR.rotation.set(
-      peer.pouring ? -1.1 : -leftSwing * 0.65 + Math.sin(t * 1.7 + phase) * drunk * 0.26,
+      peer.pouring ? -1.1 : -leftSwing * 0.65 + Math.sin(t * 1.7 + phase) * drunk * 0.1,
       0,
-      drunk * 0.1
+      drunk * 0.05
     );
     u.body.position.y = hitch;
     u.body.rotation.set(
-      Math.sin(t * 0.9 + phase) * drunk * 0.14 + (moving ? Math.sin(warped) * drunk * 0.08 : 0),
-      Math.sin(t * 1.55 + phase) * drunk * 0.32,
-      Math.sin(t * 1.25 + phase * 1.7) * drunk * 0.28 + (moving ? Math.sin(warped + 0.6) * limp * 0.16 : 0)
+      moving ? Math.sin(warped) * Math.min(0.07, 0.03 + drunk * 0.03) : Math.sin(t * 0.9 + phase) * Math.min(0.04, drunk * 0.02),
+      0,
+      moving ? Math.sin(warped + 0.6) * limp * 0.08 : Math.sin(t * 1.25 + phase) * Math.min(0.045, drunk * 0.025)
     );
   }
 
@@ -1660,8 +1679,9 @@ function animatePeer(peer, dt, t) {
   if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);
 
   if (!peer.freezeHead) {
+    const sway = drunkSway(drunk, t, phase, moving, u.walk);
     u.head.rotation.order = "YXZ";
-    u.head.rotation.set(-peer.pit, headYawOffset(peer), Math.sin(t * 1.35 + phase) * drunk * 0.08);
+    u.head.rotation.set(-peer.pit + sway.pit, headYawOffset(peer) + sway.yaw, sway.roll * 0.65);
   }
 
   const bases = u.flashBase || [];
@@ -1692,9 +1712,9 @@ function animatePeer(peer, dt, t) {
   const showStars = drunk > 0.3;
   u.stars.visible = showStars && u.head.visible;
   if (showStars) {
-    u.stars.rotation.y += dt * (1.6 + drunk * 6.2);
+    u.stars.rotation.y += dt * (1.6 + drunk * 4.8);
     u.stars.position.set(0, 0.22 + Math.sin(t * 5 + phase) * 0.03, 0);
-    u.stars.scale.setScalar(0.5 + drunk * 0.7);
+    u.stars.scale.setScalar(0.88);
   }
 
   poseHeld(peer);
