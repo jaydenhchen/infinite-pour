@@ -3942,22 +3942,27 @@ function hud() {
   const fillEl = $("glassFill");
   const fillAmt = THREE.MathUtils.clamp(glassState.fill, 0, 1);
   const fillPct = Math.round(fillAmt * 100);
-  fillEl.style.width = `${fillPct}%`;
-  if (fillAmt > 0.012) {
-    const hex = mixColor(glassState.parts).toString(16).padStart(6, "0");
-    const r = parseInt(hex.slice(0, 2), 16);
-    const gcol = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    const dhex = [r, gcol, b].map((v) => Math.max(0, (v * 0.72) | 0).toString(16).padStart(2, "0")).join("");
-    fillEl.style.background = `repeating-linear-gradient(90deg, #${hex} 0 8px, #${dhex} 8px 10px)`;
-  } else {
-    fillEl.style.background = "";
-  }
-  if (glassState.fill < 0.02) $("glassName").textContent = `empty ${glassState.type}`;
-  else {
-    const n = nameMix(glassState.parts);
-    const a = mixAbv(glassState.parts).toFixed(1);
-    $("glassName").textContent = `${n} · ${a}% · ${fillPct}% full`;
+  const glassHud = $("glassHud");
+  const showGlassHud = holdingGlass();
+  if (glassHud) glassHud.hidden = !showGlassHud;
+  if (showGlassHud) {
+    fillEl.style.width = `${fillPct}%`;
+    if (fillAmt > 0.012) {
+      const hex = mixColor(glassState.parts).toString(16).padStart(6, "0");
+      const r = parseInt(hex.slice(0, 2), 16);
+      const gcol = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      const dhex = [r, gcol, b].map((v) => Math.max(0, (v * 0.72) | 0).toString(16).padStart(2, "0")).join("");
+      fillEl.style.background = `repeating-linear-gradient(90deg, #${hex} 0 8px, #${dhex} 8px 10px)`;
+    } else {
+      fillEl.style.background = "";
+    }
+    if (glassState.fill < 0.02) $("glassName").textContent = `empty ${glassState.type}`;
+    else {
+      const n = nameMix(glassState.parts);
+      const a = mixAbv(glassState.parts).toFixed(1);
+      $("glassName").textContent = `${n} · ${a}% · ${fillPct}% full`;
+    }
   }
   if (held && held.userData.kind === "glass") {
     const n = glassState.fill > 0.02 ? nameMix(glassState.parts) : `empty ${glassState.type}`;
