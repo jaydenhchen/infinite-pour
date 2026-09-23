@@ -4142,8 +4142,8 @@ function promptFrom(obj) {
   if (k === "glass") {
     if (held && held.userData.kind === "bottle") return `click pour  ${held.userData.drink.name}  ·  E grab cup`;
     if (held && held.userData.kind === "glass") {
-      if (glassState.fill > 0.02) return "F sip  ·  G chug  ·  Q set down";
-      return "cup in hand  ·  hold it in a stream  ·  4–9 swap  ·  Q set down";
+      if (glassState.fill > 0.02) return "F sip  ·  G chug  ·  Q stack on this cup";
+      return "cup in hand  ·  Q stack on this cup  ·  4–9 swap";
     }
     return glassState.fill > 0.02 ? "E grab cup" : "E grab cup  ·  4–9 glassware";
   }
@@ -4294,6 +4294,129 @@ function pick() {
   return nearbyUse();
 }
 
+const GLASS_RIM_Y = { shot: 0.07, rocks: 0.09, wine: 0.23, coupe: 0.195, highball: 0.16, pint: 0.16 };
+
+function glassTypeOf(mesh) {
+  if (!mesh) return "pint";
+  if (mesh === glassMesh) return glassState.type || "pint";
+  return mesh.userData.gtype || mesh.userData.type || "pint";
+}
+
+function glassFillOf(mesh) {
+  if (!mesh) return 0;
+  if (mesh === glassMesh) return Number(glassState.fill) || 0;
+  return Number(mesh.userData.gfill) || 0;
+}
+
+function glassWorldPos(mesh, out = new THREE.Vector3()) {
+  mesh.updateMatrixWorld(true);
+  return mesh.getWorldPosition(out);
+}
+
+function glassStackStep(mesh) {
+  const type = glassTypeOf(mesh);
+  const fill = glassFillOf(mesh);
+  const scale = mesh.scale.y || 1.35;
+  const rim = (GLASS_RIM_Y[type] || 0.16) * scale;
+  if (type === "wine" || type === "coupe" || fill >= 0.08) return rim * 0.96;
+  return Math.max(0.038, CUP_NEST * scale * 1.2);
+}
+
+function looseGlassCandidates(skip) {
+  const out = [];
+  for (const mesh of allLocalGlasses()) {
+    if (!mesh || mesh === skip || mesh === held) continue;
+    if (rightHand && mesh.parent === rightHand.userData.grip) continue;
+    out.push(mesh);
+  }
+  return out;
+}
+
+function nearestLooseGlass(x, z, skip, maxD = 0.16) {
+  let best = null;
+  let bestD = maxD;
+  const p = new THREE.Vector3();
+  for (const mesh of looseGlassCandidates(skip)) {
+    glassWorldPos(mesh, p);
+    const d = Math.hypot(p.x - x, p.z - z);
+    if (d < bestD) {
+      bestD = d;
+      best = mesh;
+    }
+  }
+  return best;
+}
+
+function topOfGlassPile(mesh) {
+  const p = new THREE.Vector3();
+  const q = new THREE.Vector3();
+  let top = mesh;
+  glassWorldPos(top, p);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const other of looseGlassCandidates(top)) {
+      glassWorldPos(other, q);
+      if (Math.hypot(q.x - p.x, q.z - p.z) > 0.13) continue;
+      if (q.y > p.y + 0.008) {
+        top = other;
+        p.copy(q);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return { mesh: top, x: p.x, y: p.y, z: p.z };
+}
+
+function pileCountAt(x, z, skip) {
+  const p = new THREE.Vector3();
+  let n = 0;
+  for (const mesh of looseGlassCandidates(skip)) {
+    glassWorldPos(mesh, p);
+    if (Math.hypot(p.x - x, p.z - z) <= 0.13) n += 1;
+  }
+  return n;
+}
+
+function stackGlassOn(obj, base) {
+  const top = topOfGlassPile(base);
+  const step = glassStackStep(top.mesh);
+  const n = pileCountAt(top.x, top.z, obj);
+  obj.scale.setScalar(Math.max(1.18, 1.35 - n * 0.018));
+  obj.position.set(top.x, top.y + step, top.z);
+  obj.rotation.set(0, 0, 0);
+}
+
+function placeDroppedGlass(obj, aim, nearWell) {
+  obj.scale.setScalar(1.35);
+  obj.rotation.set(0, 0, 0);
+  const lookGlass = look?.userData?.kind === "glass" && look !== obj ? look : null;
+  if (lookGlass) {
+    stackGlassOn(obj, lookGlass);
+    return true;
+  }
+  let x;
+  let z;
+  let y;
+  if (nearWell) {
+    x = 3.26;
+    z = WELL_Z + 0.24;
+    y = 1.05;
+  } else {
+    x = aim.x;
+    z = aim.z;
+    y = Math.abs(aim.z - 0.35) < 1.1 && Math.abs(aim.x) < 4.6 ? 1.09 : 0.02;
+  }
+  const under = nearestLooseGlass(x, z, obj, 0.16);
+  if (under) {
+    stackGlassOn(obj, under);
+    return true;
+  }
+  obj.position.set(x, y, z);
+  return false;
+}
+
 function seatHeldGlass(g) {
   const type = glassState.type;
   const y = type === "shot" ? 0.012 : type === "wine" || type === "coupe" ? -0.03 : 0.018;
@@ -4310,9 +4433,7 @@ function parkGlass() {
     setRightGrip(false);
   }
   if (glassMesh.parent) glassMesh.parent.remove(glassMesh);
-  glassMesh.scale.setScalar(1.35);
-  glassMesh.position.set(3.26, 1.05, WELL_Z + 0.24);
-  glassMesh.rotation.set(0, 0, 0);
+  placeDroppedGlass(glassMesh, new THREE.Vector3(3.26, 1.05, WELL_Z + 0.24), true);
   scene.add(glassMesh);
   unregisterPick(glassMesh);
   registerPick(glassMesh);
@@ -4379,14 +4500,7 @@ function dropHeld() {
   const nearWell = Math.abs(p.z - WELL_Z) < 0.9 && Math.abs(p.x) < 3.6;
   if (obj.userData.kind === "glass") {
     rememberGlass(obj);
-    obj.scale.setScalar(1.35);
-    if (nearWell) {
-      obj.position.set(3.26, 1.05, WELL_Z + 0.24);
-    } else {
-      p.y = Math.abs(p.z - 0.35) < 1.1 && Math.abs(p.x) < 4.6 ? 1.09 : 0.02;
-      obj.position.copy(p);
-    }
-    obj.rotation.set(0, 0, 0);
+    placeDroppedGlass(obj, p, nearWell);
     scene.add(obj);
     registerPick(obj);
     glassMesh = obj;
