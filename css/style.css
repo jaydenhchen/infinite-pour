@@ -300,5 +300,355 @@ canvas.webgl {
   font-family: "Press Start 2P", monospace;
   font-size: 12px;
   color: var(--gold);
+}
 
-[Showing lines 1-300 of 653. Use :301 to continue]
+.cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.cats button {
+  font-family: "Press Start 2P", monospace;
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  color: var(--foam);
+  background: #2a1a12;
+  border: 0;
+  padding: 8px 8px 7px;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 #000;
+}
+.cats button:hover { color: var(--gold); }
+.cats button.on {
+  color: var(--ink);
+  background: var(--gold);
+}
+
+#summon input {
+  width: 100%;
+  font-family: "VT323", monospace;
+  font-size: 28px;
+  padding: 8px 10px;
+  border: 0;
+  background: #2a1a12;
+  color: var(--foam);
+  outline: 2px solid var(--cyan);
+}
+
+#results {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+#results li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px;
+  font-size: 24px;
+  cursor: pointer;
+  border-left: 4px solid transparent;
+}
+
+#results li:hover, #results li.active {
+  background: #3a2418;
+  border-left-color: var(--neon);
+}
+
+#results .abv { color: var(--gold); }
+
+#chat {
+  position: absolute;
+  left: 14px;
+  bottom: 16px;
+  width: min(560px, 58vw);
+  pointer-events: none;
+  z-index: 24;
+}
+#chat.open { pointer-events: auto; }
+#chatLog {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px;
+  max-height: 28vh;
+  overflow: hidden;
+  background: transparent;
+}
+#chat.open #chatLog {
+  max-height: 38vh;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.46);
+  box-shadow: 2px 2px 0 #000;
+}
+#chatLog li {
+  font-size: 22px;
+  line-height: 1.18;
+  color: #f4f4f4;
+  text-shadow: 2px 2px 0 #000;
+  word-break: break-word;
+  opacity: 1;
+  transition: opacity 0.35s linear;
+}
+#chatLog li.fade { opacity: 0.18; }
+#chatLog li.gone { display: none; }
+#chatLog .who { font-weight: 700; }
+#chatBar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 5px 8px;
+  background: rgba(0, 0, 0, 0.55);
+  box-shadow: 2px 2px 0 #000;
+}
+#chat.open #chatBar { display: flex; }
+#chatBar .caret {
+  color: #fff;
+  font-size: 22px;
+  text-shadow: 2px 2px 0 #000;
+}
+#chatQ {
+  flex: 1;
+  min-width: 0;
+  font-family: "VT323", monospace;
+  font-size: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  outline: none;
+  user-select: text;
+}
+
+#toast {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: "Press Start 2P", monospace;
+  font-size: 12px;
+  color: var(--cyan);
+  text-shadow: 0 0 10px var(--cyan), 2px 2px 0 #000;
+  opacity: 0;
+  transition: opacity 0.2s;
+  text-align: center;
+  pointer-events: none;
+  z-index: 36;
+  max-width: 80vw;
+  line-height: 1.6;
+}
+
+#toast.show { opacity: 1; }
+
+#winPop {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, 8px) scale(0.86);
+  font-family: "Press Start 2P", monospace;
+  font-size: 16px;
+  letter-spacing: 1px;
+  color: var(--gold);
+  text-shadow: 0 0 14px var(--gold), 3px 3px 0 #000;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 41;
+  text-align: center;
+  transition: opacity 0.14s ease-out, transform 0.14s ease-out;
+  max-width: 80vw;
+  line-height: 1.5;
+}
+#winPop.show {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+#winPop.lose {
+  color: var(--neon);
+  text-shadow: 0 0 14px var(--neon), 3px 3px 0 #000;
+}
+#winPop.back {
+  font-size: 13px;
+  color: var(--cyan);
+  text-shadow: 0 0 12px var(--cyan), 3px 3px 0 #000;
+}
+
+#lookHint {
+  position: absolute;
+  top: 14%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  color: var(--gold);
+  text-shadow: 2px 2px 0 #000;
+  display: none;
+  letter-spacing: 1px;
+}
+#lookHint.show { display: block; }
+
+#hurt {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 43;
+  background: radial-gradient(ellipse at center, rgba(180, 20, 30, 0.12), rgba(70, 0, 10, 0.7));
+  opacity: 0;
+}
+
+#passout { display: none; z-index: 45; }
+#passout.open { display: flex; }
+#passout.arrest {
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(40, 80, 255, 0.22), transparent 50%),
+    rgba(6, 8, 16, 0.78);
+}
+#passout.arrest h1 {
+  color: #7aa2ff;
+  text-shadow: 4px 4px 0 #000, 0 0 18px rgba(70, 120, 255, 0.55);
+}
+
+.hidden { display: none !important; }
+
+#online {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  width: min(340px, 48vw);
+  padding: 12px 14px;
+  background: rgba(20, 10, 6, 0.82);
+  font-size: 22px;
+  pointer-events: none;
+}
+#online .tag {
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  color: var(--cyan);
+  margin-bottom: 6px;
+  text-shadow: 0 0 8px var(--cyan);
+}
+#onlineList { color: var(--foam); line-height: 1.2; }
+#onlineList .you { color: var(--gold); }
+#onlineList .wasted { color: var(--neon); }
+#online .net {
+  margin-top: 8px;
+  font-size: 18px;
+  color: #c9b48a;
+}
+
+.id-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 18px 0 8px;
+  pointer-events: auto;
+}
+.id-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: "Press Start 2P", monospace;
+  font-size: 8px;
+  color: var(--cyan);
+  text-align: left;
+}
+.id-row input {
+  font-family: "VT323", monospace;
+  font-size: 28px;
+  width: 220px;
+  padding: 8px 10px;
+  border: 0;
+  background: #2a1a12;
+  color: var(--foam);
+  outline: 2px solid var(--gold);
+}
+#title .hint {
+  font-size: 20px;
+  color: #c9b48a;
+  max-width: 640px;
+}
+#clockInBtn {
+  font-family: "Press Start 2P", monospace;
+  border: 0;
+  cursor: pointer;
+}
+#clockInBtn:hover { filter: brightness(1.12); }
+
+#game {
+  position: absolute;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  width: min(420px, 54vw);
+  padding: 12px 14px;
+  background: rgba(20, 10, 6, 0.86);
+  font-size: 22px;
+  pointer-events: none;
+  text-align: center;
+}
+#game .tag {
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  color: var(--gold);
+  margin-bottom: 6px;
+  text-shadow: 0 0 8px var(--gold);
+}
+
+#online {
+  width: min(340px, 48vw);
+}
+#onlineList > .row,
+#onlineList > div.row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  line-height: 1.25;
+}
+#onlineList .who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+#onlineList .buzz {
+  flex: 0 0 auto;
+  font-size: 20px;
+  color: var(--gold);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+#onlineList .wasted .buzz,
+#onlineList .ko .buzz {
+  color: var(--neon);
+}
+
+.gender-picks {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+.gender-picks button {
+  font-family: "Press Start 2P", monospace;
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  color: var(--foam);
+  background: #2a1a12;
+  border: 0;
+  padding: 10px 12px 9px;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 #000;
+  min-width: 88px;
+}
+.gender-picks button:hover { color: var(--gold); }
+.gender-picks button.on {
+  color: var(--ink);
+  background: var(--gold);
+}
