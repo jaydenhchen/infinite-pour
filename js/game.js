@@ -9,6 +9,7 @@ import {
   nameMix,
   mixColor,
   mixAbv,
+  PISS,
 } from "./drinks.js";
 import {
   bootMultiplayer,
@@ -30,8 +31,10 @@ import {
   tryPunch,
   eyeHeight,
   setPeeDrainFn,
+  setPeeCupHooks,
+  heldCupWorlds,
   setLocalHitHandler,
-} from "./multiplayer.js?v=104";
+} from "./multiplayer.js?v=107";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -120,6 +123,7 @@ const GLYPH = {
   "#": ["101", "111", "101", "111", "101"],
   "/": ["001", "001", "010", "100", "100"],
   ":": ["000", "010", "000", "010", "000"],
+  "_": ["000", "000", "000", "000", "111"],
 };
 
 function blitText(ctx, text, x, y, color, scale = 1) {
@@ -1027,6 +1031,7 @@ const swingDoors = [];
 let bathFlicker = null;
 let glassState = { type: "pint", fill: 0, parts: [] };
 let glassMesh = null;
+let drankPiss = false;
 let bacWait = 0;
 let bacSoberT = 0;
 let bacDecayFrom = 0;
@@ -1049,6 +1054,7 @@ let localPeer = null;
 let inCar = null;
 const cars = [];
 const worldSolids = [];
+const carBlocks = [];
 const camSolids = [];
 const pads = [];
 const bodyPos = new THREE.Vector3(0, EYE, -1.05);
@@ -1102,6 +1108,17 @@ function solid(x, z, w, d, h = 1.2) {
 
 function worldSolid(x, z, w, d, h = 4) {
   worldSolids.push(packSolid(x, z, w, d, h));
+}
+
+function blockCars(x, z, w, d) {
+  carBlocks.push(packSolid(x, z, w, d, 4));
+}
+
+function inCarBlock(px, pz, pad = 0) {
+  for (const s of carBlocks) {
+    if (px >= s.minx - pad && px <= s.maxx + pad && pz >= s.minz - pad && pz <= s.maxz + pad) return true;
+  }
+  return false;
 }
 
 function addCeiling(x, z, w, d, y) {
@@ -1289,6 +1306,18 @@ function collideWorld(px, pz, r = 0.28, feet = 0, airborne = false) {
   for (const s of worldSolids) {
     if (doorIsOpen(s)) continue;
     if (skipClimbWall(s, feet, airborne)) continue;
+    [px, pz] = pushSolid(px, pz, r, s);
+  }
+  px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
+  pz = THREE.MathUtils.clamp(pz, WORLD_Z_MIN, WORLD_Z_MAX);
+  return [px, pz];
+}
+
+function collideWorldForCar(px, pz, r = 0.48) {
+  for (const s of worldSolids) {
+    [px, pz] = pushSolid(px, pz, r, s);
+  }
+  for (const s of carBlocks) {
     [px, pz] = pushSolid(px, pz, r, s);
   }
   px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
@@ -1567,6 +1596,7 @@ function resetShift() {
   pours = 0;
   pourBank = 0;
   unique = new Set();
+  drankPiss = false;
   fridgeOpen = false;
   zoomHold = false;
   if (frontDoor) setFrontDoor(false, true);
@@ -1861,6 +1891,8 @@ function buildWorld() {
   camBox(0, 1.3, D / 2 + 0.02, 1.6, 2.6, 0.16, { door: true });
 
   buildBathrooms();
+  blockCars(0, 0, W + 0.9, D + 0.9);
+  blockCars(-10.35, -2.67, 4.8, 8.5);
   buildTown();
   houseGames = createGames({
     scene,
@@ -3117,11 +3149,54 @@ function inBathroom(x, z) {
   return x < -8.05 && x > -12.7 && z > -6.85 && z < 1.5;
 }
 
+function glassCatchVolumes() {
+  if (!glassMesh || held !== glassMesh) return [];
+  glassMesh.updateMatrixWorld(true);
+  const dim = glassDims(glassState.type);
+  const rim = new THREE.Vector3(0, dim.y + dim.h * 0.72, 0);
+  glassMesh.localToWorld(rim);
+  const s = glassMesh.scale.x || 1;
+  return [
+    {
+      x: rim.x,
+      y: rim.y,
+      z: rim.z,
+      r: Math.max(0.15, dim.r * s * 3.2),
+      h: Math.max(0.16, dim.h * s * 2.1),
+    },
+    { x: bodyPos.x, y: 1.02, z: bodyPos.z, r: 0.26, h: 0.42 },
+  ];
+}
+
+function catchPeeInCup(amount) {
+  if (!amount || glassState.fill >= 1) return 0;
+  const before = glassState.fill;
+  const add = pourIntoGlass(PISS, amount);
+  if (add > 0 && before < 0.04) toast("cup catching piss");
+  if (add > 0) hud();
+  return add;
+}
+
 function peeTargetOf() {
   if (sitting?.kind === "toilet" && sitting.fixture?.userData?.bowlWorld) return sitting.fixture.userData.bowlWorld;
   const k = look?.userData?.kind;
   if ((k === "toilet" || k === "urinal") && look.userData.toilet?.userData?.bowlWorld) {
     return look.userData.toilet.userData.bowlWorld;
+  }
+  const yaw = viewMode === 2 ? view2Yaw : savedYaw;
+  const fx = -Math.sin(yaw);
+  const fz = -Math.cos(yaw);
+  let bestCup = null;
+  let bestCupD = 1.45;
+  for (const c of heldCupWorlds()) {
+    const dx = c.x - bodyPos.x;
+    const dz = c.z - bodyPos.z;
+    const d = Math.hypot(dx, dz);
+    if (d > bestCupD) continue;
+    const along = dx * fx + dz * fz;
+    if (d > 0.55 && along < -0.12) continue;
+    bestCupD = d;
+    bestCup = c;
   }
   let best = null;
   let bestD = 1.25;
@@ -3134,6 +3209,7 @@ function peeTargetOf() {
       best = b;
     }
   }
+  if (bestCup && (!best || bestCupD <= bestD + 0.2)) return bestCup;
   return best;
 }
 
@@ -3396,7 +3472,7 @@ function promptFrom(obj) {
       return "E get in · SPACE onto the hood or trunk";
     }
     if (held && held.userData.kind === "glass") {
-      return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  Q set down";
+      return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  hold it in a stream  ·  Q set down";
     }
     if (inBathroom(camera.position.x, camera.position.z)) {
       return localGender === "f" ? "restrooms · E sit · P pee on the toilet" : "restrooms · E sit or open doors · P pee";
@@ -3414,7 +3490,7 @@ function promptFrom(obj) {
     if (held && held.userData.kind === "bottle") return `click pour  ${held.userData.drink.name}  ·  E grab cup`;
     if (held && held.userData.kind === "glass") {
       if (glassState.fill > 0.02) return "F sip  ·  G chug  ·  Q set down";
-      return "cup in hand  ·  4–9 swap  ·  Q set down";
+      return "cup in hand  ·  hold it in a stream  ·  4–9 swap  ·  Q set down";
     }
     if (glassState.fill > 0.02) return "E grab cup  ·  F sip  ·  G chug";
     return "E grab cup  ·  4–9 glassware";
@@ -3838,6 +3914,10 @@ function drinkGlass(kind) {
   const frac = cap > 0 ? oz / cap : glassState.fill;
   const abv = mixAbv(glassState.parts);
   const name = nameMix(glassState.parts);
+  if (/piss/i.test(name) && !drankPiss) {
+    drankPiss = true;
+    toast("you drank piss");
+  }
   bac += (abv / 40) * (oz / 1.2) * 0.028;
   bumpDrink();
   glassState.fill = Math.max(0, glassState.fill - frac);
@@ -3921,6 +4001,7 @@ function startShift() {
     },
   });
   setLocalHitHandler(() => audio.hit());
+  setPeeCupHooks(glassCatchVolumes, catchPeeInCup);
   setPoseSources(
     () => held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : ""),
     () => pouring,
@@ -3934,6 +4015,8 @@ function startShift() {
       s: sitting ? 1 : 0,
       u: peeing ? 1 : 0,
       g: localGender,
+      gf: glassState.fill,
+      gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
       ...(peeing && peeTargetOf()
         ? { ax: peeTargetOf().x, ay: peeTargetOf().y, az: peeTargetOf().z }
         : {}),
@@ -4081,6 +4164,8 @@ function ensureLocalAvatar() {
       pit: 0,
       bac: 0,
       held: "",
+      gf: 0,
+      gc: 0,
       pouring: false,
       last: performance.now(),
       phase: 1.7,
@@ -4302,10 +4387,23 @@ function resolveDrive(car, nx, nz) {
   let px = nx;
   let pz = nz;
   let hitKind = "";
-  for (const [ox, oz] of [[0, -2.05], [0, 2.05], [-1.02, -0.7], [1.02, -0.7], [-1.02, 0.7], [1.02, 0.7]]) {
+  const probes = [
+    [0, 0],
+    [0, -2.15],
+    [0, 2.15],
+    [-1.12, -1.6],
+    [1.12, -1.6],
+    [-1.12, 0],
+    [1.12, 0],
+    [-1.12, 1.6],
+    [1.12, 1.6],
+    [0, -1.1],
+    [0, 1.1],
+  ];
+  for (const [ox, oz] of probes) {
     const sx = px + lx * ox + fx * oz;
     const sz = pz + lz * ox + fz * oz;
-    const [qx, qz] = collideWorld(sx, sz, 0.26);
+    const [qx, qz] = collideWorldForCar(sx, sz, 0.42);
     const dx = qx - sx;
     const dz = qz - sz;
     if (dx * dx + dz * dz > 1e-7) {
@@ -4313,6 +4411,12 @@ function resolveDrive(car, nx, nz) {
       pz += dz;
       hitKind = "building";
     }
+  }
+  if (inCarBlock(px, pz, 0.35) || inCarBlock(px + fx * 1.6, pz + fz * 1.6, 0.2) || inCarBlock(px - fx * 1.6, pz - fz * 1.6, 0.2)) {
+    const [ex, ez] = collideWorldForCar(px, pz, 1.55);
+    px = ex;
+    pz = ez;
+    hitKind = "building";
   }
   const [cx, cz, other] = collideCars(px, pz, 1.25, car);
   if (other) return { x: cx, z: cz, hitKind: "car", hitCar: other };
@@ -4327,7 +4431,7 @@ function shoveCar(other, from, spd) {
   const push = Math.min(1.6, 0.22 + spd * 0.09);
   other.x += (dx / d) * push;
   other.z += (dz / d) * push;
-  const [hx, hz] = collideWorld(other.x, other.z, 1.2);
+  const [hx, hz] = collideWorldForCar(other.x, other.z, 1.35);
   other.x = hx;
   other.z = hz;
   other.yaw += (Math.random() - 0.5) * Math.min(0.7, spd * 0.04);
@@ -4414,7 +4518,10 @@ function punchCops() {
 function makeOfficer() {
   const rig = makeAvatar(`cop-${++copSerial}`, "P.D.", "m");
   if (rig.userData.shirt) rig.userData.shirt.color.setHex(0x1b2d55);
-  if (rig.userData.tag) rig.userData.tag.visible = false;
+  if (rig.userData.tag) {
+    rig.userData.tag.visible = false;
+    rig.userData.tag.userData.locked = true;
+  }
   const head = rig.userData.head;
   if (head) {
     addBox(head, unitBox, lambert(0x111318), 0, 0.16, 0, 0.32, 0.1, 0.32);
@@ -4543,7 +4650,10 @@ function startCopRagdoll(off, car, spd) {
   if (!rig) return;
   const u = rig.userData;
   u.disposeFx?.();
-  if (u.tag) u.tag.visible = false;
+  if (u.tag) {
+    u.tag.visible = false;
+    u.tag.userData.locked = true;
+  }
   if (u.stars) u.stars.visible = false;
   if (u.body) {
     u.body.position.set(0, -0.92, 0);
@@ -5121,6 +5231,8 @@ function applyView() {
     localPeer.tpit = inCar ? 0 : pitch;
     localPeer.bac = drunk;
     localPeer.held = held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : "");
+    localPeer.gf = glassState.fill;
+    localPeer.gc = glassState.fill > 0.02 ? mixColor(glassState.parts) : 0;
     localPeer.pouring = pouring;
     localPeer.sit = Boolean(sitting);
     localPeer.pee = Boolean(peeing);
@@ -5137,7 +5249,9 @@ function applyView() {
     if (u.armL) u.armL.visible = showBody;
     if (u.armR) u.armR.visible = showBody;
     if (u.tag) u.tag.visible = showBody;
-    if (u.held) u.held.visible = showBody && Boolean(localPeer.held);
+    const cupOn = localPeer.held === "cup";
+    if (u.held) u.held.visible = showBody && Boolean(localPeer.held) && !cupOn;
+    if (u.cup) u.cup.visible = showBody && cupOn;
     if (inCar) {
       const s = carSeat(inCar);
       localPeer.rig.position.set(s.x, 0.12, s.z);

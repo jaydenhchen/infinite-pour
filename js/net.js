@@ -121,102 +121,131 @@ export function connectNet(opts) {
   const evTopic = `${root}/ev`;
   const stFilter = `${root}/st/+`;
 
-  let ws = null;
   let alive = true;
-  let ready = false;
-  let brokerIndex = 0;
-  let pingTimer = 0;
-  let retryTimer = 0;
-  let buf = new Uint8Array(0);
+  let wasOnline = false;
+  let lastState = "";
   let packetId = 1;
+  let pingTimer = 0;
+  const sockets = [];
+
+  function anyReady() {
+    return sockets.some((s) => s.ready && s.ws && s.ws.readyState === 1);
+  }
+
+  function setStatus() {
+    const online = anyReady();
+    if (online) {
+      if (!wasOnline) {
+        wasOnline = true;
+        opts.onStatus?.("online");
+        opts.onReady?.();
+      }
+      return;
+    }
+    if (wasOnline) {
+      wasOnline = false;
+      opts.onStatus?.(alive ? "connecting" : "offline");
+    } else if (alive) {
+      opts.onStatus?.("connecting");
+    }
+  }
+
+  function publishOn(s, topic, payloadStr, retain) {
+    if (!s.ready || !s.ws || s.ws.readyState !== 1) return;
+    const body = enc.encode(payloadStr);
+    const payload = concat([mqttStr(topic), body]);
+    try {
+      s.ws.send(packet(retain ? 0x31 : 0x30, payload));
+    } catch {
+      /* ignore */
+    }
+  }
 
   const api = {
     id,
     name,
     room,
     site,
-    ready: () => ready,
+    ready: () => anyReady(),
     sendState(obj) {
-      if (!ready || !ws || ws.readyState !== 1) return;
-      publish(stTopic, JSON.stringify(obj), true);
+      lastState = JSON.stringify(obj);
+      for (const s of sockets) publishOn(s, stTopic, lastState, true);
     },
     sendEvent(obj) {
-      if (!ready || !ws || ws.readyState !== 1) return;
-      publish(evTopic, JSON.stringify({ ...obj, from: id }), false);
+      const payload = JSON.stringify({ ...obj, from: id });
+      for (const s of sockets) publishOn(s, evTopic, payload, false);
     },
     leave() {
       alive = false;
       clearInterval(pingTimer);
-      clearTimeout(retryTimer);
-      try {
-        if (ws && ws.readyState === 1) {
-          publish(stTopic, "", true);
-          ws.send(packet(0xe0, new Uint8Array(0)));
+      for (const s of sockets) {
+        clearTimeout(s.retryTimer);
+        try {
+          if (s.ws && s.ws.readyState === 1) {
+            publishOn(s, stTopic, "", true);
+            s.ws.send(packet(0xe0, new Uint8Array(0)));
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
+        try {
+          s.ws?.close();
+        } catch {
+          /* ignore */
+        }
+        s.ready = false;
+        s.ws = null;
       }
-      try {
-        ws?.close();
-      } catch {
-        /* ignore */
-      }
-      ready = false;
+      wasOnline = false;
       opts.onStatus?.("offline");
     },
   };
 
-  function send(bytes) {
-    if (ws && ws.readyState === 1) ws.send(bytes);
-  }
-
-  function publish(topic, payloadStr, retain) {
-    const body = enc.encode(payloadStr);
-    const payload = concat([mqttStr(topic), body]);
-    send(packet(retain ? 0x31 : 0x30, payload));
-  }
-
-  function handle(bufAll) {
-    buf = concat([buf, bufAll]);
-    if (buf.length > 1_000_000) buf = new Uint8Array(0);
+  function handle(s, bufAll) {
+    s.buf = concat([s.buf, bufAll]);
+    if (s.buf.length > 1_000_000) s.buf = new Uint8Array(0);
     let guard = 0;
-    while (buf.length >= 2 && guard++ < 64) {
+    while (s.buf.length >= 2 && guard++ < 64) {
       let rem;
       try {
-        rem = readRem(buf, 1);
+        rem = readRem(s.buf, 1);
       } catch {
-        buf = new Uint8Array(0);
+        s.buf = new Uint8Array(0);
         return;
       }
       if (!rem) return;
       if (rem.len > 200000) {
-        buf = new Uint8Array(0);
+        s.buf = new Uint8Array(0);
         return;
       }
       const total = rem.i + rem.len;
       if (total < 2) {
-        buf = buf.subarray(1);
+        s.buf = s.buf.subarray(1);
         continue;
       }
-      if (buf.length < total) return;
-      const header = buf[0];
+      if (s.buf.length < total) return;
+      const header = s.buf[0];
       const type = header >> 4;
-      const body = buf.subarray(rem.i, total);
-      buf = buf.subarray(total);
+      const body = s.buf.subarray(rem.i, total);
+      s.buf = s.buf.subarray(total);
       try {
-        onPacket(type, body, header);
+        onPacket(s, type, body, header);
       } catch (err) {
         console.warn("mqtt packet", err);
       }
     }
   }
 
-  function onPacket(type, body, header) {
+  function onPacket(s, type, body, header) {
     if (type === 2) {
       const code = body.length > 1 ? body[1] : 1;
       if (code !== 0) {
-        opts.onStatus?.("offline");
-        ws?.close();
+        s.ready = false;
+        try {
+          s.ws?.close();
+        } catch {
+          /* ignore */
+        }
         return;
       }
       const pid = packetId++ & 0xffff || 1;
@@ -227,13 +256,17 @@ export function connectNet(opts) {
         mqttStr(evTopic),
         Uint8Array.of(0),
       ]);
-      send(packet(0x82, sub));
+      try {
+        s.ws.send(packet(0x82, sub));
+      } catch {
+        /* ignore */
+      }
       return;
     }
     if (type === 9) {
-      ready = true;
-      opts.onStatus?.("online");
-      opts.onReady?.();
+      s.ready = true;
+      if (lastState) publishOn(s, stTopic, lastState, true);
+      setStatus();
       return;
     }
     if (type === 3) {
@@ -278,20 +311,18 @@ export function connectNet(opts) {
     }
   }
 
-  function open() {
+  function openSock(s) {
     if (!alive) return;
-    ready = false;
-    opts.onStatus?.("connecting");
-    const url = BROKERS[Math.floor(brokerIndex / 2) % BROKERS.length];
-    const useProto = brokerIndex % 2 === 0;
+    s.ready = false;
+    const useProto = s.protoTry === 0;
     let sock;
     try {
-      sock = useProto ? new WebSocket(url, ["mqtt"]) : new WebSocket(url);
+      sock = useProto ? new WebSocket(s.url, ["mqtt"]) : new WebSocket(s.url);
     } catch {
-      failOver();
+      failOver(s);
       return;
     }
-    ws = sock;
+    s.ws = sock;
     sock.binaryType = "arraybuffer";
     const timeout = setTimeout(() => {
       if (sock.readyState !== 1) {
@@ -301,43 +332,73 @@ export function connectNet(opts) {
           /* ignore */
         }
       }
-    }, 5000);
+    }, 6000);
     sock.onopen = () => {
       clearTimeout(timeout);
-      buf = new Uint8Array(0);
+      s.buf = new Uint8Array(0);
       const flags = 0x26;
-      const keep = 30;
+      const keep = 45;
       const vh = concat([mqttStr("MQTT"), Uint8Array.of(4, flags, keep >> 8, keep & 255)]);
       const pl = concat([mqttStr(`ip${id}`), mqttStr(stTopic), mqttStr("")]);
-      send(packet(0x10, concat([vh, pl])));
+      try {
+        sock.send(packet(0x10, concat([vh, pl])));
+      } catch {
+        /* ignore */
+      }
     };
     sock.onmessage = (ev) => {
       const data = ev.data;
-      if (data instanceof ArrayBuffer) handle(new Uint8Array(data));
-      else if (data instanceof Blob) data.arrayBuffer().then((ab) => handle(new Uint8Array(ab)));
+      if (data instanceof ArrayBuffer) handle(s, new Uint8Array(data));
+      else if (data instanceof Blob) data.arrayBuffer().then((ab) => handle(s, new Uint8Array(ab)));
     };
     sock.onerror = () => {};
     sock.onclose = () => {
       clearTimeout(timeout);
-      ready = false;
+      if (s.ws === sock) {
+        s.ready = false;
+        s.ws = null;
+      }
+      setStatus();
       if (!alive) return;
-      opts.onStatus?.("offline");
-      failOver();
+      failOver(s);
     };
   }
 
-  function failOver() {
-    brokerIndex += 1;
-    clearTimeout(retryTimer);
-    retryTimer = setTimeout(open, 700 + Math.min(4000, brokerIndex * 400));
+  function failOver(s) {
+    s.protoTry = (s.protoTry + 1) % 2;
+    s.fails += 1;
+    clearTimeout(s.retryTimer);
+    s.retryTimer = setTimeout(() => openSock(s), 700 + Math.min(5000, s.fails * 350));
+  }
+
+  opts.onStatus?.("connecting");
+  for (let i = 0; i < BROKERS.length; i++) {
+    const s = {
+      url: BROKERS[i],
+      protoTry: 0,
+      ready: false,
+      ws: null,
+      buf: new Uint8Array(0),
+      retryTimer: 0,
+      fails: 0,
+    };
+    sockets.push(s);
+    setTimeout(() => openSock(s), i * 160);
   }
 
   pingTimer = setInterval(() => {
-    if (ready && ws && ws.readyState === 1) send(packet(0xc0, new Uint8Array(0)));
-  }, 20000);
+    for (const s of sockets) {
+      if (s.ready && s.ws && s.ws.readyState === 1) {
+        try {
+          s.ws.send(packet(0xc0, new Uint8Array(0)));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }, 12000);
 
   window.addEventListener("pagehide", () => api.leave());
   window.addEventListener("beforeunload", () => api.leave());
-  open();
   return api;
 }
