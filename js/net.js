@@ -242,7 +242,7 @@ export function connectNet(opts) {
     ready: () => anyReady(),
     sendState(obj) {
       lastState = JSON.stringify(obj);
-      publishAll(stTopic, lastState, true, 0);
+      publishAll(stTopic, lastState, false, 0);
     },
     sendEvent(obj) {
       const payload = JSON.stringify({ ...obj, from: id, eid: `${id}-${++evSeq}` });
@@ -260,7 +260,8 @@ export function connectNet(opts) {
         clearTimeout(s.retryTimer);
         try {
           if (s.ws && s.ws.readyState === 1) {
-            publishOn(s, stTopic, gone, true, 0);
+            publishOn(s, stTopic, "", true, 0);
+            publishOn(s, stTopic, gone, false, 0);
             publishOn(s, evTopic, bye, false, 0);
           }
         } catch {
@@ -362,7 +363,8 @@ export function connectNet(opts) {
     if (type === 9) {
       s.ready = true;
       s.fails = 0;
-      if (lastState) publishOn(s, stTopic, lastState, true, 0);
+      publishOn(s, stTopic, "", true, 0);
+      if (lastState) publishOn(s, stTopic, lastState, false, 0);
       setStatus();
       return;
     }
@@ -376,7 +378,7 @@ export function connectNet(opts) {
         i += 2;
       }
       const payload = dec.decode(body.subarray(i));
-      onPublish(topic.s, payload);
+      onPublish(topic.s, payload, (header & 1) === 1);
       if (qos === 1 && pid && s.ws && s.ws.readyState === 1) {
         try {
           s.ws.send(packet(0x40, u16(pid)));
@@ -387,7 +389,7 @@ export function connectNet(opts) {
     }
   }
 
-  function onPublish(topic, payload) {
+  function onPublish(topic, payload, retain) {
     if (topic === evTopic) {
       if (!payload) return;
       try {
@@ -404,7 +406,10 @@ export function connectNet(opts) {
     if (!topic.startsWith(prefix)) return;
     const peerId = topic.slice(prefix.length);
     if (!peerId || peerId === id) return;
-    if (!payload) return;
+    if (!payload) {
+      opts.onPeerLeave?.(peerId, "empty");
+      return;
+    }
     try {
       const state = JSON.parse(payload);
       if (!state || typeof state !== "object") return;
@@ -412,7 +417,7 @@ export function connectNet(opts) {
         opts.onPeerLeave?.(peerId, "gone", state);
         return;
       }
-      opts.onPeer?.(peerId, state);
+      opts.onPeer?.(peerId, state, { retain: !!retain });
     } catch {
       /* ignore */
     }
