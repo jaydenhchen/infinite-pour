@@ -44,7 +44,7 @@ import {
   setWorldBlock,
   makeBatonMesh,
   seatBatonOnArm,
-} from "./multiplayer.js?v=131";
+} from "./multiplayer.js?v=132";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);

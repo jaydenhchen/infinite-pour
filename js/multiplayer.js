@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { connectNet, sanitizeName, defaultName, makeClientId } from "./net.js?v=39";
+import { connectNet, sanitizeName, defaultName, makeClientId } from "./net.js?v=40";
 
 const SHIRTS = [0x3d6ea8, 0xc44b3c, 0x2e8b57, 0xb8860b, 0x7b4b9a, 0xd46aa0, 0x2c6e49, 0xe07a3d];
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
@@ -1018,6 +1018,22 @@ function tabHidden() {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
 
+function pulsePresence() {
+  if (!net?.ready()) return;
+  try {
+    net.ping?.();
+  } catch {
+    /* ignore */
+  }
+  lastPose = "";
+  forcePose = true;
+  try {
+    sendPose();
+  } catch {
+    /* ignore */
+  }
+}
+
 function bindTabNet() {
   if (window.__ipourTabNet) return;
   window.__ipourTabNet = true;
@@ -1039,9 +1055,15 @@ function bindTabNet() {
     } catch {
       /* ignore */
     }
+    try {
+      sendPose();
+    } catch {
+      /* ignore */
+    }
   };
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") wake();
+    else pulsePresence();
   });
   window.addEventListener("pageshow", wake);
   window.addEventListener("pagehide", (e) => {
@@ -1049,6 +1071,12 @@ function bindTabNet() {
     die();
   });
   window.addEventListener("beforeunload", die);
+  document.addEventListener("resume", wake);
+  if (!window.__ipourPulse) {
+    window.__ipourPulse = setInterval(() => {
+      if (tabHidden()) pulsePresence();
+    }, 2000);
+  }
 }
 
 export function setPoseSources(getHeld, getPouring, getDrunk, getPose) {
@@ -1963,8 +1991,8 @@ export function tickMultiplayer(dt) {
   const t = now * 0.001;
   for (const [id, peer] of remotes) {
     const quiet = now - (peer.last || 0);
-    const leaving = peer.pendingLeave && now - peer.pendingLeave > 4000 && quiet > 4000;
-    if (leaving || quiet > 6000) {
+    const leaving = peer.pendingLeave && now - peer.pendingLeave > 12000 && quiet > 12000;
+    if (leaving || quiet > 180000) {
       markLeft(id, Date.now());
       dropPeer(id);
       continue;

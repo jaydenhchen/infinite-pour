@@ -203,20 +203,24 @@ export function connectNet(opts) {
     return n;
   }
 
+  function pingAll() {
+    for (const s of sockets) {
+      if (s.ready && s.ws && s.ws.readyState === 1) {
+        try {
+          s.ws.send(packet(0xc0, new Uint8Array(0)));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   function startPing() {
     if (pingTimer) return;
     pingTimer = setInterval(() => {
       if (!alive) return;
-      for (const s of sockets) {
-        if (s.ready && s.ws && s.ws.readyState === 1) {
-          try {
-            s.ws.send(packet(0xc0, new Uint8Array(0)));
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-    }, 10000);
+      pingAll();
+    }, 25000);
   }
 
   function disconnectClean(s) {
@@ -240,6 +244,9 @@ export function connectNet(opts) {
     room,
     site,
     ready: () => anyReady(),
+    ping() {
+      if (alive) pingAll();
+    },
     sendState(obj) {
       lastState = JSON.stringify(obj);
       publishAll(stTopic, lastState, false, 0);
@@ -449,7 +456,7 @@ export function connectNet(opts) {
       clearTimeout(timeout);
       s.buf = new Uint8Array(0);
       const flags = 0x26;
-      const keep = 15;
+      const keep = 120;
       const mqttId = `ip${id}${s.tag}`;
       const vh = concat([mqttStr("MQTT"), Uint8Array.of(4, flags, keep >> 8, keep & 255)]);
       const pl = concat([mqttStr(mqttId.slice(0, 23)), mqttStr(stTopic), mqttStr(willMsg)]);
