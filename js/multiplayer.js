@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { connectNet, sanitizeName, defaultName, makeClientId } from "./net.js?v=38";
+import { connectNet, sanitizeName, defaultName, makeClientId } from "./net.js?v=39";
 
 const SHIRTS = [0x3d6ea8, 0xc44b3c, 0x2e8b57, 0xb8860b, 0x7b4b9a, 0xd46aa0, 0x2c6e49, 0xe07a3d];
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
@@ -730,6 +730,7 @@ function applyState(id, state) {
   const hasSeq = Number.isFinite(Number(state.seq));
   const seq = hasSeq ? Number(state.seq) : Number(state.t);
   const incomingT = Number(state.t);
+  if (Number.isFinite(incomingT) && Date.now() - incomingT > 45000) return;
   const left = leftAt.get(id);
   if (left != null) {
     if (!Number.isFinite(incomingT) || incomingT <= left + 250) return;
@@ -907,7 +908,8 @@ export function bootMultiplayer(opts) {
       forcePose = true;
       sendPose();
     },
-    onPeer(id, state) {
+    onPeer(id, state, meta) {
+      if (meta?.retain) return;
       try {
         applyState(id, state);
       } catch (err) {
@@ -915,10 +917,9 @@ export function bootMultiplayer(opts) {
       }
     },
     onPeerLeave(id, reason, state) {
-      if (reason === "empty") return;
-      if (reason === "gone") {
+      if (reason === "empty" || reason === "gone") {
         markLeft(id, Number(state?.t) || Date.now());
-        dropPeer(id);
+        dropPeer(id, reason === "empty");
         return;
       }
       const peer = remotes.get(id);
@@ -1869,7 +1870,7 @@ export function tickMultiplayer(dt) {
   for (const [id, peer] of remotes) {
     const quiet = now - (peer.last || 0);
     const leaving = peer.pendingLeave && now - peer.pendingLeave > 4000 && quiet > 4000;
-    if (leaving || quiet > 12000) {
+    if (leaving || quiet > 6000) {
       markLeft(id, Date.now());
       dropPeer(id);
       continue;

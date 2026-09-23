@@ -42,7 +42,7 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=121";
+} from "./multiplayer.js?v=122";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
