@@ -207,7 +207,7 @@ function catchPeeDrop(drop, cups) {
   if (!cups || !cups.length) return false;
   for (const cup of cups) {
     if (!dropHitsCup(drop.position, cup)) continue;
-    if (cup.local) peeFillFn && peeFillFn(0.04);
+    if (cup.local) peeFillFn && peeFillFn(0.0025);
     return true;
   }
   return false;

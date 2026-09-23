@@ -42,7 +42,7 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=123";
+} from "./multiplayer.js?v=124";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -61,6 +61,12 @@ const DRUNK_MAX = 6.25;
 const HEART_START = 0.7;
 const BAC_HOLD = 30;
 const BAC_FADE = 60;
+const PEE_SECS = 8;
+const PEE_CUPS = 2;
+const PEE_FILL_RATE = PEE_CUPS / PEE_SECS;
+const ONE_DRINK_BAC = (40 / 40) * (1.5 / 1.2) * 0.028;
+const CUP_STACK_MAX = 5;
+const CUP_NEST = 0.028;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -599,6 +605,192 @@ function glassDims(type) {
   return { r: Math.max(p.rb, p.rt), h: p.h, y: p.y, rb: p.rb, rt: p.rt };
 }
 
+function isPissPart(p) {
+  return !!(p && (p.id === "piss" || /piss/i.test(p.name || "")));
+}
+
+function peeShareOf(parts) {
+  if (!parts || !parts.length) return 0;
+  let pee = 0;
+  let tot = 0;
+  for (const p of parts) {
+    const a = Math.max(0, Number(p.amount) || 0);
+    tot += a;
+    if (isPissPart(p)) pee += a;
+  }
+  return tot > 0 ? pee / tot : 0;
+}
+
+function purgeBac(drinks) {
+  const cut = Math.min(bac, Math.max(0, (Number(drinks) || 0) * ONE_DRINK_BAC));
+  if (cut <= 0) return 0;
+  bac = Math.max(0, bac - cut);
+  if (bacDecayFrom > 0) bacDecayFrom = Math.max(bac, bacDecayFrom - cut);
+  return cut;
+}
+
+function rememberGlass(mesh) {
+  if (!mesh) return;
+  mesh.userData.gtype = glassState.type;
+  mesh.userData.gfill = glassState.fill;
+  mesh.userData.gparts = glassState.parts.map((p) => ({ ...p }));
+}
+
+function loadGlass(mesh) {
+  if (!mesh) return;
+  glassState.type = mesh.userData.gtype || mesh.userData.type || "pint";
+  glassState.fill = Number(mesh.userData.gfill) || 0;
+  glassState.parts = Array.isArray(mesh.userData.gparts) ? mesh.userData.gparts.map((p) => ({ ...p })) : [];
+}
+
+function trackLooseGlass(mesh) {
+  if (!mesh || looseGlasses.includes(mesh)) return;
+  looseGlasses.push(mesh);
+}
+
+function forgetLooseGlass(mesh) {
+  const i = looseGlasses.indexOf(mesh);
+  if (i >= 0) looseGlasses.splice(i, 1);
+}
+
+function disposeGlassMesh(mesh) {
+  if (!mesh) return;
+  forgetLooseGlass(mesh);
+  unregisterPick(mesh);
+  if (held === mesh) {
+    detachHeld();
+    held = null;
+    setRightGrip(false);
+  }
+  if (mesh.parent) mesh.parent.remove(mesh);
+  else scene.remove(mesh);
+  if (glassMesh === mesh) glassMesh = null;
+}
+
+function clearLooseGlasses() {
+  for (const mesh of [...looseGlasses]) disposeGlassMesh(mesh);
+  if (glassMesh) disposeGlassMesh(glassMesh);
+  glassMesh = null;
+  glassState.type = "pint";
+  glassState.fill = 0;
+  glassState.parts = [];
+}
+
+function makeStackCup() {
+  const g = new THREE.Group();
+  const mat = glassWallMat();
+  addGlassWall(g, mat, 0.055, 0.04, 0.15, 0.075);
+  const rim = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.056, 0.054, 0.01, 10),
+    lambert(0xe8f4fa, { transparent: true, opacity: 0.72 })
+  );
+  rim.position.y = 0.15;
+  g.add(rim);
+  g.traverse((o) => {
+    if (o.isMesh) o.userData.root = g;
+  });
+  return g;
+}
+
+function buildCupStacks() {
+  const spots = [
+    { x: 3.12, z: WELL_Z + 0.24 },
+    { x: 3.4, z: WELL_Z + 0.24 },
+  ];
+  cupStackMeshes.length = 0;
+  cupStacks[0] = CUP_STACK_MAX;
+  cupStacks[1] = CUP_STACK_MAX;
+  spots.forEach((spot, i) => {
+    const g = new THREE.Group();
+    g.position.set(spot.x, 1.05, spot.z);
+    const cups = [];
+    for (let n = 0; n < CUP_STACK_MAX; n++) {
+      const c = makeStackCup();
+      c.position.y = n * CUP_NEST;
+      c.scale.setScalar(1.28 - n * 0.018);
+      g.add(c);
+      cups.push(c);
+    }
+    const hit = new THREE.Mesh(unitBox, new THREE.MeshBasicMaterial({ visible: false }));
+    hit.scale.set(0.22, 0.42, 0.22);
+    hit.position.y = 0.16;
+    g.add(hit);
+    g.userData.kind = "cupstack";
+    g.userData.stack = i;
+    g.userData.cups = cups;
+    g.userData.root = g;
+    g.traverse((o) => {
+      if (o.isMesh) {
+        o.userData.kind = "cupstack";
+        o.userData.root = g;
+      }
+    });
+    scene.add(g);
+    registerPick(g);
+    cupStackMeshes.push(g);
+  });
+  paintCupStacks();
+}
+
+function paintCupStacks() {
+  for (let i = 0; i < cupStackMeshes.length; i++) {
+    const g = cupStackMeshes[i];
+    const n = THREE.MathUtils.clamp(cupStacks[i] | 0, 0, CUP_STACK_MAX);
+    cupStacks[i] = n;
+    (g.userData.cups || []).forEach((c, k) => {
+      c.visible = k < n;
+    });
+  }
+}
+
+function publishCupStacks() {
+  publishEvent({ t: "cups", a: [cupStacks[0], cupStacks[1]] });
+}
+
+function applyCupStacks(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return;
+  const next = [
+    THREE.MathUtils.clamp(Number(arr[0]) || 0, 0, CUP_STACK_MAX),
+    THREE.MathUtils.clamp(Number(arr[1]) || 0, 0, CUP_STACK_MAX),
+  ];
+  if (next[0] === cupStacks[0] && next[1] === cupStacks[1]) return;
+  cupStacks[0] = next[0];
+  cupStacks[1] = next[1];
+  paintCupStacks();
+}
+
+function restockCupStacks(fromNet) {
+  clearLooseGlasses();
+  cupStacks[0] = CUP_STACK_MAX;
+  cupStacks[1] = CUP_STACK_MAX;
+  paintCupStacks();
+  if (!fromNet) publishCupStacks();
+}
+
+function grabCupFromStack(want) {
+  let i = want;
+  if (i == null || cupStacks[i] <= 0) {
+    i = cupStacks[0] > 0 ? 0 : cupStacks[1] > 0 ? 1 : -1;
+  }
+  if (i < 0) {
+    toast("no cups left · restock the bar");
+    return;
+  }
+  if (held) dropHeld();
+  cupStacks[i] -= 1;
+  paintCupStacks();
+  publishCupStacks();
+  glassState.type = glassState.type || "pint";
+  glassState.fill = 0;
+  glassState.parts = [];
+  const cup = makeGlassMesh(glassState.type);
+  cup.userData.gtype = glassState.type;
+  cup.userData.gfill = 0;
+  cup.userData.gparts = [];
+  glassMesh = cup;
+  attachHeld(cup);
+}
+
 function makeHand(side) {
   const g = new THREE.Group();
   const skin = lambert(0xe8b48a, { emissive: 0xc48a5c, emissiveIntensity: 0.35 });
@@ -1032,7 +1224,7 @@ const ndc = new THREE.Vector2(0, 0);
 const _pickOrigin = new THREE.Vector3();
 const _pickDir = new THREE.Vector3();
 const _pickWorld = new THREE.Vector3();
-const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "darts"]);
+const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "darts", "cupstack"]);
 const solids = [];
 const pickables = [];
 const bottles = [];
@@ -1075,6 +1267,9 @@ const swingDoors = [];
 let bathFlicker = null;
 let glassState = { type: "pint", fill: 0, parts: [] };
 let glassMesh = null;
+const looseGlasses = [];
+const cupStacks = [CUP_STACK_MAX, CUP_STACK_MAX];
+const cupStackMeshes = [];
 let drankPiss = false;
 let bacWait = 0;
 let bacSoberT = 0;
@@ -1787,7 +1982,7 @@ function removeBottle(b) {
   if (i >= 0) bottles.splice(i, 1);
 }
 
-function restockDrinks() {
+function restockDrinks(fromNet) {
   audio.pourStop();
   audio.sinkStop();
   for (const s of sinks) {
@@ -1802,7 +1997,11 @@ function restockDrinks() {
     detachHeld();
     held = null;
     setRightGrip(false);
-    if (obj.userData.kind !== "glass" && obj.userData.stock) scene.add(obj);
+    if (obj.userData.kind === "glass") {
+      if (obj.parent) obj.parent.remove(obj);
+      else scene.remove(obj);
+      unregisterPick(obj);
+    } else if (obj.userData.stock) scene.add(obj);
   }
   deliveries.length = 0;
   for (const drop of drops) scene.remove(drop);
@@ -1823,10 +2022,7 @@ function restockDrinks() {
     b.rotation.set(0, home.rot, 0);
     b.userData.volume = 1;
   }
-  if (glassState.type !== "pint") setGlassType("pint");
-  glassState.fill = 0;
-  glassState.parts = [];
-  parkGlass();
+  restockCupStacks(fromNet);
   poseHands();
   houseGames?.reset();
 }
@@ -2105,11 +2301,7 @@ function buildWorld() {
   scene.add(jukeLight);
   solid(7.1, 3.6, 0.8, 0.6, 1.8);
 
-  glassMesh = makeGlassMesh(glassState.type);
-  glassMesh.position.set(0.22, 1.05, WELL_Z + 0.28);
-  scene.add(glassMesh);
-  registerPick(glassMesh);
-  updateGlassVisual();
+  buildCupStacks();
 
   const hemi = new THREE.HemisphereLight(0xffe6c8, 0x1a0c08, 0.85);
   scene.add(hemi);
@@ -3583,22 +3775,29 @@ function updateGlassVisual() {
     meniscus.position.set(0, spec.y + h * 0.99, 0);
     paintLiquid(meniscus, col);
   }
+  rememberGlass(glassMesh);
 }
 
 function setGlassType(type) {
+  glassState.type = type;
+  if (!glassMesh) return;
   const holding = held === glassMesh;
   const pos = glassMesh.position.clone();
+  forgetLooseGlass(glassMesh);
   unregisterPick(glassMesh);
   if (glassMesh.parent) glassMesh.parent.remove(glassMesh);
   else scene.remove(glassMesh);
   if (holding) held = null;
-  glassState.type = type;
   glassMesh = makeGlassMesh(type);
+  glassMesh.userData.gtype = type;
+  glassMesh.userData.gfill = glassState.fill;
+  glassMesh.userData.gparts = glassState.parts.map((p) => ({ ...p }));
   if (holding) attachHeld(glassMesh);
   else {
     glassMesh.position.copy(pos);
     scene.add(glassMesh);
     registerPick(glassMesh);
+    trackLooseGlass(glassMesh);
     audio.clink();
   }
   updateGlassVisual();
@@ -3777,7 +3976,7 @@ function hud() {
     $("heldMeta").textContent = `${held.userData.drink.type} · ${held.userData.drink.abv}% ABV · ${Math.round(held.userData.volume * 100)}% left`;
   } else {
     $("heldName").textContent = "empty hands";
-    $("heldMeta").textContent = "E grab bottle or cup · Y summon · T chat";
+    $("heldMeta").textContent = "E grab a cup from the right stacks · Y summon · T chat";
   }
   const d = drunkLevel();
   $("vignette").style.filter = `hue-rotate(${Math.min(180, d * 40)}deg) saturate(${1 + Math.min(4, d)})`;
@@ -3885,6 +4084,11 @@ function promptFrom(obj) {
   if (k === "bottle" && drink) {
     if (held && held.userData.kind === "glass") return `E pour  ${drink.name}  into cup`;
     return `E grab  ${drink.name}`;
+  }
+  if (k === "cupstack") {
+    const n = cupStacks[obj.userData.stack] || 0;
+    if (!n) return cupStacks.some((c) => c > 0) ? "E grab a cup from the other stack" : "stacks empty · restock the bar";
+    return `E grab a cup · ${n} left in this stack`;
   }
   if (k === "glass") {
     if (held && held.userData.kind === "bottle") return `click pour  ${held.userData.drink.name}  ·  E grab cup`;
@@ -4059,11 +4263,12 @@ function parkGlass() {
   }
   if (glassMesh.parent) glassMesh.parent.remove(glassMesh);
   glassMesh.scale.setScalar(1.35);
-  glassMesh.position.set(0.22, 1.05, WELL_Z + 0.28);
+  glassMesh.position.set(3.26, 1.05, WELL_Z + 0.24);
   glassMesh.rotation.set(0, 0, 0);
   scene.add(glassMesh);
   unregisterPick(glassMesh);
   registerPick(glassMesh);
+  trackLooseGlass(glassMesh);
   updateGlassVisual();
 }
 
@@ -4073,10 +4278,13 @@ function attachHeld(obj) {
   unregisterPick(obj);
   if (obj.parent) obj.parent.remove(obj);
   if (obj.userData.kind === "glass") {
+    if (glassMesh && glassMesh !== obj) rememberGlass(glassMesh);
+    forgetLooseGlass(obj);
     seatHeldGlass(obj);
     rightHand.userData.grip.add(obj);
     held = obj;
     glassMesh = obj;
+    loadGlass(obj);
     setRightGrip(true);
     poseHands();
     updateGlassVisual();
@@ -4110,9 +4318,10 @@ function dropHeld() {
   const p = camera.position.clone().add(dir.multiplyScalar(0.75));
   const nearWell = Math.abs(p.z - WELL_Z) < 0.9 && Math.abs(p.x) < 3.6;
   if (obj.userData.kind === "glass") {
+    rememberGlass(obj);
     obj.scale.setScalar(1.35);
     if (nearWell) {
-      obj.position.set(0.22, 1.05, WELL_Z + 0.28);
+      obj.position.set(3.26, 1.05, WELL_Z + 0.24);
     } else {
       p.y = Math.abs(p.z - 0.35) < 1.1 && Math.abs(p.x) < 4.6 ? 1.09 : 0.02;
       obj.position.copy(p);
@@ -4121,6 +4330,7 @@ function dropHeld() {
     scene.add(obj);
     registerPick(obj);
     glassMesh = obj;
+    trackLooseGlass(obj);
     poseHands();
     return;
   }
@@ -4469,20 +4679,28 @@ function drinkGlass(kind) {
   const left = glassState.fill * cap;
   const oz = kind === "chug" || glassState.type === "shot" ? left : Math.min(left, cap * sipAmount(kind));
   const frac = cap > 0 ? oz / cap : glassState.fill;
+  const share = peeShareOf(glassState.parts);
   const abv = mixAbv(glassState.parts);
   const name = nameMix(glassState.parts);
-  if (/piss/i.test(name) && !drankPiss) {
+  const alcOz = oz * (1 - share);
+  const peeDrinks = frac * share;
+  if (share > 0.02 && !drankPiss) {
     drankPiss = true;
     toast("you drank piss");
   }
-  bac += (abv / 40) * (oz / 1.2) * 0.028;
-  bumpDrink();
+  if (alcOz > 0.01) {
+    bac += (abv / 40) * (alcOz / 1.2) * 0.028;
+    bumpDrink();
+    score += drinkScore(abv, alcOz);
+    addPours(abv, alcOz);
+  } else {
+    sipT = 0.38;
+  }
+  if (peeDrinks > 0) purgeBac(peeDrinks);
   glassState.fill = Math.max(0, glassState.fill - frac);
-  score += drinkScore(abv, oz);
-  addPours(abv, oz);
   if (glassState.fill < 0.03) {
     glassState.fill = 0;
-    if (!unique.has(name)) {
+    if (share < 0.85 && name && !unique.has(name)) {
       unique.add(name);
       score += uniqueScore(abv);
     }
@@ -4500,13 +4718,22 @@ function drinkHeld(kind) {
   const cap = bottleCapOz(drink);
   const oz = heldServingOz(drink, kind, held.userData.volume);
   const frac = cap > 0 ? oz / cap : held.userData.volume;
-  bac += (drink.abv / 40) * (oz / 1.2) * 0.028;
-  bumpDrink();
+  if (/piss/i.test(drink.name || "")) {
+    if (!drankPiss) {
+      drankPiss = true;
+      toast("you drank piss");
+    }
+    purgeBac(frac);
+    sipT = 0.38;
+  } else {
+    bac += (drink.abv / 40) * (oz / 1.2) * 0.028;
+    bumpDrink();
+    score += drinkScore(drink.abv, oz);
+    addPours(drink.abv, oz);
+  }
   held.userData.volume = Math.max(0, held.userData.volume - frac);
-  score += drinkScore(drink.abv, oz);
-  addPours(drink.abv, oz);
   if (kind === "chug" || held.userData.volume <= 0.02) {
-    if (!unique.has(drink.name)) {
+    if (!/piss/i.test(drink.name || "") && !unique.has(drink.name)) {
       unique.add(drink.name);
       score += uniqueScore(drink.abv);
     }
@@ -4553,7 +4780,7 @@ function startShift() {
     gender: localGender,
     collide,
     onRestock(by) {
-      restockDrinks();
+      restockDrinks(true);
       audio.restock();
       toast(`${by} restocked the bar`);
     },
@@ -4561,7 +4788,7 @@ function startShift() {
   setLocalHitHandler((nx, nz, by) => {
     takeHit(nx, nz, by);
   });
-  setPeeCupHooks(glassCatchVolumes, catchPeeInCup);
+  setPeeCupHooks(glassCatchVolumes, (amt) => (peeing ? 0 : catchPeeInCup(amt)));
   setPoseSources(
     () => held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : ""),
     () => pouring,
@@ -4623,6 +4850,10 @@ function startShift() {
       addChat(msg.n || "regular", msg.m || "");
       return;
     }
+    if (msg?.t === "cups") {
+      applyCupStacks(msg.a);
+      return;
+    }
     houseGames?.onNet(msg);
   });
   setCarHandler(applyRemoteCar);
@@ -4660,6 +4891,8 @@ function useLook() {
       return;
     }
     attachHeld(look);
+  } else if (k === "cupstack") {
+    grabCupFromStack(look.userData.stack);
   } else if (k === "glass") {
     if (held && held.userData.kind === "bottle") return;
     attachHeld(look);
@@ -4860,7 +5093,7 @@ function setJuke(on, fromNet) {
 }
 
 function worldBits() {
-  const o = { front: frontDoorOpen ? 1 : 0, juke: audio.juke ? 1 : 0 };
+  const o = { front: frontDoorOpen ? 1 : 0, juke: audio.juke ? 1 : 0, cups: [cupStacks[0], cupStacks[1]] };
   for (const door of swingDoors) {
     if (door.userData.sid) o[door.userData.sid] = door.userData.open ? 1 : 0;
   }
@@ -4894,7 +5127,15 @@ function applyWorldBit(id, on, fromNet) {
 function applyWorld(msg) {
   if (!msg) return;
   if (msg.a === "sync" && msg.o && typeof msg.o === "object") {
-    for (const [id, val] of Object.entries(msg.o)) applyWorldBit(id, val, true);
+    if (msg.o.cups) applyCupStacks(msg.o.cups);
+    for (const [id, val] of Object.entries(msg.o)) {
+      if (id === "cups") continue;
+      applyWorldBit(id, val, true);
+    }
+    return;
+  }
+  if (msg.i === "cups") {
+    applyCupStacks(msg.o);
     return;
   }
   if (msg.i != null) applyWorldBit(msg.i, msg.o, true);
@@ -5034,7 +5275,7 @@ function togglePee() {
     return;
   }
   peeing = true;
-  peeUntil = tWorld + 8;
+  peeUntil = tWorld + PEE_SECS;
   peeStart = tWorld;
   audio.peeStart();
 }
@@ -6613,7 +6854,7 @@ function tick() {
       const dz = (aim.z || 0) - c.z;
       return dx * dx + dz * dz <= (c.r + 0.24) ** 2;
     }));
-    if (held === glassMesh || aimed) catchPeeInCup(dt * 0.45);
+    if (held === glassMesh || aimed) catchPeeInCup(dt * PEE_FILL_RATE);
   }
   if (localGender === "f" && peeing && sitting?.kind !== "toilet") {
     peeing = false;
@@ -6778,6 +7019,7 @@ function bind() {
       if (look.userData.kind === "bottle") {
         if (!(held && held.userData.kind === "glass")) attachHeld(look);
       } else if (look.userData.kind === "glass" && !(held && held.userData.kind === "bottle")) attachHeld(look);
+      else if (look.userData.kind === "cupstack") grabCupFromStack(look.userData.stack);
     }
   });
   window.addEventListener("mouseup", () => {
