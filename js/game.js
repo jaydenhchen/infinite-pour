@@ -46,7 +46,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=132";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=7";
+import { createClub } from "./club.js?v=9";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1516,7 +1516,7 @@ function climbTopUnder(px, pz, feet, airborne, pad = 0.06) {
   climbCarHit = null;
   const consider = (s) => {
     if (!s.climb || !overAabb(px, pz, s, pad)) return;
-    if (feet >= s.top - 0.22 || (airborne && feet + 0.44 >= s.top)) {
+    if (feet >= s.top - 0.28 || (airborne && feet + 0.5 >= s.top)) {
       if (s.top > best) best = s.top;
     }
   };
@@ -1533,8 +1533,8 @@ function climbTopUnder(px, pz, feet, airborne, pad = 0.06) {
 }
 
 function skipClimbWall(s, feet, airborne) {
-  if (s.base != null && feet + 1.52 < s.base - 0.05) return true;
-  return !!s.climb && (airborne || feet >= s.top - 0.2);
+  if (s.base != null && feet + 1.45 < s.base) return true;
+  return !!s.climb && (airborne || feet >= s.top - 0.28);
 }
 
 function camBox(x, y, z, sx, sy, sz, extra = {}) {
@@ -2108,10 +2108,14 @@ function resetShift() {
   fridgeOpen = false;
   zoomHold = false;
   if (frontDoor) setFrontDoor(false, true);
+  frontDoorAuto.prevSide = null;
+  frontDoorAuto.closeT = 0;
+  frontDoorAuto.awayT = 0;
   for (const door of swingDoors) {
     door.userData.open = false;
     door.userData.ang = 0;
     door.userData.want = 0;
+    door.userData.autoState = { prevSide: null, closeT: 0, awayT: 0 };
     if (door.userData.hinge) door.userData.hinge.rotation.y = door.userData.hinge.userData.baseYaw || 0;
   }
   for (const t of toilets) {
@@ -3182,6 +3186,10 @@ function doorIsOpen(s) {
   return false;
 }
 
+const AUTO_CLOSE_KINDS = new Set(["clubDoor", "restroomDoor", "stallDoor"]);
+const frontDoorPlane = { x: -0.78, z: D / 2 + 0.02, nx: 0, nz: 1, tx: 1, tz: 0, w: 1.52, dir: 1 };
+const frontDoorAuto = { prevSide: null, closeT: 0, awayT: 0 };
+
 function makeHingeDoor(x, z, yaw, w, h, kind, swingDir = 1) {
   const hinge = new THREE.Group();
   hinge.position.set(x, 0, z);
@@ -3198,6 +3206,18 @@ function makeHingeDoor(x, z, yaw, w, h, kind, swingDir = 1) {
   door.userData.open = false;
   door.userData.swingDir = swingDir;
   door.userData.sid = `s${swingDoors.length}`;
+  door.userData.auto = AUTO_CLOSE_KINDS.has(kind);
+  door.userData.plane = {
+    x,
+    z,
+    nx: Math.sin(yaw),
+    nz: Math.cos(yaw),
+    tx: Math.cos(yaw),
+    tz: -Math.sin(yaw),
+    w,
+    dir: swingDir,
+  };
+  door.userData.autoState = { prevSide: null, closeT: 0, awayT: 0 };
   registerPick(door);
   swingDoors.push(door);
   const cx = x + Math.cos(yaw) * (w / 2) * swingDir;
@@ -3718,6 +3738,71 @@ function setSwingDoor(door, open, silent, fromNet) {
   door.userData.want = next ? -1.85 * dir : 0;
   if (!silent && changed) audio.doorThump();
   if (!fromNet && !silent && changed && door.userData.sid) publishWorldBit(door.userData.sid, next);
+}
+
+function doorCoords(plane, x, z) {
+  const dx = x - plane.x;
+  const dz = z - plane.z;
+  return { side: dx * plane.nx + dz * plane.nz, along: dx * plane.tx + dz * plane.tz };
+}
+
+function doorTraffic(plane) {
+  const folks = [{ x: bodyPos.x, z: bodyPos.z }];
+  for (const p of remotePeers()) {
+    const x = p.tx ?? p.rig?.position.x;
+    const z = p.tz ?? p.rig?.position.z;
+    if (Number.isFinite(x) && Number.isFinite(z)) folks.push({ x, z });
+  }
+  const alongMin = Math.min(0, plane.dir * plane.w) - 0.2;
+  const alongMax = Math.max(0, plane.dir * plane.w) + 0.2;
+  let blocking = false;
+  let near = false;
+  for (const f of folks) {
+    const { side, along } = doorCoords(plane, f.x, f.z);
+    if (along < alongMin || along > alongMax) continue;
+    if (Math.abs(side) < 0.72) blocking = true;
+    if (Math.abs(side) < 2.05) near = true;
+  }
+  return { blocking, near };
+}
+
+function stepAutoClose(state, plane, isOpen, setOpen, dt) {
+  if (!plane || !state) return;
+  if (!isOpen) {
+    state.prevSide = null;
+    state.closeT = 0;
+    state.awayT = 0;
+    return;
+  }
+  const { side, along } = doorCoords(plane, bodyPos.x, bodyPos.z);
+  const alongMin = Math.min(0, plane.dir * plane.w) - 0.28;
+  const alongMax = Math.max(0, plane.dir * plane.w) + 0.28;
+  const inLane = along >= alongMin && along <= alongMax;
+  if (state.prevSide != null && inLane && state.prevSide * side < 0 && Math.abs(side) > 0.05) {
+    state.closeT = 0.34;
+  }
+  state.prevSide = side;
+  const traffic = doorTraffic(plane);
+  if (state.closeT > 0) {
+    state.closeT -= dt;
+    if (state.closeT <= 0 && !traffic.blocking) setOpen(false);
+    else if (traffic.blocking) state.closeT = 0.2;
+    state.awayT = 0;
+  } else if (!traffic.near) {
+    state.awayT += dt;
+    if (state.awayT > 1.05) setOpen(false);
+  } else {
+    state.awayT = 0;
+  }
+}
+
+function tickDoorClosers(dt) {
+  stepAutoClose(frontDoorAuto, frontDoorPlane, frontDoorOpen, (open) => setFrontDoor(open), dt);
+  for (const door of swingDoors) {
+    if (!door.userData.auto || !door.userData.plane) continue;
+    if (!door.userData.autoState) door.userData.autoState = { prevSide: null, closeT: 0, awayT: 0 };
+    stepAutoClose(door.userData.autoState, door.userData.plane, door.userData.open, (open) => setSwingDoor(door, open), dt);
+  }
 }
 
 function tickBathrooms(dt) {
@@ -5045,7 +5130,7 @@ function drinkHeld(kind) {
     purgeBac(frac);
     sipT = 0.38;
   } else {
-    bac += (drink.abv / 40) * (oz / 1.2) * 0.028;
+    bac += ((Number(drink.abv) || 0) / 40) * (oz / 1.2) * 0.028;
     bumpDrink();
     score += drinkScore(drink.abv, oz);
     addPours(drink.abv, oz);
@@ -5064,6 +5149,7 @@ function drinkHeld(kind) {
 }
 
 function maybePassOut() {
+  if (!Number.isFinite(bac)) bac = 0;
   if (bac < PASS_OUT || passedOut) return;
   passedOut = true;
   if (controls.isLocked) controls.unlock();
@@ -7480,6 +7566,7 @@ function tick() {
     const p = pick();
     look = p ? p.root : null;
     updatePlayer(dt);
+    tickDoorClosers(dt);
     tickRemoteCars(dt);
     stickToRideCar();
     tickPolice(dt);
@@ -7602,7 +7689,9 @@ function bind() {
       }
       audio.punch();
       pokePose();
-      if (tryPunch() || punchCops()) audio.hit();
+      const clubHit = houseClub?.punch?.(punchAim());
+      if (clubHit === "kill") spawnPolice(bodyPos.x, bodyPos.z);
+      if (clubHit || tryPunch() || punchCops()) audio.hit();
     }
     if (playing() && look && look !== held) {
       if (look.userData.kind === "bottle") {
