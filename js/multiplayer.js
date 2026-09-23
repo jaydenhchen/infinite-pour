@@ -377,6 +377,20 @@ function addBox(parent, mat, x, y, z, sx, sy, sz) {
   return m;
 }
 
+function addButtCheeks(parent, mat, y, z, girl, crackMat) {
+  const x = girl ? 0.09 : 0.084;
+  const w = girl ? 0.14 : 0.124;
+  const h = girl ? 0.12 : 0.108;
+  const d = girl ? 0.1 : 0.088;
+  const yaw = 0.2;
+  const left = addBox(parent, mat, -x, y, z, w, h, d);
+  left.rotation.y = yaw;
+  const right = addBox(parent, mat, x, y, z, w, h, d);
+  right.rotation.y = -yaw;
+  const crack = addBox(parent, crackMat, 0, y - 0.006, z + 0.034, 0.016, girl ? 0.09 : 0.08, 0.03);
+  return { left, right, crack };
+}
+
 function nameLabel(name) {
   return String(name || "?").slice(0, 16);
 }
@@ -478,24 +492,19 @@ function makeBartender(id, name, gender = "m") {
   const girl = gender === "f";
   const hipW = girl ? 0.37 : 0.36;
   const hipD = girl ? 0.22 : 0.21;
-  const cakeX = girl ? 0.08 : 0.076;
-  const cakeW = girl ? 0.168 : 0.152;
-  const cakeH = girl ? 0.148 : 0.132;
-  const cakeD = girl ? 0.132 : 0.116;
   const hipPants = addBox(body, pantsMat, 0, 0.74, -0.01, hipW, 0.18, hipD);
   hipPants.userData.homeY = 0.74;
   hipPants.userData.homeSX = hipW;
   hipPants.userData.homeSY = 0.18;
   hipPants.userData.homeSZ = hipD;
-  const hipCakeL = addBox(body, pantsMat, -cakeX, 0.685, -0.118, cakeW, cakeH, cakeD);
-  const hipCakeR = addBox(body, pantsMat, cakeX, 0.685, -0.118, cakeW, cakeH, cakeD);
-  const hipCakeC = addBox(body, pantsMat, 0, 0.672, -0.126, girl ? 0.1 : 0.09, 0.1, girl ? 0.098 : 0.088);
+  const pantsSeam = lambert(0x12121a);
+  const hipCakes = addButtCheeks(body, pantsMat, 0.685, -0.118, girl, pantsSeam);
+  const hipCakeL = hipCakes.left;
+  const hipCakeR = hipCakes.right;
+  const hipCakeC = hipCakes.crack;
   const butt = new THREE.Group();
-  addBox(butt, skin, -cakeX, 0.012, 0.01, cakeW, cakeH, cakeD);
-  addBox(butt, skin, cakeX, 0.012, 0.01, cakeW, cakeH, cakeD);
-  addBox(butt, skin, 0, 0, -0.008, girl ? 0.1 : 0.09, 0.1, girl ? 0.098 : 0.088);
-  addBox(butt, skin, -cakeX, -0.042, 0.018, cakeW * 0.92, 0.074, cakeD * 0.82);
-  addBox(butt, skin, cakeX, -0.042, 0.018, cakeW * 0.92, 0.074, cakeD * 0.82);
+  const skinCrack = lambert(0xb47a52, { emissive: 0x4a2010, emissiveIntensity: 0.1 });
+  addButtCheeks(butt, skin, 0.012, 0.01, girl, skinCrack);
   butt.position.set(0, 0.675, -0.118);
   butt.visible = false;
   body.add(butt);
