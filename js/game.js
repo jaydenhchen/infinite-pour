@@ -46,6 +46,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=132";
 import { createGames } from "./games.js?v=106";
+import { createClub } from "./club.js?v=1";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1230,6 +1231,23 @@ const audio = {
     try { this.siren.o.stop(); } catch (err) { /* already stopped */ }
     this.siren = null;
   },
+  clubTick(dt, vol) {
+    if (!this.ctx || vol < 0.02) {
+      this.club = null;
+      return;
+    }
+    if (!this.club) this.club = { t: 0 };
+    this.club.t += dt;
+    const step = 0.27;
+    const prev = (this.club.t - dt) / step;
+    const now = this.club.t / step;
+    if ((now | 0) === (prev | 0)) return;
+    const n = now | 0;
+    if (n % 2 === 0) this.beep(52, 0.08, "sine", 0.045 * vol);
+    if (n % 4 === 2) this.burst(0.055, 0.035, 1900, "highpass", 0.28);
+    if (n % 8 === 4) this.beep(196, 0.08, "square", 0.016 * vol);
+    if (n % 8 === 0) this.beep(98, 0.11, "sawtooth", 0.018 * vol);
+  },
   pourStart() {
     if (!this.ctx || this.pourOsc) return;
     const o = this.ctx.createOscillator();
@@ -1292,7 +1310,7 @@ const ndc = new THREE.Vector2(0, 0);
 const _pickOrigin = new THREE.Vector3();
 const _pickDir = new THREE.Vector3();
 const _pickWorld = new THREE.Vector3();
-const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "darts", "cupstack", "baton"]);
+const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "clubDoor", "darts", "cupstack", "baton"]);
 const solids = [];
 const pickables = [];
 const bottles = [];
@@ -1381,6 +1399,7 @@ let savedPitch = 0;
 let sitting = null;
 const SIT_Y = 1.22;
 let houseGames = null;
+let houseClub = null;
 let view2Yaw = 0;
 let view2Pitch = 0;
 let peeing = false;
@@ -1437,6 +1456,18 @@ function worldSolid(x, z, w, d, h = 4) {
   worldSolids.push(packSolid(x, z, w, d, h));
 }
 
+function climbSolid(x, z, w, d, h) {
+  worldSolids.push(packSolid(x, z, w, d, h, { climb: true }));
+}
+
+function floorSolid(x, z, w, d, top, thick = 0.14) {
+  worldSolids.push(packSolid(x, z, w, d, top, { climb: true, base: top - thick }));
+}
+
+function railSolid(x, z, w, d, base, top) {
+  worldSolids.push(packSolid(x, z, w, d, top, { climb: false, base }));
+}
+
 function blockCars(x, z, w, d) {
   carBlocks.push(packSolid(x, z, w, d, 4));
 }
@@ -1458,10 +1489,10 @@ function addCeiling(x, z, w, d, y) {
   });
 }
 
-function ceilingAt(px, pz) {
+function ceilingAt(px, pz, feet = 0) {
   let best = Infinity;
   for (const c of ceilings) {
-    if (px >= c.minx && px <= c.maxx && pz >= c.minz && pz <= c.maxz && c.y < best) best = c.y;
+    if (px >= c.minx && px <= c.maxx && pz >= c.minz && pz <= c.maxz && c.y > feet + 0.42 && c.y < best) best = c.y;
   }
   return best;
 }
@@ -1476,7 +1507,7 @@ function climbTopUnder(px, pz, feet, airborne, pad = 0.06) {
   climbCarHit = null;
   const consider = (s) => {
     if (!s.climb || !overAabb(px, pz, s, pad)) return;
-    if (feet >= s.top - 0.14 || (airborne && feet + 0.44 >= s.top)) {
+    if (feet >= s.top - 0.22 || (airborne && feet + 0.44 >= s.top)) {
       if (s.top > best) best = s.top;
     }
   };
@@ -1493,7 +1524,8 @@ function climbTopUnder(px, pz, feet, airborne, pad = 0.06) {
 }
 
 function skipClimbWall(s, feet, airborne) {
-  return !!s.climb && (airborne || feet >= s.top - 0.12);
+  if (s.base != null && feet + 1.52 < s.base - 0.05) return true;
+  return !!s.climb && (airborne || feet >= s.top - 0.2);
 }
 
 function camBox(x, y, z, sx, sy, sz, extra = {}) {
@@ -1702,6 +1734,7 @@ function collideCars(px, pz, r = 0.28, skip = null) {
 function collide(px, pz, r = 0.28, feet = 0, airborne = false, skipCar = null) {
   [px, pz] = collideWorld(px, pz, r, feet, airborne);
   [px, pz] = collideCarsWalk(px, pz, r, skipCar, feet, airborne);
+  if (houseClub) [px, pz] = houseClub.collide(px, pz, r, feet);
   px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
   pz = THREE.MathUtils.clamp(pz, WORLD_Z_MIN, WORLD_Z_MAX);
   return [px, pz];
@@ -2129,7 +2162,9 @@ function buildWorld() {
   addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, -4.76, 0.25, wallH, 2.48);
   addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, 2.06, 0.25, wallH, 7.88);
   addBox(scene, unitBox, mats.brick, -W / 2, 2.85, -2.7, 0.25, 0.9, 1.72);
-  addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, 0, 0.25, wallH, D);
+  addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, -3.275, 0.25, wallH, 5.45);
+  addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, 3.325, 0.25, wallH, 5.35);
+  addBox(scene, unitBox, mats.brick, W / 2, 2.85, 0.065, 0.25, 0.9, 1.32);
   addBox(scene, unitBox, mats.woodDark, 0, wallH, 0, W, 0.2, D);
   addCeiling(0, 0, W, D, wallH - 0.1);
   addBox(scene, unitBox, mats.woodDark, 0, 3.15, D / 2, 1.7, 0.5, 0.28);
@@ -2138,14 +2173,17 @@ function buildWorld() {
   worldSolid(4.4, D / 2, 7.2, 0.4);
   worldSolid(-W / 2, -4.76, 0.4, 2.48);
   worldSolid(-W / 2, 2.06, 0.4, 7.88);
-  worldSolid(W / 2, 0, 0.4, D);
+  worldSolid(W / 2, -3.275, 0.4, 5.45);
+  worldSolid(W / 2, 3.325, 0.4, 5.35);
   camBox(0, wallH / 2, -D / 2, W, wallH, 0.4);
   camBox(-4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
   camBox(4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
   camBox(-W / 2, wallH / 2, -4.76, 0.4, wallH, 2.48);
   camBox(-W / 2, wallH / 2, 2.06, 0.4, wallH, 7.88);
   camBox(-W / 2, 2.85, -2.7, 0.4, 0.9, 1.72);
-  camBox(W / 2, wallH / 2, 0, 0.4, wallH, D);
+  camBox(W / 2, wallH / 2, -3.275, 0.4, wallH, 5.45);
+  camBox(W / 2, wallH / 2, 3.325, 0.4, wallH, 5.35);
+  camBox(W / 2, 2.85, 0.065, 0.4, 0.9, 1.4);
   camBox(0, wallH, 0, W, 0.24, D);
   camBox(0, 3.15, D / 2, 1.7, 0.5, 0.32);
   camBox(0, -0.2, 50, WORLD_X * 2 + 40, 0.4, WORLD_Z_MAX - WORLD_Z_MIN + 40);
@@ -2384,6 +2422,23 @@ function buildWorld() {
     },
   });
   houseGames.build();
+  houseClub = createClub({
+    scene,
+    lambert,
+    worldSolid,
+    floorSolid,
+    climbSolid,
+    railSolid,
+    camBox,
+    addCeiling,
+    blockCars,
+    registerPick,
+    makeHingeDoor,
+    neonTex,
+    audio,
+    playerPos: () => bodyPos,
+  });
+  houseClub.build();
   setWorldCollide(collide);
   setWorldBlock(worldBlocked);
 }
@@ -2642,7 +2697,7 @@ function buildTown() {
   building(-74, 76, 12, 7.2, 11, 0x182010);
   building(26, 108, 12, 6.4, 9, 0x201428);
   building(-26, 108, 13, 5.8, 9, 0x142018);
-  building(22, 5.5, 8, 4.2, 6, 0x22141c);
+  // nightclub occupies the lot to the right of the bar
   building(-22, 5.5, 8, 5, 6, 0x141822);
 
   const sign = new THREE.Mesh(
@@ -3930,10 +3985,11 @@ function sitOn(spot) {
     fixture: spot.fixture || null,
     standX: spot.standX ?? spot.x,
     standZ: spot.standZ ?? spot.z + 0.12,
+    floor: spot.floor || 0,
   };
   vy = 0;
   onGround = true;
-  standY = 0;
+  standY = sitting.floor || 0;
   camera.position.set(sitting.x, sitting.y, sitting.z);
   bodyPos.set(sitting.x, sitting.y, sitting.z);
   if (sitting.kind === "toilet" && sitting.yaw != null) {
@@ -3954,13 +4010,14 @@ function standUp() {
   const wasPee = peeing;
   const x = sitting.standX ?? sitting.x;
   const z = sitting.standZ ?? sitting.z + 0.12;
-  const [nx, nz] = collide(x, z, 0.28);
-  camera.position.set(nx, eyeY(), nz);
-  bodyPos.set(nx, eyeY(), nz);
+  const floor = sitting.floor || 0;
+  const [nx, nz] = collide(x, z, 0.28, floor);
   sitting = null;
   onGround = true;
   vy = 0;
-  standY = 0;
+  standY = climbTopUnder(nx, nz, floor, false);
+  camera.position.set(nx, eyeY() + standY, nz);
+  bodyPos.set(nx, eyeY() + standY, nz);
   if (wasPee && onToilet) {
     peeing = false;
     peeUntil = 0;
@@ -4133,7 +4190,8 @@ function promptFrom(obj) {
     if (inBathroom(camera.position.x, camera.position.z)) {
       return localGender === "f" ? "restrooms · E sit · P pee on the toilet" : "restrooms · E sit or open doors · P pee";
     }
-    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · patio games to the left · restrooms behind the left wall";
+    if (houseClub?.inside(camera.position.x, camera.position.z)) return "AFTER HOURS · stairs on the right · balcony looks over the floor · E sit";
+    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · club next door to the right · patio games to the left · restrooms behind the left wall";
     return started && !controls.isLocked ? "click the bar to capture mouse" : "";
   }
   const k = obj.userData.kind;
@@ -4163,6 +4221,7 @@ function promptFrom(obj) {
   if (k === "toilet") return localGender === "f" ? "E sit · pants come off · then P pee" : "E sit · pants come off";
   if (k === "urinal") return localGender === "f" ? "girls sit on the toilet" : "P to pee";
   if (k === "restroomDoor") return lookDoorOpen(obj) ? "E close the restroom door" : "E open the restroom door";
+  if (k === "clubDoor") return houseClub?.prompt(obj) || (lookDoorOpen(obj) ? "E close the club door" : "E open the club");
   if (k === "stallDoor") return lookDoorOpen(obj) ? "E close the stall" : "E open the stall";
   if (k === "register" || k === "hatch") return "E / Y  summon any drink";
   if (k === "sink") return "E dump glass";
@@ -4180,7 +4239,7 @@ function promptFrom(obj) {
     if (inCar) return driving() ? "E get out · SHIFT drift" : "E get out";
     return standCarPrompt(obj.userData.car) || carRideHint(obj.userData.car);
   }
-  if (k === "stool") return sitting ? "E or WASD stand up" : "E sit at the bar";
+  if (k === "stool") return sitting ? "E or WASD stand up" : (obj.userData.sit?.floor ? "E sit and watch the floor" : "E sit at the bar");
   const gamePrompt = houseGames?.prompt(look) || "";
   if (gamePrompt) return gamePrompt;
   if (inCar) return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
@@ -4255,10 +4314,10 @@ function nearbyUse() {
     const dx = _pickWorld.x - bodyPos.x;
     const dz = _pickWorld.z - bodyPos.z;
     const dist = Math.hypot(dx, dz);
-    const max = kind === "car" ? 3.6 : kind === "door" || kind === "restroomDoor" || kind === "stallDoor" ? 2.8 : reach;
+    const max = kind === "car" ? 3.6 : kind === "door" || kind === "restroomDoor" || kind === "stallDoor" || kind === "clubDoor" ? 2.8 : reach;
     if (dist > max) continue;
     const forward = dist < 0.15 ? 1 : (dx * fx + dz * fz) / dist;
-    if (kind !== "door" && kind !== "car" && kind !== "stool" && kind !== "restroomDoor" && kind !== "stallDoor" && kind !== "toilet" && kind !== "urinal" && kind !== "bathSink" && kind !== "darts" && forward < -0.25) continue;
+    if (kind !== "door" && kind !== "car" && kind !== "stool" && kind !== "restroomDoor" && kind !== "stallDoor" && kind !== "clubDoor" && kind !== "toilet" && kind !== "urinal" && kind !== "bathSink" && kind !== "darts" && forward < -0.25) continue;
     const score = dist - Math.max(0, forward) * 0.9 - (kind === "door" ? 0.4 : 0);
     if (!best || score < best.score) best = { root, distance: dist, point: _pickWorld.clone(), score };
   }
@@ -5331,6 +5390,68 @@ function applyDrunkLook() {
     head.rotation.x += drunkCam.pit;
     head.rotation.z += drunkCam.roll * 0.65;
   }
+}
+
+const ghostFollow = { yaw: 0, pit: 0, roll: 0 };
+let ghostRT = null;
+let ghostScene = null;
+let ghostCam = null;
+let ghostQuad = null;
+const _ghostRight = new THREE.Vector3();
+const _ghostPos = new THREE.Vector3();
+const _ghostEuler = new THREE.Euler();
+
+function ensureGhost(w, h) {
+  if (!ghostRT) {
+    ghostRT = new THREE.WebGLRenderTarget(w, h, { depthBuffer: true });
+    ghostScene = new THREE.Scene();
+    ghostCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const mat = new THREE.MeshBasicMaterial({
+      map: ghostRT.texture,
+      transparent: true,
+      opacity: 0.32,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+      color: 0xffc8ff,
+    });
+    ghostQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+    ghostScene.add(ghostQuad);
+  } else if (ghostRT.width !== w || ghostRT.height !== h) {
+    ghostRT.setSize(w, h);
+  }
+}
+
+function renderDoubleVision() {
+  const d = drunkLevel();
+  if (d < 3.85 || passedOut) return;
+  const amt = THREE.MathUtils.clamp((d - 3.85) / 2.1, 0, 1);
+  const w = renderer.domElement.width;
+  const h = renderer.domElement.height;
+  if (w < 8 || h < 8) return;
+  ensureGhost(w, h);
+  ghostFollow.yaw += (drunkCam.yaw - ghostFollow.yaw) * 0.22;
+  ghostFollow.pit += (drunkCam.pit - ghostFollow.pit) * 0.22;
+  ghostFollow.roll += (drunkCam.roll - ghostFollow.roll) * 0.22;
+  _ghostEuler.copy(camera.rotation);
+  _ghostPos.copy(camera.position);
+  camera.rotation.order = "YXZ";
+  camera.rotation.y += drunkCam.yaw * (0.42 + amt * 0.4) + ghostFollow.yaw * 0.55;
+  camera.rotation.x += drunkCam.pit * (0.42 + amt * 0.4) + ghostFollow.pit * 0.55;
+  camera.rotation.z += drunkCam.roll * (0.28 + amt * 0.3) + ghostFollow.roll * 0.4;
+  camera.quaternion.setFromEuler(camera.rotation);
+  camera.updateMatrixWorld();
+  _ghostRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+  camera.position.addScaledVector(_ghostRight, (0.035 + amt * 0.07) * (drunkCam.yaw >= 0 ? 1 : -1));
+  renderer.setRenderTarget(ghostRT);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  camera.rotation.copy(_ghostEuler);
+  camera.position.copy(_ghostPos);
+  ghostQuad.material.opacity = 0.18 + amt * 0.3;
+  renderer.autoClear = false;
+  renderer.render(ghostScene, ghostCam);
+  renderer.autoClear = true;
 }
 
 function setJuke(on, fromNet) {
@@ -7120,7 +7241,7 @@ function updatePlayer(dt) {
     standY = top;
     bindRideCar(top > 0.2 ? climbCarHit : null);
   }
-  const ceil = ceilingAt(nx, nz);
+  const ceil = ceilingAt(nx, nz, onGround ? standY : feet);
   const headClear = 0.16;
   if (Number.isFinite(ceil) && camera.position.y + headClear > ceil) {
     camera.position.y = ceil - headClear;
@@ -7215,6 +7336,7 @@ function resize() {
   canvas.style.height = `${h}px`;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  if (ghostRT) ghostRT.setSize(Math.floor(w * scale), Math.floor(h * scale));
 }
 
 function tick() {
@@ -7302,6 +7424,7 @@ function tick() {
   updateDrops(dt);
   updateDeliveries(dt);
   if (playing()) houseGames?.tick(dt, tWorld);
+  houseClub?.tick(dt, tWorld);
   $("prompt").textContent = playing() ? promptFrom(look) : "";
   if (chatLines.length && !chatOpen) paintChat();
   if (toastT > 0) {
@@ -7334,6 +7457,7 @@ function tick() {
   tickHeartbeat(dt);
   hud();
   renderer.render(scene, camera);
+  renderDoubleVision();
   restoreBodyLook();
 }
 
@@ -7516,7 +7640,7 @@ function bind() {
         houseGames.leave();
         return;
       }
-      if (look && (look.userData.kind === "restroomDoor" || look.userData.kind === "stallDoor")) {
+      if (look && (look.userData.kind === "restroomDoor" || look.userData.kind === "stallDoor" || look.userData.kind === "clubDoor")) {
         toggleSwing(look);
         return;
       }
