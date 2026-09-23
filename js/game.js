@@ -6937,7 +6937,10 @@ function tick() {
     tickPolice(dt);
     if (!inCar) updatePour(dt);
     stashLook();
-  } else audio.pourStop();
+  } else {
+    audio.pourStop();
+    if (started && !passedOut && chatOpen) applyDrunkCam(dt);
+  }
   updateDrops(dt);
   updateDeliveries(dt);
   if (playing()) houseGames?.tick(dt, tWorld);
