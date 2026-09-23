@@ -6319,6 +6319,65 @@ function arrestPlayer() {
   resetShift();
 }
 
+function packShouldRam(pack) {
+  return !!(inCar && pack?.car && inCar !== pack.car && !pack.hijacked);
+}
+
+function packCanDrive(pack) {
+  const living = pack.officers.filter((off) => !off.dead);
+  return living.length > 0 && living.every((off) => off.state === "ride");
+}
+
+function officerDoorWorld(off) {
+  const car = off.car;
+  const side = off.seat < 0 ? -1 : 1;
+  const lx = Math.cos(car.yaw);
+  const lz = -Math.sin(car.yaw);
+  return { x: car.x + lx * side * 2.35, z: car.z + lz * side * 2.35, side };
+}
+
+function driveCopCar(pack, dt, ram) {
+  const car = pack.car;
+  if (!car || inCar === car) return;
+  if (!packCanDrive(pack)) {
+    car.speed = 0;
+    syncCarMesh(car);
+    return;
+  }
+  pack.tx = bodyPos.x;
+  pack.tz = bodyPos.z;
+  const dx = pack.tx - car.x;
+  const dz = pack.tz - car.z;
+  const dist = Math.hypot(dx, dz);
+  const stopAt = ram ? 2.1 : 7.6;
+  if (ram) pack.driveT = 0;
+  else pack.driveT += dt;
+  if (!ram && (dist <= stopAt || (pack.driveT >= COP_ARRIVE_MIN && dist < 9.2) || pack.driveT > COP_ARRIVE_MAX)) {
+    pack.arrived = true;
+    car.speed = 0;
+    syncCarMesh(car);
+    return;
+  }
+  pack.arrived = false;
+  const aim = Math.atan2(car.x - pack.tx, car.z - pack.tz);
+  car.yaw += angDiff(car.yaw, aim) * Math.min(1, dt * 4.4);
+  const maxSpd = ram ? 17.5 : 13.5;
+  const step = Math.min(dist, maxSpd * dt);
+  if (dist > 0.001) {
+    const nx = car.x + (dx / dist) * step;
+    const nz = car.z + (dz / dist) * step;
+    const resolved = resolveDrive(car, nx, nz);
+    car.x = resolved.x;
+    car.z = resolved.z;
+    car.speed = maxSpd;
+    if (ram && resolved.hitCar === inCar && maxSpd >= 5.6 && crashCool <= 0) {
+      shoveCar(inCar, car, maxSpd);
+      beginCrash(maxSpd, car);
+    }
+  }
+  syncCarMesh(car);
+}
+
 function tickPolice(dt) {
   if (!cops.length) return;
   if (wanted) {
@@ -6343,35 +6402,12 @@ function tickPolice(dt) {
       car.sirenMats[0].emissiveIntensity = blink ? 1.8 : 0.12;
       car.sirenMats[1].emissiveIntensity = blink ? 0.12 : 1.8;
     }
-    if (!pack.officers.some((off) => !off.dead && off.state === "ride")) {
-      pack.arrived = true;
-      if (car && inCar !== car) car.speed = 0;
-    }
     if (inCar === car) {
       pack.arrived = true;
       pack.hijacked = true;
-    } else if (!pack.arrived) {
-      pack.driveT += dt;
-      pack.tx = px;
-      pack.tz = pz;
-      const dx = pack.tx - car.x;
-      const dz = pack.tz - car.z;
-      const dist = Math.hypot(dx, dz);
-      car.yaw = Math.atan2(car.x - pack.tx, car.z - pack.tz);
-      const step = Math.min(dist, 16 * dt);
-      if (dist > 0.001) {
-        const nx = car.x + (dx / dist) * step;
-        const nz = car.z + (dz / dist) * step;
-        const resolved = resolveDrive(car, nx, nz);
-        car.x = resolved.x;
-        car.z = resolved.z;
-      }
-      const close = dist < 6.2;
-      if ((pack.driveT >= COP_ARRIVE_MIN && close) || pack.driveT > COP_ARRIVE_MAX) {
-        pack.arrived = true;
-        car.speed = 0;
-      }
-      syncCarMesh(car);
+      if (car) car.speed = 0;
+    } else {
+      driveCopCar(pack, dt, packShouldRam(pack));
     }
     stickToRideCar();
     for (const off of pack.officers) {
@@ -6388,6 +6424,35 @@ function tickPolice(dt) {
         off.kvz = nvz;
       }
       if (off.hopY > 0) off.hopY = Math.max(0, off.hopY - dt * 1.8);
+      const ram = packShouldRam(pack);
+      if (ram && (off.state === "chase" || off.state === "swing" || off.state === "stagger" || off.state === "out")) {
+        off.state = "board";
+      } else if (!ram && off.state === "board") {
+        off.state = "chase";
+      }
+      if (off.state === "board") {
+        const dest = officerDoorWorld(off);
+        const bdx = dest.x - off.x;
+        const bdz = dest.z - off.z;
+        const bdist = Math.hypot(bdx, bdz);
+        off.yaw = bdist > 0.02 ? Math.atan2(bdx, bdz) : Math.atan2(car.x - off.x, car.z - off.z);
+        if (bdist > 0.32 && (off.hurtT || 0) <= 0.08) {
+          let nx = off.x + (bdx / (bdist || 1)) * 3.7 * dt;
+          let nz = off.z + (bdz / (bdist || 1)) * 3.7 * dt;
+          [nx, nz] = collideWorld(nx, nz, 0.28);
+          off.x = nx;
+          off.z = nz;
+        }
+        if (bdist < 0.58) {
+          off.state = "ride";
+          off.outT = 0;
+          swingCarDoors(car, dest.side, 0);
+        }
+        off.rig.position.set(off.x, off.hopY || 0, off.z);
+        off.rig.rotation.y = off.yaw;
+        poseCop(off, dt, bdist > 0.32);
+        continue;
+      }
       if (off.state === "ride") {
         const fx = -Math.sin(car.yaw);
         const fz = -Math.cos(car.yaw);
@@ -6398,9 +6463,10 @@ function tickPolice(dt) {
         off.yaw = car.yaw + Math.PI;
         off.rig.position.set(off.x, 0.55, off.z);
         off.rig.rotation.y = off.yaw;
-        if (pack.arrived) {
+        if (pack.arrived && !ram) {
           off.state = "out";
           off.outT = 0;
+          swingCarDoors(car, off.seat < 0 ? -1 : 1, 0);
         }
         poseCop(off, dt, false);
         continue;
