@@ -673,6 +673,7 @@ function spawnPeer(id, state) {
     lx: state.x || 0,
     lz: state.z || 0,
     sit: !!state.s || !!state.v,
+    pants: !!state.n || !!state.u,
     drive: !!state.v,
     si: state.si == null ? (state.v ? 0 : -1) : (Number(state.si) | 0),
     ci: state.ci != null ? String(state.ci) : "",
@@ -769,6 +770,7 @@ function applyState(id, state) {
   peer.drive = !!state.v;
   peer.si = state.si == null ? (peer.drive ? 0 : -1) : (Number(state.si) | 0);
   peer.sit = !!state.s || peer.drive;
+  peer.pants = !!state.n || !!state.u;
   if (state.ci != null) peer.ci = String(state.ci);
   if (state.cx != null) peer.cx = state.cx;
   if (state.cz != null) peer.cz = state.cz;
@@ -1036,6 +1038,7 @@ function sendPose() {
     p: pouringFn() ? 1 : 0,
     s: extra.s ? 1 : 0,
     u: extra.u ? 1 : 0,
+    n: extra.n ? 1 : 0,
     g: extra.g === "f" || local.gender === "f" ? "f" : "m",
     gf: extra.gf != null ? round(clamp(extra.gf, 0, 1), 2) : 0,
     gc: extra.gc ? (Number(extra.gc) || 0) : 0,
@@ -1074,7 +1077,7 @@ function sendPose() {
     pose.hnx = lastHit.nx;
     pose.hnz = lastHit.nz;
   }
-  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
+  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.n || 0}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -1086,14 +1089,38 @@ function round(n, p = 2) {
   return Math.round(n * m) / m;
 }
 
+function pantsDown(peer) {
+  return !!(peer.pants || peer.pee);
+}
+
+function stepPantDrop(peer, dt) {
+  const u = peer.rig?.userData;
+  if (!u) return 0;
+  if (pantsDown(peer)) u.pantDrop = Math.min(1, (u.pantDrop || 0) + dt * 2.1);
+  else u.pantDrop = Math.max(0, (u.pantDrop || 0) - dt * 2.8);
+  return u.pantDrop || 0;
+}
+
 function poseSit(peer) {
   const u = peer.rig.userData;
+  const drop = u.pantDrop || 0;
+  const toilet = pantsDown(peer) && !peer.drive;
   u.body.position.y = -0.38;
   u.body.rotation.set(0.16, 0, 0);
-  u.legL.rotation.set(-1.52, 0.1, 0.18);
-  u.legR.rotation.set(-1.52, -0.1, -0.18);
-  u.armL.rotation.set(-0.72, 0, -0.22);
-  u.armR.rotation.set(peer.pouring ? -1.1 : -0.72, 0, 0.22);
+  const spread = 0.18 + drop * 0.14;
+  u.legL.rotation.set(-1.52, 0.1, spread);
+  u.legR.rotation.set(-1.52, -0.1, -spread);
+  if (toilet && drop < 0.98) {
+    const reach = Math.min(1, drop / 0.55);
+    const rest = Math.max(0, (drop - 0.55) / 0.45);
+    const rx = -0.72 - reach * 0.62 + rest * 0.42;
+    const rz = 0.22 + reach * 0.18 - rest * 0.08;
+    u.armL.rotation.set(rx, 0, -rz);
+    u.armR.rotation.set(peer.pouring ? -1.1 : rx, 0, rz);
+  } else {
+    u.armL.rotation.set(-0.72, 0, -0.22);
+    u.armR.rotation.set(peer.pouring ? -1.1 : -0.72, 0, 0.22);
+  }
 }
 
 function poseDrive(peer) {
@@ -1569,6 +1596,7 @@ function animatePeer(peer, dt, t) {
   const rightSwing = Math.sin(warped + Math.PI) * amp * (1 + limp * 0.28);
   const hitch = moving ? Math.max(0, -Math.sin(warped)) * limp * 0.07 : Math.sin(t * 1.3 + phase) * drunk * 0.03;
 
+  stepPantDrop(peer, dt);
   if (peer.drive) {
     poseDrive(peer);
   } else if (peer.sit) {
@@ -1625,10 +1653,8 @@ function animatePeer(peer, dt, t) {
     }
   }
 
-  if (peer.pee) u.pantDrop = Math.min(1, (u.pantDrop || 0) + dt * 2.1);
-  else u.pantDrop = Math.max(0, (u.pantDrop || 0) - dt * 2.8);
   const drop = u.pantDrop || 0;
-  const pantsUp = !peer.pee && drop < 0.02;
+  const pantsUp = !pantsDown(peer) && drop < 0.02;
   if (u.hipPants) {
     u.hipPants.visible = pantsUp;
     u.hipPants.position.y = u.hipPants.userData.homeY ?? 0.74;
@@ -1741,6 +1767,7 @@ function ensureBot() {
     lx: 2.2,
     lz: 1.6,
     sit: false,
+    pants: false,
     pee: false,
     hurtT: 0,
     stunT: 0,
