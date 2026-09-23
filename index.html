@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/style.css?v=104" />
+  <link rel="stylesheet" href="css/style.css?v=105" />
 </head>
 <body>
   <canvas class="webgl" id="gl"></canvas>
@@ -40,7 +40,7 @@
     <button type="button" class="cta" id="clockInBtn">CLICK TO STEP BEHIND THE BAR</button>
     <div class="keys">
       WASD move · mouse look / orbit in a car · SPACE jump · jump hood then roof · E grab, sit, door, car, hop in as passenger, get out, enter or leave a game · ESC menu · SHIFT sprint / drift
-      · F sip · G chug · Q drop · R dump · P drunk pee · click punch cops · 1/2/3 camera · hold C zoom · 4–9 glassware · T summon
+      · F sip · G chug · Q drop · R dump · P drunk pee · click punch cops · 1/2/3 camera · hold C zoom · 4–9 glassware · Y summon · T chat
       · H cab back to the bar · patio: beer pong / beer die · pool inside · restrooms behind the left wall
     </div>
   </div>
@@ -67,11 +67,18 @@
     </div>
     <div id="held" class="pixel-border">
       <div class="name" id="heldName">empty hands</div>
-      <div class="meta" id="heldMeta">summon a bottle with T</div>
+      <div class="meta" id="heldMeta">summon a bottle with Y</div>
     </div>
     <div id="lookHint">CLICK TO LOOK · drag if the mouse stays free</div>
     <div id="prompt"></div>
     <div id="crosshair"></div>
+    <div id="chat">
+      <ol id="chatLog"></ol>
+      <div id="chatBar">
+        <span class="caret">&gt;</span>
+        <input id="chatQ" type="text" maxlength="120" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
   </div>
 
   <div id="summon">
@@ -97,6 +104,6 @@
     }
   }
   </script>
-  <script type="module" src="js/game.js?v=141"></script>
+  <script type="module" src="js/game.js?v=142"></script>
 </body>
 </html>

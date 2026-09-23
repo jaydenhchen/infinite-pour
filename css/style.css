@@ -359,6 +359,69 @@ canvas.webgl {
 
 #results .abv { color: var(--gold); }
 
+#chat {
+  position: absolute;
+  left: 14px;
+  bottom: 16px;
+  width: min(560px, 58vw);
+  pointer-events: none;
+  z-index: 24;
+}
+#chat.open { pointer-events: auto; }
+#chatLog {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px;
+  max-height: 28vh;
+  overflow: hidden;
+  background: transparent;
+}
+#chat.open #chatLog {
+  max-height: 38vh;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.46);
+  box-shadow: 2px 2px 0 #000;
+}
+#chatLog li {
+  font-size: 22px;
+  line-height: 1.18;
+  color: #f4f4f4;
+  text-shadow: 2px 2px 0 #000;
+  word-break: break-word;
+  opacity: 1;
+  transition: opacity 0.35s linear;
+}
+#chatLog li.fade { opacity: 0.18; }
+#chatLog li.gone { display: none; }
+#chatLog .who { font-weight: 700; }
+#chatBar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 5px 8px;
+  background: rgba(0, 0, 0, 0.55);
+  box-shadow: 2px 2px 0 #000;
+}
+#chat.open #chatBar { display: flex; }
+#chatBar .caret {
+  color: #fff;
+  font-size: 22px;
+  text-shadow: 2px 2px 0 #000;
+}
+#chatQ {
+  flex: 1;
+  min-width: 0;
+  font-family: "VT323", monospace;
+  font-size: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  outline: none;
+  user-select: text;
+}
+
 #toast {
   position: absolute;
   top: 18%;
