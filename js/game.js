@@ -1692,30 +1692,6 @@ function carPadAt(car, lx, lz, grow = 0.06) {
   return null;
 }
 
-function padClearance(loc, pad) {
-  const dx = Math.max(0, Math.abs(loc.lx - pad.lx) - pad.hw);
-  const dz = Math.max(0, Math.abs(loc.lz - pad.lz) - pad.hd);
-  return Math.hypot(dx, dz);
-}
-
-function nearestCarPad(px, pz, kinds = null) {
-  let best = null;
-  let bestD = 1.45;
-  for (const car of cars) {
-    if (car === inCar) continue;
-    const loc = carWorldToLocal(car, px, pz);
-    for (const pad of CAR_PADS) {
-      if (kinds && !kinds.includes(pad.kind)) continue;
-      const d = padClearance(loc, pad);
-      if (d < bestD) {
-        bestD = d;
-        best = { car, pad, loc, d };
-      }
-    }
-  }
-  return best;
-}
-
 function collideCarsWalk(px, pz, r, skip, feet, airborne) {
   for (const car of cars) {
     if (car === inCar || car === skip) continue;
@@ -1771,58 +1747,6 @@ function carClimbAt(px, pz, feet, airborne) {
   return { top: best, car: bestCar };
 }
 
-function facingToward(x, z) {
-  const yaw = viewMode === 2 ? view2Yaw : savedYaw;
-  const fx = -Math.sin(yaw);
-  const fz = -Math.cos(yaw);
-  const dx = x - camera.position.x;
-  const dz = z - camera.position.z;
-  const dist = Math.hypot(dx, dz) || 1;
-  return fx * (dx / dist) + fz * (dz / dist);
-}
-
-function pullTowardCarPad() {
-  const toRoof = standY > 0.45;
-  const hit = nearestCarPad(camera.position.x, camera.position.z, toRoof ? ["roof"] : ["hood", "trunk"]);
-  if (!hit) return;
-  if (!toRoof && hit.d > 0.98) return;
-  if (toRoof && hit.d > 1.4) return;
-  if (!toRoof && Math.abs(hit.loc.lz) < 1.08) return;
-  const target = carLocalToWorld(hit.car, hit.pad.lx, hit.pad.lz);
-  if (toRoof) {
-    const aim = facingToward(target.x, target.z);
-    if (keys.KeyS && aim < 0.4) return;
-    if (!keys.KeyW && aim < 0.1) return;
-  }
-  const dx = target.x - camera.position.x;
-  const dz = target.z - camera.position.z;
-  const dist = Math.hypot(dx, dz) || 1;
-  const pull = Math.min(toRoof ? 0.7 : 0.58, dist * 0.55);
-  camera.position.x += (dx / dist) * pull;
-  camera.position.z += (dz / dist) * pull;
-}
-
-function keepOnCarPad(car, top) {
-  if (!car || top < 0.2) return;
-  const loc = carWorldToLocal(car, camera.position.x, camera.position.z);
-  let pad = null;
-  let best = 99;
-  for (const p of CAR_PADS) {
-    if (Math.abs(p.top - top) > 0.06) continue;
-    const d = padClearance(loc, p);
-    if (d < best) {
-      best = d;
-      pad = p;
-    }
-  }
-  if (!pad || best < 0.001 || best > 0.42) return;
-  const lx = THREE.MathUtils.clamp(loc.lx, pad.lx - pad.hw * 0.86, pad.lx + pad.hw * 0.86);
-  const lz = THREE.MathUtils.clamp(loc.lz, pad.lz - pad.hd * 0.86, pad.lz + pad.hd * 0.86);
-  const w = carLocalToWorld(car, lx, lz);
-  camera.position.x = w.x;
-  camera.position.z = w.z;
-}
-
 function standSurface() {
   if (standY > 1.2) return "roof";
   if (standY < 0.45) return "";
@@ -1847,21 +1771,32 @@ function bindRideCar(car) {
   if (car) {
     car.stickX = car.x;
     car.stickZ = car.z;
+    car.stickYaw = car.yaw;
   }
 }
 
 function stickToRideCar() {
   if (!rideCar || inCar) return;
-  const dx = rideCar.x - (rideCar.stickX ?? rideCar.x);
-  const dz = rideCar.z - (rideCar.stickZ ?? rideCar.z);
-  rideCar.stickX = rideCar.x;
-  rideCar.stickZ = rideCar.z;
+  if (rideCar.stickX == null || rideCar.stickZ == null) {
+    rideCar.stickX = rideCar.x;
+    rideCar.stickZ = rideCar.z;
+    rideCar.stickYaw = rideCar.yaw;
+    return;
+  }
+  const prev = { x: rideCar.stickX, z: rideCar.stickZ, yaw: rideCar.stickYaw ?? rideCar.yaw };
+  const loc = carWorldToLocal(prev, camera.position.x, camera.position.z);
+  const w = carLocalToWorld(rideCar, loc.lx, loc.lz);
+  const dx = w.x - camera.position.x;
+  const dz = w.z - camera.position.z;
   if (dx || dz) {
-    camera.position.x += dx;
-    camera.position.z += dz;
+    camera.position.x = w.x;
+    camera.position.z = w.z;
     bodyPos.x += dx;
     bodyPos.z += dz;
   }
+  rideCar.stickX = rideCar.x;
+  rideCar.stickZ = rideCar.z;
+  rideCar.stickYaw = rideCar.yaw;
 }
 
 function registerPick(obj) {
@@ -6873,7 +6808,6 @@ function updatePlayer(dt) {
     vy = standY > 0.5 ? 6.55 : 5.85;
     onGround = false;
     audio.jump();
-    pullTowardCarPad();
   }
   if (!onGround) {
     vy -= 18 * dt;
@@ -6894,7 +6828,6 @@ function updatePlayer(dt) {
       vy = 0;
       onGround = true;
       bindRideCar(top > 0.2 ? climbCarHit : null);
-      if (top > 0.2 && climbCarHit) keepOnCarPad(climbCarHit, top);
     }
   } else if (top < standY - 0.05) {
     onGround = false;
@@ -7084,6 +7017,7 @@ function tick() {
     look = p ? p.root : null;
     updatePlayer(dt);
     tickRemoteCars(dt);
+    stickToRideCar();
     tickPolice(dt);
     if (!inCar) updatePour(dt);
     stashLook();
