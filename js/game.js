@@ -46,7 +46,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=132";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=5";
+import { createClub } from "./club.js?v=7";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -912,6 +912,7 @@ const audio = {
   peeOsc: null,
   juke: false,
   jukeNodes: [],
+  jukeVol: 0,
   boot() {
     if (this.ctx) {
       if (this.ctx.state === "suspended") this.ctx.resume();
@@ -1269,16 +1270,24 @@ const audio = {
     this.pourOsc.o.stop();
     this.pourOsc = null;
   },
+  setJukeVol(v) {
+    this.jukeVol = THREE.MathUtils.clamp(v, 0, 1);
+  },
   toggleJuke() {
     this.juke = !this.juke;
     this.jukeNodes.forEach((n) => n.stop?.());
     this.jukeNodes = [];
+    if (this._j) {
+      clearTimeout(this._j);
+      this._j = null;
+    }
     if (!this.juke || !this.ctx) return;
     const notes = [196, 246, 220, 164, 196, 246, 293, 246];
     let i = 0;
     const tick = () => {
       if (!this.juke) return;
-      this.beep(notes[i % notes.length], 0.16, "square", 0.03);
+      const vol = this.jukeVol || 0;
+      if (vol > 0.02) this.beep(notes[i % notes.length], 0.16, "square", 0.03 * vol);
       i++;
       this._j = setTimeout(tick, 180);
     };
@@ -1654,6 +1663,10 @@ function tickHeartbeat(dt) {
 
 function insideBar(x, z) {
   return Math.abs(x) < W / 2 - 0.18 && z > -D / 2 + 0.18 && z < D / 2 - 0.18;
+}
+
+function hearJuke(x = bodyPos.x, z = bodyPos.z) {
+  return insideBar(x, z) || inBathroom(x, z);
 }
 
 function pushSolid(px, pz, r, s) {
@@ -2341,16 +2354,18 @@ function buildWorld() {
     solid(i * 1.5, 1.35, 0.42, 0.42, 0.72);
   }
 
-  const juke = addBox(scene, unitBox, lambert(0x1a0a12), 7.1, 0.9, 3.6, 0.7, 1.8, 0.5);
-  addBox(scene, unitBox, lambert(0xff3dac), 7.1, 1.5, 3.36, 0.5, 0.35, 0.04);
-  addBox(scene, unitBox, lambert(0x3dfff2), 7.1, 1.1, 3.36, 0.5, 0.12, 0.04);
+  const jukeX = 7.62;
+  const jukeZ = 1.82;
+  const juke = addBox(scene, unitBox, lambert(0x1a0a12), jukeX, 0.9, jukeZ, 0.5, 1.8, 0.72);
+  addBox(scene, unitBox, lambert(0xff3dac), jukeX - 0.26, 1.5, jukeZ, 0.04, 0.35, 0.5);
+  addBox(scene, unitBox, lambert(0x3dfff2), jukeX - 0.26, 1.1, jukeZ, 0.04, 0.12, 0.5);
   juke.userData.kind = "juke";
   juke.userData.root = juke;
   registerPick(juke);
   jukeLight = new THREE.PointLight(0xff3dac, 1.2, 5);
-  jukeLight.position.set(7.1, 1.5, 3.2);
+  jukeLight.position.set(jukeX - 0.34, 1.5, jukeZ);
   scene.add(jukeLight);
-  solid(7.1, 3.6, 0.8, 0.6, 1.8);
+  solid(jukeX, jukeZ, 0.58, 0.82, 1.8);
 
   buildCupStacks();
 
@@ -2435,6 +2450,7 @@ function buildWorld() {
     makeBottle,
     makeGlassMesh,
     randomDrink,
+    trackLooseGlass,
   });
   houseClub.build();
   setWorldCollide(collide);
@@ -7453,6 +7469,7 @@ function tick() {
   if (neonA) neonA.intensity = 3.0 + Math.sin(tWorld * 7) * 0.3 + (Math.random() < 0.015 ? -0.8 : 0);
   if (neonB) neonB.intensity = 1.8 + Math.sin(tWorld * 5 + 1) * 0.2;
   if (jukeLight) jukeLight.color.setHSL((tWorld * 0.12) % 1, 0.85, 0.55);
+  audio.setJukeVol?.(hearJuke() ? 1 : 0);
   tickFrontDoor(dt);
   tickBathrooms(dt);
   tickCarDoors(dt);
