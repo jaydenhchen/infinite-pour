@@ -3616,10 +3616,12 @@ function promptFrom(obj) {
   if (wanted) {
     const near = nearestCar(3.4);
     if (stunT > 0) {
+      if (near?.cop && copsInCar(near)) return "stunned · cops are still in the car · click punch";
       if (near?.cop) return "stunned · E steal the cop car · click punch to keep them back";
       if (near) return "stunned · E get in · click punch to keep them back";
       return "stunned · cops inbound · click punch to keep them back";
     }
+    if (near?.cop && copsInCar(near)) return "cops are in it · punch them out first · SPACE onto the hood";
     if (near?.cop) return "E steal the cop car · SPACE onto the hood · click punch";
     if (near) return "E get in · SPACE onto the hood · click punch";
     return "cops on you · click punch · RUN · E still gets you in a car";
@@ -3636,8 +3638,13 @@ function promptFrom(obj) {
     if (gamePrompt) return gamePrompt;
     const car = nearestCar(3.4);
     if (car) {
-      if (standY > 1.2) return "on the roof · SPACE off · E get in";
-      if (standY > 0.45) return "on the hood · SPACE onto the roof · E get in";
+      if (copsInCar(car)) {
+        if (standY > 1.2) return "on the roof · SPACE off · cops are still in it";
+        if (standY > 0.45) return "on the hood · SPACE onto the roof · cops are still in it";
+      } else {
+        if (standY > 1.2) return "on the roof · SPACE off · E get in";
+        if (standY > 0.45) return "on the hood · SPACE onto the roof · E get in";
+      }
       return carRideHint(car);
     }
     if (held && held.userData.kind === "glass") {
@@ -3674,7 +3681,11 @@ function promptFrom(obj) {
   if (k === "bathSink") return obj.userData.sink?.userData.running ? "E turn the sink off" : "E turn the sink on";
   if (k === "juke") return audio.juke ? "E silence the juke" : "E fire up the juke";
   if (k === "door") return frontDoorOpen ? "E close the front door" : "E open the front door";
-  if (k === "copcar") return carOccupants(obj.userData.car).has(0) ? "E hop in · SPACE onto the hood · click punch" : "E steal the cop car · SPACE onto the hood · click punch";
+  if (k === "copcar") {
+    const car = obj.userData.car;
+    if (copsInCar(car)) return "cops are in it · punch them out first · SPACE onto the hood";
+    return carOccupants(car).has(0) ? "E hop in · SPACE onto the hood · click punch" : "E steal the cop car · SPACE onto the hood · click punch";
+  }
   if (k === "car") return inCar ? (driving() ? "E get out · SHIFT drift" : "E get out") : carRideHint(obj.userData.car);
   if (k === "stool") return sitting ? "E or WASD stand up" : "E sit at the bar";
   const gamePrompt = houseGames?.prompt(look) || "";
@@ -4563,6 +4574,17 @@ function carOccupants(car) {
   return taken;
 }
 
+function copsInCar(car) {
+  if (!car?.cop) return false;
+  for (const pack of cops) {
+    if (pack.car !== car) continue;
+    for (const off of pack.officers) {
+      if (!off.dead && off.state === "ride") return true;
+    }
+  }
+  return false;
+}
+
 function pickCarSeat(car, px, pz) {
   const taken = carOccupants(car);
   if (!taken.has(0)) return 0;
@@ -4574,14 +4596,17 @@ function pickCarSeat(car, px, pz) {
 
 function carRideHint(car) {
   if (!car) return "E get in · SPACE onto the hood or trunk";
+  if (copsInCar(car)) return "cops are in it · punch them out first";
   const taken = carOccupants(car);
   if (taken.size >= 4) return "car's full";
+  if (car.cop && !taken.has(0)) return "E steal the cop car · SPACE onto the hood";
   if (taken.has(0)) return "E hop in · SPACE onto the hood";
   return "E get in · SPACE onto the hood or trunk";
 }
 
 function maybeTakeWheel() {
   if (!inCar || carSeatI === 0) return;
+  if (copsInCar(inCar)) return;
   const taken = carOccupants(inCar);
   if (taken.has(0)) return;
   for (const peer of remotePeers()) {
@@ -4631,6 +4656,10 @@ function togglePee() {
 
 function enterCar(car) {
   if (car == null || inCar) return;
+  if (copsInCar(car)) {
+    toast("cops are still in it");
+    return;
+  }
   const seat = pickCarSeat(car, bodyPos.x, bodyPos.z);
   if (seat < 0) {
     toast("car's full");
@@ -5080,7 +5109,7 @@ function hijackCopCar(car) {
     pack.hijacked = true;
     car.speed = 0;
     for (const off of pack.officers) {
-      if (off.dead || !off.rig) continue;
+      if (off.dead || !off.rig || off.state !== "ride") continue;
       const side = off.seat < 0 ? -1 : 1;
       const lx = Math.cos(car.yaw);
       const lz = -Math.sin(car.yaw);
@@ -5117,7 +5146,7 @@ function punchCops() {
   let hit = false;
   for (const pack of cops) {
     for (const off of pack.officers) {
-      if (off.dead || off.state === "ride") continue;
+      if (off.dead) continue;
       const dx = off.x - x;
       const dz = off.z - z;
       const dist = Math.hypot(dx, dz);
@@ -5585,6 +5614,10 @@ function tickPolice(dt) {
     if (car?.sirenMats) {
       car.sirenMats[0].emissiveIntensity = blink ? 1.8 : 0.12;
       car.sirenMats[1].emissiveIntensity = blink ? 0.12 : 1.8;
+    }
+    if (!pack.officers.some((off) => !off.dead && off.state === "ride")) {
+      pack.arrived = true;
+      if (car && inCar !== car) car.speed = 0;
     }
     if (inCar === car) {
       pack.arrived = true;
