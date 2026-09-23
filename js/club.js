@@ -584,8 +584,8 @@ export function createClub(api) {
         blending: THREE.AdditiveBlending,
       })
     );
-    cone.rotation.x = Math.PI / 2;
-    cone.position.z = -coneH * 0.5;
+    cone.rotation.x = -Math.PI / 2;
+    cone.position.z = coneH * 0.5;
     const beam = new THREE.Group();
     beam.add(cone);
     beam.position.copy(sl.position);
