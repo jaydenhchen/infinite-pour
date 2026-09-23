@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/style.css?v=75" />
+  <link rel="stylesheet" href="css/style.css?v=103" />
 </head>
 <body>
   <canvas class="webgl" id="gl"></canvas>
@@ -39,9 +39,9 @@
     <p class="hint">Same GitHub Pages link + same bar code = same bar. RESTOCK hits every shift.</p>
     <button type="button" class="cta" id="clockInBtn">CLICK TO STEP BEHIND THE BAR</button>
     <div class="keys">
-      WASD move · mouse look · SPACE jump · E grab, sit, door, car, enter or leave a game · ESC menu · SHIFT get out of a car
-      · F sip · G chug · Q drop · R dump · P drunk pee · click punch · 1/2/3 camera · hold C zoom · 4–9 glassware · T summon
-      · H cab back to the bar · patio: beer pong / beer die · pool inside
+      WASD move · mouse look / orbit in a car · SPACE jump · jump hood then roof · E grab, sit, door, car, get out, enter or leave a game · ESC menu · SHIFT sprint / drift
+      · F sip · G chug · Q drop · R dump · P drunk pee · click punch cops · 1/2/3 camera · hold C zoom · 4–9 glassware · T summon
+      · H cab back to the bar · patio: beer pong / beer die · pool inside · restrooms behind the left wall
     </div>
   </div>
 
@@ -84,9 +84,9 @@
   </div>
 
   <div id="passout">
-    <h1>YOU BLACKED OUT</h1>
+    <h1 id="passoutTitle">YOU BLACKED OUT</h1>
     <p id="passoutStats"></p>
-    <div class="cta">CLICK TO GET BACK UP</div>
+    <div class="cta" id="passoutCta">CLICK TO GET BACK UP</div>
   </div>
 
   <script type="importmap">
@@ -97,6 +97,6 @@
     }
   }
   </script>
-  <script type="module" src="js/game.js?v=75"></script>
+  <script type="module" src="js/game.js?v=116"></script>
 </body>
 </html>

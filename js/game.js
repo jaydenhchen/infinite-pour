@@ -29,8 +29,10 @@ import {
   shirtColor,
   tryPunch,
   eyeHeight,
-} from "./multiplayer.js?v=75";
-import { createGames } from "./games.js?v=75";
+  setPeeDrainFn,
+  setLocalHitHandler,
+} from "./multiplayer.js?v=104";
+import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -51,6 +53,7 @@ const BAC_FADE = 60;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
+const CLIMB_MAX = 1.1;
 
 const GLYPH = {
   0: ["111", "101", "101", "101", "111"],
@@ -486,7 +489,7 @@ function glassDims(type) {
 
 function makeHand(side) {
   const g = new THREE.Group();
-  const skin = lambert(0xe8b48a);
+  const skin = lambert(0xe8b48a, { emissive: 0xc48a5c, emissiveIntensity: 0.35 });
   const shirt = lambert(shirtColor("you"));
   const sleeve = addBox(g, unitBox, shirt, 0, 0, 0.22, 0.12, 0.12, 0.36);
   const palm = addBox(g, unitBox, skin, 0, 0, -0.02, 0.1, 0.1, 0.14);
@@ -523,9 +526,9 @@ function bindLocalHands() {
     } else if (hand.userData.shirt) {
       hand.userData.shirt.color.setHex(hex);
     }
-    if (skin && hand.userData.palm) {
-      hand.userData.palm.material = skin;
-      hand.userData.skin = skin;
+    if (hand.userData.skin) {
+      hand.userData.skin.color.setHex(0xe8b48a);
+      if (hand.userData.skin.emissive) hand.userData.skin.emissive.setHex(0xc48a5c);
     }
   }
 }
@@ -533,6 +536,7 @@ function bindLocalHands() {
 const audio = {
   ctx: null,
   pourOsc: null,
+  peeOsc: null,
   juke: false,
   jukeNodes: [],
   boot() {
@@ -575,17 +579,194 @@ const audio = {
     o.start();
     o.stop(this.ctx.currentTime + dur);
   },
+  noiseBuf() {
+    if (this._noise) return this._noise;
+    if (!this.ctx) return null;
+    const len = Math.floor(this.ctx.sampleRate * 0.45);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    this._noise = buf;
+    return buf;
+  },
+  burst(dur, vol = 0.05, freq = 900, type = "bandpass", q = 0.9) {
+    if (!this.ctx) return;
+    const buf = this.noiseBuf();
+    if (!buf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const f = this.ctx.createBiquadFilter();
+    f.type = type;
+    f.frequency.value = freq;
+    f.Q.value = q;
+    const g = this.ctx.createGain();
+    const now = this.ctx.currentTime;
+    g.gain.setValueAtTime(Math.max(0.0001, vol), now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    src.connect(f);
+    f.connect(g);
+    g.connect(this.ctx.destination);
+    src.start();
+    src.stop(now + dur);
+  },
   clink() {
     this.beep(980, 0.12, "sine", 0.07);
     this.beep(1460, 0.08, "sine", 0.04);
   },
-  gulp() {
-    this.beep(140, 0.18, "sine", 0.08);
-    this.beep(90, 0.22, "triangle", 0.05);
+  gulp(kind = "sip") {
+    this.beep(140, 0.18, "sine", 0.09);
+    this.beep(90, 0.22, "triangle", 0.06);
+    if (kind === "chug") {
+      this.beep(70, 0.34, "sine", 0.07);
+      this.beep(110, 0.28, "triangle", 0.05);
+      this.burst(0.16, 0.03, 400, "lowpass", 0.4);
+    }
+  },
+  canOpen() {
+    this.beep(1480, 0.05, "square", 0.035);
+    this.beep(2100, 0.04, "sine", 0.03);
+    this.burst(0.06, 0.04, 2400, "highpass", 0.7);
   },
   doorThump() {
     this.beep(180, 0.09, "triangle", 0.07);
     this.beep(90, 0.16, "sine", 0.05);
+    this.burst(0.12, 0.04, 220, "lowpass", 0.5);
+    this.beep(420, 0.05, "sine", 0.025);
+  },
+  sit() {
+    this.beep(160, 0.1, "triangle", 0.05);
+    this.burst(0.08, 0.03, 180, "lowpass");
+  },
+  stand() {
+    this.beep(210, 0.07, "triangle", 0.04);
+    this.burst(0.06, 0.025, 260, "lowpass");
+  },
+  jump() {
+    this.beep(240, 0.08, "sine", 0.04);
+    this.burst(0.08, 0.03, 500, "highpass");
+  },
+  land(hard) {
+    this.beep(hard ? 70 : 100, 0.12, "sine", hard ? 0.07 : 0.04);
+    this.burst(0.1, hard ? 0.05 : 0.03, 140, "lowpass");
+  },
+  step() {
+    this.burst(0.04, 0.018, 160, "lowpass", 0.4);
+    this.beep(90, 0.04, "sine", 0.02);
+  },
+  punch() {
+    this.burst(0.1, 0.05, 700, "bandpass", 0.8);
+    this.beep(180, 0.08, "triangle", 0.04);
+  },
+  hit() {
+    this.beep(90, 0.12, "sine", 0.08);
+    this.burst(0.12, 0.07, 280, "lowpass", 0.5);
+    this.beep(220, 0.06, "square", 0.03);
+  },
+  drop(kind) {
+    if (kind === "glass") this.clink();
+    else {
+      this.beep(130, 0.1, "triangle", 0.05);
+      this.burst(0.08, 0.035, 200, "lowpass");
+    }
+  },
+  empty() {
+    this.beep(150, 0.08, "triangle", 0.04);
+    this.beep(90, 0.1, "sine", 0.03);
+  },
+  splash() {
+    this.burst(0.18, 0.06, 1200, "bandpass", 0.6);
+    this.beep(240, 0.08, "sine", 0.03);
+  },
+  bump() {
+    this.beep(70, 0.1, "sine", 0.06);
+    this.burst(0.08, 0.04, 120, "lowpass");
+  },
+  dart() {
+    this.beep(220, 0.05, "triangle", 0.04);
+    this.burst(0.06, 0.035, 900, "bandpass", 0.8);
+  },
+  sinkStart() {
+    if (!this.ctx || this.sinkOsc) return;
+    const buf = this.noiseBuf();
+    if (!buf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const f = this.ctx.createBiquadFilter();
+    f.type = "bandpass";
+    f.frequency.value = 1800;
+    f.Q.value = 0.55;
+    const g = this.ctx.createGain();
+    g.gain.value = 0.03;
+    src.connect(f);
+    f.connect(g);
+    g.connect(this.ctx.destination);
+    src.start();
+    this.sinkOsc = { src, g };
+  },
+  sinkStop() {
+    if (!this.sinkOsc) return;
+    try { this.sinkOsc.src.stop(); } catch (err) { /* already stopped */ }
+    this.sinkOsc = null;
+  },
+  flush() {
+    this.burst(0.45, 0.06, 380, "lowpass", 0.4);
+    this.beep(180, 0.22, "sawtooth", 0.025);
+    this.beep(90, 0.3, "sine", 0.03);
+  },
+  peeStart() {
+    if (!this.ctx || this.peeOsc) return;
+    const buf = this.noiseBuf();
+    if (!buf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const f = this.ctx.createBiquadFilter();
+    f.type = "bandpass";
+    f.frequency.value = 1400;
+    f.Q.value = 0.7;
+    const g = this.ctx.createGain();
+    g.gain.value = 0.028;
+    src.connect(f);
+    f.connect(g);
+    g.connect(this.ctx.destination);
+    src.start();
+    this.peeOsc = { src, g };
+  },
+  peeStop() {
+    if (!this.peeOsc) return;
+    try { this.peeOsc.src.stop(); } catch (err) { /* already stopped */ }
+    this.peeOsc = null;
+  },
+  passout() {
+    this.beep(80, 0.4, "sine", 0.08);
+    this.beep(40, 0.55, "triangle", 0.06);
+    this.burst(0.3, 0.05, 90, "lowpass");
+  },
+  summonOpen() {
+    this.beep(520, 0.07, "square", 0.04);
+    this.beep(780, 0.08, "sine", 0.03);
+  },
+  summonClose() {
+    this.beep(400, 0.06, "square", 0.03);
+  },
+  restock() {
+    this.clink();
+    setTimeout(() => this.clink(), 70);
+    setTimeout(() => this.clink(), 140);
+  },
+  warp() {
+    this.beep(300, 0.12, "sine", 0.04);
+    this.beep(180, 0.16, "triangle", 0.04);
+    this.burst(0.14, 0.03, 600, "bandpass");
+  },
+  table() {
+    this.beep(330, 0.08, "triangle", 0.05);
+    this.beep(220, 0.1, "sine", 0.04);
+  },
+  catch() {
+    this.beep(720, 0.07, "square", 0.05);
+    this.beep(980, 0.05, "sine", 0.04);
   },
   heartLub(str) {
     const v = 0.03 + str * 0.07;
@@ -624,6 +805,49 @@ const audio = {
     if (this.eng == null) return;
     try { this.eng.o.stop(); } catch (err) { /* already stopped */ }
     this.eng = null;
+  },
+  crash() {
+    this.burst(0.28, 0.14, 120, "lowpass", 0.6);
+    this.beep(64, 0.2, "sawtooth", 0.07);
+    this.beep(36, 0.3, "triangle", 0.05);
+  },
+  baton() {
+    this.beep(210, 0.06, "square", 0.05);
+    this.burst(0.08, 0.045, 720, "bandpass");
+  },
+  arrest() {
+    this.passout();
+    this.beep(150, 0.22, "square", 0.05);
+    this.beep(96, 0.3, "triangle", 0.045);
+  },
+  sirenStart() {
+    if (this.ctx == null || this.siren) return;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = "sawtooth";
+    o.frequency.value = 680;
+    g.gain.value = 0.032;
+    const f = this.ctx.createBiquadFilter();
+    f.type = "bandpass";
+    f.frequency.value = 880;
+    f.Q.value = 2.4;
+    o.connect(f);
+    f.connect(g);
+    g.connect(this.ctx.destination);
+    o.start();
+    this.siren = { o, g, f, t: 0 };
+  },
+  sirenTick(dt) {
+    if (!this.siren || !this.ctx) return;
+    this.siren.t += dt;
+    const hi = this.siren.t % 0.7 < 0.35;
+    const now = this.ctx.currentTime;
+    this.siren.o.frequency.setTargetAtTime(hi ? 790 : 510, now, 0.035);
+  },
+  sirenStop() {
+    if (!this.siren) return;
+    try { this.siren.o.stop(); } catch (err) { /* already stopped */ }
+    this.siren = null;
   },
   pourStart() {
     if (!this.ctx || this.pourOsc) return;
@@ -687,7 +911,7 @@ const ndc = new THREE.Vector2(0, 0);
 const _pickOrigin = new THREE.Vector3();
 const _pickDir = new THREE.Vector3();
 const _pickWorld = new THREE.Vector3();
-const NEAR_USE = new Set(["door", "fridge", "register", "hatch", "sink", "juke", "stool", "car", "tap"]);
+const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "darts"]);
 const solids = [];
 const pickables = [];
 const bottles = [];
@@ -697,6 +921,7 @@ const deliveries = [];
 const keys = Object.create(null);
 let vy = 0;
 let onGround = true;
+let standY = 0;
 let walkT = 0;
 let pouring = false;
 let held = null;
@@ -704,6 +929,7 @@ let look = null;
 let bac = 0;
 let score = 0;
 let pours = 0;
+let pourBank = 0;
 let unique = new Set();
 let toastT = 0;
 let winPopT = 0;
@@ -716,6 +942,12 @@ let passedOut = false;
 let tWorld = 0;
 let mouseDown = false;
 let fridgeOpen = false;
+const toilets = [];
+const sinks = [];
+const stallZones = [];
+const ceilings = [];
+const swingDoors = [];
+let bathFlicker = null;
 let glassState = { type: "pint", fill: 0, parts: [] };
 let glassMesh = null;
 let bacWait = 0;
@@ -746,6 +978,8 @@ const bodyPos = new THREE.Vector3(0, EYE, -1.05);
 const _headAim = new THREE.Vector3();
 const _headWorld = new THREE.Vector3();
 const _camDir = new THREE.Vector3();
+const _drunkEuler = new THREE.Euler();
+const drunkCam = { yaw: 0, pit: 0, roll: 0 };
 let savedYaw = 0;
 let savedPitch = 0;
 let sitting = null;
@@ -755,19 +989,90 @@ let view2Yaw = 0;
 let view2Pitch = 0;
 let peeing = false;
 let peeUntil = 0;
+let peeStart = 0;
+let punchT = 0;
 let shakePhase = 0;
 let shakeWalk = 0;
 let localGender = "m";
 let heartT = 0;
 let heartKick = 0;
+const cops = [];
+let wanted = false;
+let stunT = 0;
+let hurtFlash = 0;
+let crashCool = 0;
+let rideCar = null;
+let climbCarHit = null;
+let copSerial = 0;
+let copWave = 0;
+
+function packSolid(x, z, w, d, h, extra = {}) {
+  return {
+    minx: x - w / 2,
+    maxx: x + w / 2,
+    minz: z - d / 2,
+    maxz: z + d / 2,
+    top: h,
+    climb: h <= CLIMB_MAX + 0.001,
+    ...extra,
+  };
+}
 
 function solid(x, z, w, d, h = 1.2) {
-  solids.push({ minx: x - w / 2, maxx: x + w / 2, minz: z - d / 2, maxz: z + d / 2 });
+  solids.push(packSolid(x, z, w, d, h));
   camBox(x, h / 2, z, w, h, d);
 }
 
-function worldSolid(x, z, w, d) {
-  worldSolids.push({ minx: x - w / 2, maxx: x + w / 2, minz: z - d / 2, maxz: z + d / 2 });
+function worldSolid(x, z, w, d, h = 4) {
+  worldSolids.push(packSolid(x, z, w, d, h));
+}
+
+function addCeiling(x, z, w, d, y) {
+  ceilings.push({
+    minx: x - w / 2,
+    maxx: x + w / 2,
+    minz: z - d / 2,
+    maxz: z + d / 2,
+    y,
+  });
+}
+
+function ceilingAt(px, pz) {
+  let best = Infinity;
+  for (const c of ceilings) {
+    if (px >= c.minx && px <= c.maxx && pz >= c.minz && pz <= c.maxz && c.y < best) best = c.y;
+  }
+  return best;
+}
+
+
+function overAabb(px, pz, s, pad = 0) {
+  return px >= s.minx - pad && px <= s.maxx + pad && pz >= s.minz - pad && pz <= s.maxz + pad;
+}
+
+function climbTopUnder(px, pz, feet, airborne, pad = 0.06) {
+  let best = 0;
+  climbCarHit = null;
+  const consider = (s) => {
+    if (!s.climb || !overAabb(px, pz, s, pad)) return;
+    if (feet >= s.top - 0.14 || (airborne && feet + 0.44 >= s.top)) {
+      if (s.top > best) best = s.top;
+    }
+  };
+  for (const s of solids) consider(s);
+  for (const s of worldSolids) consider(s);
+  const ride = carClimbAt(px, pz, feet, airborne);
+  if (ride.top > best) {
+    best = ride.top;
+    climbCarHit = ride.car;
+  } else if (ride.car && ride.top > 0 && Math.abs(ride.top - best) < 0.001) {
+    climbCarHit = ride.car;
+  }
+  return best;
+}
+
+function skipClimbWall(s, feet, airborne) {
+  return !!s.climb && (airborne || feet >= s.top - 0.12);
 }
 
 function camBox(x, y, z, sx, sy, sz, extra = {}) {
@@ -813,7 +1118,7 @@ function rayAabb(ox, oy, oz, dx, dy, dz, maxT, b) {
 function camRayHit(ox, oy, oz, dx, dy, dz, maxT) {
   let hit = maxT;
   for (const b of camSolids) {
-    if (b.door && frontDoorAng < -0.35) continue;
+    if (doorIsOpen(b)) continue;
     const t = rayAabb(ox, oy, oz, dx, dy, dz, hit, b);
     if (t != null && t < hit) hit = Math.max(0, t);
   }
@@ -898,15 +1203,26 @@ function pushSolid(px, pz, r, s) {
   return [px, pz];
 }
 
-function collide(px, pz, r = 0.28) {
+function collideWorld(px, pz, r = 0.28, feet = 0, airborne = false) {
   const list = insideBar(px, pz) ? solids : [];
-  for (const s of list) [px, pz] = pushSolid(px, pz, r, s);
-  for (const s of worldSolids) {
-    if (s.door && frontDoorAng < -0.35) continue;
+  for (const s of list) {
+    if (skipClimbWall(s, feet, airborne)) continue;
     [px, pz] = pushSolid(px, pz, r, s);
   }
+  for (const s of worldSolids) {
+    if (doorIsOpen(s)) continue;
+    if (skipClimbWall(s, feet, airborne)) continue;
+    [px, pz] = pushSolid(px, pz, r, s);
+  }
+  px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
+  pz = THREE.MathUtils.clamp(pz, WORLD_Z_MIN, WORLD_Z_MAX);
+  return [px, pz];
+}
+
+function collideCars(px, pz, r = 0.28, skip = null) {
+  let hit = null;
   for (const car of cars) {
-    if (car === inCar) continue;
+    if (car === inCar || car === skip) continue;
     const dx = px - car.x;
     const dz = pz - car.z;
     const cr = r + 2.15;
@@ -916,11 +1232,114 @@ function collide(px, pz, r = 0.28) {
       const need = cr - dist;
       px += (dx / dist) * need;
       pz += (dz / dist) * need;
+      hit = car;
     }
   }
+  return [px, pz, hit];
+}
+
+function collide(px, pz, r = 0.28, feet = 0, airborne = false, skipCar = null) {
+  [px, pz] = collideWorld(px, pz, r, feet, airborne);
+  [px, pz] = collideCarsWalk(px, pz, r, skipCar, feet, airborne);
   px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
   pz = THREE.MathUtils.clamp(pz, WORLD_Z_MIN, WORLD_Z_MAX);
   return [px, pz];
+}
+
+const CAR_PADS = [
+  { kind: "hood", lx: 0, lz: -1.54, hw: 0.98, hd: 0.66, top: 0.73 },
+  { kind: "trunk", lx: 0, lz: 1.82, hw: 0.98, hd: 0.36, top: 0.73 },
+  { kind: "roof", lx: 0, lz: 0.28, hw: 0.90, hd: 1.22, top: 1.47 },
+];
+
+function carWorldToLocal(car, px, pz) {
+  const dx = px - car.x;
+  const dz = pz - car.z;
+  const c = Math.cos(car.yaw);
+  const s = Math.sin(car.yaw);
+  return { lx: dx * c - dz * s, lz: dx * s + dz * c };
+}
+
+function carLocalToWorld(car, lx, lz) {
+  const c = Math.cos(car.yaw);
+  const s = Math.sin(car.yaw);
+  return { x: car.x + lx * c + lz * s, z: car.z - lx * s + lz * c };
+}
+
+function carPadAt(car, lx, lz, grow = 0.06) {
+  for (const pad of CAR_PADS) {
+    if (Math.abs(lx - pad.lx) <= pad.hw + grow && Math.abs(lz - pad.lz) <= pad.hd + grow) return pad;
+  }
+  return null;
+}
+
+function collideCarsWalk(px, pz, r, skip, feet, airborne) {
+  for (const car of cars) {
+    if (car === inCar || car === skip) continue;
+    const loc = carWorldToLocal(car, px, pz);
+    if (Math.abs(loc.lx) > 1.4 + r || Math.abs(loc.lz) > 2.5 + r) continue;
+    const pad = carPadAt(car, loc.lx, loc.lz, airborne ? 0.12 : 0.05);
+    const onPad = pad && (
+      feet >= pad.top - 0.16
+      || (airborne && (pad.kind !== "roof" || feet + 0.52 >= pad.top))
+    );
+    if (onPad) {
+      if (pad.kind !== "roof" && feet < 1.28) {
+        const [lx, lz] = pushSolid(loc.lx, loc.lz, r, { minx: -0.95, maxx: 0.95, minz: -1.0, maxz: 1.56 });
+        const w = carLocalToWorld(car, lx, lz);
+        px = w.x;
+        pz = w.z;
+      }
+      continue;
+    }
+    const [lx, lz] = pushSolid(loc.lx, loc.lz, r, { minx: -1.08, maxx: 1.08, minz: -2.18, maxz: 2.18 });
+    const w = carLocalToWorld(car, lx, lz);
+    px = w.x;
+    pz = w.z;
+  }
+  return [px, pz];
+}
+
+function carClimbAt(px, pz, feet, airborne) {
+  let best = 0;
+  let bestCar = null;
+  for (const car of cars) {
+    if (car === inCar) continue;
+    const loc = carWorldToLocal(car, px, pz);
+    for (const pad of CAR_PADS) {
+      if (Math.abs(loc.lx - pad.lx) > pad.hw + 0.06) continue;
+      if (Math.abs(loc.lz - pad.lz) > pad.hd + 0.06) continue;
+      if (feet >= pad.top - 0.14 || (airborne && feet + 0.44 >= pad.top)) {
+        if (pad.top > best) {
+          best = pad.top;
+          bestCar = car;
+        }
+      }
+    }
+  }
+  return { top: best, car: bestCar };
+}
+
+function bindRideCar(car) {
+  rideCar = car || null;
+  if (car) {
+    car.stickX = car.x;
+    car.stickZ = car.z;
+  }
+}
+
+function stickToRideCar() {
+  if (!rideCar || inCar) return;
+  const dx = rideCar.x - (rideCar.stickX ?? rideCar.x);
+  const dz = rideCar.z - (rideCar.stickZ ?? rideCar.z);
+  rideCar.stickX = rideCar.x;
+  rideCar.stickZ = rideCar.z;
+  if (dx || dz) {
+    camera.position.x += dx;
+    camera.position.z += dz;
+    bodyPos.x += dx;
+    bodyPos.z += dz;
+  }
 }
 
 function registerPick(obj) {
@@ -959,6 +1378,27 @@ function poseHands() {
   if (!rightHand || !leftHand) return;
   const bob = Math.sin(tWorld * 2.1) * 0.01;
   const walk = onGround && (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD) ? Math.sin(walkT) * 0.014 : 0;
+  if (peeing) {
+    const pull = THREE.MathUtils.clamp((tWorld - peeStart) / 0.55, 0, 1);
+    const hold = THREE.MathUtils.clamp((tWorld - peeStart - 0.45) / 0.4, 0, 1);
+    const x = 0.15 - pull * 0.04;
+    const y = -0.20 - pull * 0.18 + hold * 0.04;
+    const z = -0.34 - pull * 0.04;
+    rightHand.position.set(x, y + bob * 0.15, z);
+    rightHand.rotation.set(1.02 + pull * 0.32, 0.1, 0.34 + pull * 0.2);
+    leftHand.position.set(-x, y + bob * 0.15, z);
+    leftHand.rotation.set(1.02 + pull * 0.32, -0.1, -0.34 - pull * 0.2);
+    return;
+  }
+  if (punchT > 0) {
+    const u = 1 - punchT / 0.32;
+    const swing = u < 0.34 ? u / 0.34 : 1 - (u - 0.34) / 0.66;
+    rightHand.position.set(0.12 + swing * 0.06, -0.18 + swing * 0.16, -0.28 - swing * 0.38);
+    rightHand.rotation.set(0.15 + swing * 1.25, 0.2, 0.45 + swing * 0.55);
+    leftHand.position.set(-0.24, -0.34 + bob, -0.46);
+    leftHand.rotation.set(0.24, -0.14, -0.2);
+    return;
+  }
   if (pouring && held && held.userData.kind === "bottle") {
     rightHand.position.set(0.1, -0.13 + bob, -0.36);
     rightHand.rotation.set(1.08, 0.42, 0.7);
@@ -966,6 +1406,9 @@ function poseHands() {
     const lift = sipT > 0 ? 0.14 : 0;
     rightHand.position.set(0.2, -0.16 + bob + walk + lift, -0.38 - lift * 0.35);
     rightHand.rotation.set(0.12 + (sipT > 0 ? 0.72 : 0), 0.04, 0.08);
+  } else if (held && held.userData.drink?.bottle === "can") {
+    rightHand.position.set(0.16, -0.1 + bob + walk, -0.34);
+    rightHand.rotation.set(0.22, 0.08, 0.16);
   } else if (held) {
     rightHand.position.set(0.2, -0.24 + bob + walk, -0.4);
     rightHand.rotation.set(0.52, 0.2, 0.38);
@@ -992,6 +1435,12 @@ function removeBottle(b) {
 
 function restockDrinks() {
   audio.pourStop();
+  audio.sinkStop();
+  for (const s of sinks) {
+    s.userData.running = false;
+    if (s.userData.stream) s.userData.stream.visible = false;
+    if (s.userData.splash) s.userData.splash.visible = false;
+  }
   pouring = false;
   mouseDown = false;
   if (held) {
@@ -1039,14 +1488,25 @@ function resetShift() {
   sipT = 0;
   score = 0;
   pours = 0;
+  pourBank = 0;
   unique = new Set();
   fridgeOpen = false;
   zoomHold = false;
   if (frontDoor) setFrontDoor(false, true);
-  if (hatchDoor) {
-    hatchDoor.rotation.y = 0;
-    hatchDoor.position.set(-4.84, 1.1, -2.7);
+  for (const door of swingDoors) {
+    door.userData.open = false;
+    door.userData.ang = 0;
+    door.userData.want = 0;
+    if (door.userData.hinge) door.userData.hinge.rotation.y = door.userData.hinge.userData.baseYaw || 0;
   }
+  for (const t of toilets) {
+    t.userData.seatUp = false;
+  }
+  clearPolice();
+  stunT = 0;
+  hurtFlash = 0;
+  crashCool = 0;
+  wanted = false;
   if (inCar) exitCar(true);
   camera.position.set(0, eyeY(), -1.05);
   camera.rotation.set(0, 0, 0);
@@ -1057,6 +1517,7 @@ function resetShift() {
   view2Pitch = 0;
   vy = 0;
   onGround = true;
+  standY = 0;
   walkT = 0;
   peeing = false;
   peeUntil = 0;
@@ -1089,19 +1550,25 @@ function buildWorld() {
   addBox(scene, unitBox, mats.brick, 0, wallH / 2, -D / 2, W, wallH, 0.25);
   addBox(scene, unitBox, mats.brick, -4.4, wallH / 2, D / 2, 7.2, wallH, 0.25);
   addBox(scene, unitBox, mats.brick, 4.4, wallH / 2, D / 2, 7.2, wallH, 0.25);
-  addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, 0, 0.25, wallH, D);
+  addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, -4.76, 0.25, wallH, 2.48);
+  addBox(scene, unitBox, mats.brick, -W / 2, wallH / 2, 2.06, 0.25, wallH, 7.88);
+  addBox(scene, unitBox, mats.brick, -W / 2, 2.85, -2.7, 0.25, 0.9, 1.72);
   addBox(scene, unitBox, mats.brick, W / 2, wallH / 2, 0, 0.25, wallH, D);
   addBox(scene, unitBox, mats.woodDark, 0, wallH, 0, W, 0.2, D);
+  addCeiling(0, 0, W, D, wallH - 0.1);
   addBox(scene, unitBox, mats.woodDark, 0, 3.15, D / 2, 1.7, 0.5, 0.28);
   worldSolid(0, -D / 2, W, 0.4);
   worldSolid(-4.4, D / 2, 7.2, 0.4);
   worldSolid(4.4, D / 2, 7.2, 0.4);
-  worldSolid(-W / 2, 0, 0.4, D);
+  worldSolid(-W / 2, -4.76, 0.4, 2.48);
+  worldSolid(-W / 2, 2.06, 0.4, 7.88);
   worldSolid(W / 2, 0, 0.4, D);
   camBox(0, wallH / 2, -D / 2, W, wallH, 0.4);
   camBox(-4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
   camBox(4.4, wallH / 2, D / 2, 7.2, wallH, 0.4);
-  camBox(-W / 2, wallH / 2, 0, 0.4, wallH, D);
+  camBox(-W / 2, wallH / 2, -4.76, 0.4, wallH, 2.48);
+  camBox(-W / 2, wallH / 2, 2.06, 0.4, wallH, 7.88);
+  camBox(-W / 2, 2.85, -2.7, 0.4, 0.9, 1.72);
   camBox(W / 2, wallH / 2, 0, 0.4, wallH, D);
   camBox(0, wallH, 0, W, 0.24, D);
   camBox(0, 3.15, D / 2, 1.7, 0.5, 0.32);
@@ -1156,16 +1623,6 @@ function buildWorld() {
   wells.forEach((name, i) => {
     placeBottle(byName(name), -2.4 + i * 0.38, 1.05, WELL_Z + 0.08, 0);
   });
-
-  const fridge = addBox(scene, unitBox, lambert(0xd8d0c4), -5.35, 1.1, -2.7, 1.05, 2.2, 0.85);
-  fridge.userData.kind = "fridge";
-  fridge.userData.root = fridge;
-  registerPick(fridge);
-  hatchDoor = addBox(scene, unitBox, lambert(0xc8c0b4), -4.84, 1.1, -2.7, 0.06, 2.05, 0.8);
-  hatchDoor.userData.kind = "fridge";
-  hatchDoor.userData.root = fridge;
-  addBox(scene, unitBox, lambert(0x3dfff2), -4.82, 1.7, -2.7, 0.08, 0.08, 0.08);
-  solid(-5.35, -2.7, 1.15, 0.95, 2.2);
 
   addBox(scene, unitBox, mats.woodDark, 5.35, 1.2, -2.85, 1.15, 2.4, 0.62);
   solid(5.35, -2.85, 1.25, 0.7, 2.4);
@@ -1272,6 +1729,7 @@ function buildWorld() {
     seat.userData.root = stool;
     registerPick(stool);
     scene.add(stool);
+    solid(i * 1.5, 1.35, 0.42, 0.42, 0.72);
   }
 
   const juke = addBox(scene, unitBox, lambert(0x1a0a12), 7.1, 0.9, 3.6, 0.7, 1.8, 0.5);
@@ -1305,15 +1763,7 @@ function buildWorld() {
   dir.shadow.camera.bottom = -8;
   scene.add(dir);
 
-  for (let i = -1; i <= 1; i++) {
-    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 6), new THREE.MeshBasicMaterial({ color: 0xffe0a0 }));
-    bulb.position.set(i * 2.6, 2.55, WELL_Z + 0.2);
-    scene.add(bulb);
-    const pl = new THREE.PointLight(0xffc070, 2.6, 6.5);
-    pl.position.copy(bulb.position);
-    if (i === 0) pl.castShadow = true;
-    scene.add(pl);
-  }
+  for (let i = -1; i <= 1; i++) hangingBarLight(i * 2.6, WELL_Z + 0.2, i === 0);
   const shelfLight = new THREE.PointLight(0xffe0b0, 2.8, 7);
   shelfLight.position.set(0, 2.1, SHELF_Z + 0.55);
   scene.add(shelfLight);
@@ -1330,9 +1780,10 @@ function buildWorld() {
   frontDoorAng = 0;
   frontDoorWant = 0;
   frontDoorOpen = false;
-  worldSolids.push({ minx: -0.8, maxx: 0.8, minz: D / 2 - 0.18, maxz: D / 2 + 0.22, door: true });
+  worldSolids.push({ minx: -0.8, maxx: 0.8, minz: D / 2 - 0.18, maxz: D / 2 + 0.22, door: true, top: 2.6, climb: false });
   camBox(0, 1.3, D / 2 + 0.02, 1.6, 2.6, 0.16, { door: true });
 
+  buildBathrooms();
   buildTown();
   houseGames = createGames({
     scene,
@@ -1347,10 +1798,12 @@ function buildWorld() {
     neonTex,
     localId,
     humans: humanPeers,
+    playerPos: () => bodyPos,
     sendEvent: publishEvent,
     houseDrink: (msg) => {
       toast(msg);
       score += 8;
+      audio.gulp("sip");
     },
     score: (n) => {
       score += n;
@@ -1402,12 +1855,59 @@ function makeCar(x, z, yaw, color) {
   g.rotation.y = yaw;
   g.userData.kind = "car";
   g.userData.root = g;
-  const car = { mesh: g, x, z, yaw, speed: 0 };
+  const car = { mesh: g, x, z, yaw, speed: 0, drift: 0 };
   g.userData.car = car;
   registerPick(g);
   scene.add(g);
   cars.push(car);
   return car;
+}
+
+function hangingBarLight(x, z, shadow) {
+  const ceilY = 3.28;
+  const shadeY = 2.52;
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  const shadeCol = lambert(0x2a1c12);
+  const lining = lambert(0xc9a227);
+  addBox(g, unitBox, mats.chrome, 0, ceilY, 0, 0.2, 0.04, 0.2);
+  addBox(g, unitCyl, mats.brass, 0, ceilY - 0.035, 0, 0.055, 0.05, 0.055);
+  const hangH = ceilY - 0.06 - (shadeY + 0.16);
+  addBox(g, unitCyl, mats.chrome, 0, shadeY + 0.16 + hangH / 2, 0, 0.01, hangH, 0.01);
+  for (let i = 0; i < 3; i++) {
+    const link = new THREE.Mesh(new THREE.TorusGeometry(0.018, 0.004, 6, 10), mats.brass);
+    link.position.set(0, shadeY + 0.17 + i * 0.03, 0);
+    link.rotation.x = i % 2 ? Math.PI / 2 : 0;
+    link.rotation.z = i % 2 ? 0 : Math.PI / 2;
+    link.castShadow = true;
+    g.add(link);
+  }
+  addBox(g, unitCyl, mats.chrome, 0, shadeY + 0.145, 0, 0.028, 0.04, 0.028);
+  addBox(g, unitCyl, mats.brass, 0, shadeY + 0.12, 0, 0.04, 0.03, 0.04);
+  const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.09, 0.18, 14, 1, true), shadeCol);
+  shade.position.set(0, shadeY + 0.05, 0);
+  shade.castShadow = true;
+  shade.receiveShadow = true;
+  g.add(shade);
+  const inner = new THREE.Mesh(new THREE.CylinderGeometry(0.225, 0.082, 0.16, 14, 1, true), lining);
+  inner.position.set(0, shadeY + 0.05, 0);
+  g.add(inner);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.012, 8, 18), mats.brass);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.set(0, shadeY - 0.04, 0);
+  rim.castShadow = true;
+  g.add(rim);
+  addBox(g, unitCyl, mats.chrome, 0, shadeY + 0.13, 0, 0.09, 0.03, 0.09);
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.048, 10, 8), mats.glow);
+  bulb.position.set(0, shadeY + 0.01, 0);
+  g.add(bulb);
+  addBox(g, unitCyl, mats.chrome, 0, shadeY + 0.05, 0, 0.016, 0.03, 0.016);
+  scene.add(g);
+  const pl = new THREE.PointLight(0xffc070, 2.6, 6.5);
+  pl.position.set(x, shadeY - 0.02, z);
+  if (shadow) pl.castShadow = true;
+  scene.add(pl);
+  return g;
 }
 
 function lamp(x, z) {
@@ -1499,6 +1999,10 @@ function buildTown() {
   makeCar(-20.4, 15.2, -Math.PI / 2, 0x2c6e49);
   makeCar(40.5, 29.1, Math.PI / 2, 0x8a3a12);
   makeCar(-40.5, 50.8, -Math.PI / 2, 0x3a3a48);
+  makeCar(16.8, 20.2, Math.PI / 2, 0x6a2030);
+  makeCar(-17.4, 24.6, -Math.PI / 2, 0x203050);
+  makeCar(7.8, 56.4, 0, 0xb8b0a4);
+  makeCar(-11.2, 60.6, Math.PI, 0x3d5a3a);
 
   asphalt(-8.4, 12.6, 7.2, 7.4, mats.sidewalk, 0.012);
   lamp(-8.4, 11.2);
@@ -1508,6 +2012,868 @@ function buildTown() {
   pads.push({ x: 0, z: 58, r: 1.35 });
 }
 
+function bathTileTex() {
+  return px(32, 32, (ctx, n) => {
+    ctx.fillStyle = "#6a6560";
+    ctx.fillRect(0, 0, n, n);
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 4; x++) {
+        const stain = ((x * 7 + y * 13) ^ (x * 3)) & 7;
+        const r = 196 - stain * 6 - ((x + y) % 3) * 4;
+        const g = 188 - stain * 5;
+        const b = 176 - stain * 4;
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(x * 8 + 1, y * 8 + 1, 6, 6);
+        if (((x * 5 + y * 9) & 7) === 1) {
+          ctx.fillStyle = "rgba(70,50,30,0.18)";
+          ctx.fillRect(x * 8 + 2, y * 8 + 3, 3, 2);
+        }
+      }
+    }
+  });
+}
+
+function flyerTex(title, sub, bg, ink) {
+  return px(64, 80, (ctx, w, h) => {
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#1a120c";
+    ctx.fillRect(2, 2, w - 4, h - 4);
+    ctx.fillStyle = bg;
+    ctx.fillRect(4, 4, w - 8, h - 8);
+    blitText(ctx, title, 6, 10, ink, 1);
+    blitText(ctx, sub, 6, 28, "#201810", 1);
+    ctx.fillStyle = "#1a120c";
+    ctx.fillRect(w - 10, 0, 10, 9);
+    ctx.fillRect(0, h - 6, 8, 6);
+    ctx.fillStyle = "rgba(0,0,0,0.14)";
+    ctx.fillRect(8, 48, 40, 18);
+  });
+}
+
+function tagTex(text, col, scale = 2) {
+  const s = String(text).toUpperCase();
+  const w = Math.max(64, s.length * 4 * scale + 16);
+  const h = 8 * scale + 16;
+  return px(w, h, (ctx) => {
+    ctx.clearRect(0, 0, w, h);
+    blitText(ctx, s, 4, 6, col, scale);
+  });
+}
+
+function scribbleTex(variant = 0) {
+  return px(80, 48, (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    if (variant === 1) {
+      ctx.fillStyle = "#c41e3a";
+      ctx.fillRect(20, 6, 8, 24);
+      ctx.fillRect(17, 3, 14, 8);
+      ctx.fillRect(14, 28, 9, 9);
+      ctx.fillRect(25, 28, 9, 9);
+      blitText(ctx, "NICE", 40, 18, "#3dfff2", 1);
+      return;
+    }
+    if (variant === 2) {
+      blitText(ctx, "555", 6, 6, "#2e6bff", 2);
+      blitText(ctx, "6969", 6, 24, "#ff3dac", 2);
+      return;
+    }
+    if (variant === 3) {
+      ctx.fillStyle = "#e8c547";
+      ctx.fillRect(10, 22, 56, 3);
+      ctx.fillRect(36, 8, 3, 28);
+      blitText(ctx, "XOXO", 12, 30, "#ff3dac", 1);
+      return;
+    }
+    ctx.fillStyle = "#c41e3a";
+    ctx.fillRect(8, 20, 28, 3);
+    ctx.fillRect(18, 8, 3, 26);
+    ctx.fillStyle = "#2e6bff";
+    ctx.fillRect(44, 10, 18, 18);
+    ctx.fillStyle = "#e8c547";
+    ctx.fillRect(50, 16, 6, 6);
+    blitText(ctx, "IP", 46, 32, "#3dfff2", 1);
+  });
+}
+
+const wallMarks = [];
+
+function wrapYaw(a) {
+  let y = a % (Math.PI * 2);
+  if (y < 0) y += Math.PI * 2;
+  return y;
+}
+
+function yawClose(a, b) {
+  const d = Math.abs(wrapYaw(a) - wrapYaw(b));
+  return Math.min(d, Math.PI * 2 - d) < 0.2;
+}
+
+function wallAlong(x, z, yaw) {
+  return x * Math.cos(yaw) - z * Math.sin(yaw);
+}
+
+function wallPlane(x, z, yaw) {
+  return x * Math.sin(yaw) + z * Math.cos(yaw);
+}
+
+function markHits(a, b, pad) {
+  if (!yawClose(a.yaw, b.yaw)) return false;
+  if (Math.abs(a.plane - b.plane) > 0.2) return false;
+  return Math.abs(a.along - b.along) < (a.w + b.w) * 0.5 + pad
+    && Math.abs(a.y - b.y) < (a.h + b.h) * 0.5 + pad;
+}
+
+function reserveWall(x, y, z, w, h, yaw) {
+  wallMarks.push({
+    x,
+    y,
+    z,
+    w,
+    h,
+    yaw,
+    along: wallAlong(x, z, yaw),
+    plane: wallPlane(x, z, yaw),
+  });
+}
+
+function wallBusy(x, y, z, w, h, yaw, pad = 0.05) {
+  const probe = { y, w, h, yaw, along: wallAlong(x, z, yaw), plane: wallPlane(x, z, yaw) };
+  return wallMarks.some((m) => markHits(probe, m, pad));
+}
+
+function graffitiSize(text, scale = 2) {
+  const s = String(text).toUpperCase();
+  return {
+    w: Math.max(0.26, s.length * 0.05 * (scale / 2) + 0.08),
+    h: 0.1 * (scale / 2) + 0.04,
+  };
+}
+
+function findWallSlot(x, y, z, w, h, yaw, pad = 0.06) {
+  if (!wallBusy(x, y, z, w, h, yaw, pad)) return { x, y, z };
+  const ux = Math.cos(yaw);
+  const uz = -Math.sin(yaw);
+  const tries = [];
+  for (const dy of [0.2, -0.2, 0.36, -0.36, 0.5, -0.5, 0.64, -0.28, 0.78, -0.64]) {
+    tries.push([x, y + dy, z]);
+  }
+  for (const s of [-0.24, 0.24, -0.42, 0.42, -0.6, 0.6, -0.78, 0.78]) {
+    tries.push([x + ux * s, y, z + uz * s]);
+    tries.push([x + ux * s, y + 0.22, z + uz * s]);
+    tries.push([x + ux * s, y - 0.22, z + uz * s]);
+  }
+  for (const [px, py, pz] of tries) {
+    if (py < 0.4 || py > 2.3) continue;
+    if (!wallBusy(px, py, pz, w, h, yaw, pad)) return { x: px, y: py, z: pz };
+  }
+  return null;
+}
+
+function graffiti(text, col, x, y, z, yaw, scale = 2) {
+  const s = String(text).toUpperCase();
+  const { w, h } = graffitiSize(s, scale);
+  const slot = findWallSlot(x, y, z, w, h, yaw);
+  if (!slot) return null;
+  return decal(tagTex(s, col, scale), slot.x, slot.y, slot.z, w, h, yaw);
+}
+
+function placeDecal(map, x, y, z, w, h, yaw) {
+  const slot = findWallSlot(x, y, z, w, h, yaw);
+  if (!slot) return null;
+  return decal(map, slot.x, slot.y, slot.z, w, h, yaw);
+}
+
+function paperTex() {
+  return px(32, 32, (ctx, n) => {
+    ctx.fillStyle = "#f4eee2";
+    ctx.fillRect(0, 0, n, n);
+    ctx.fillStyle = "#e8dfd0";
+    for (let y = 2; y < n; y += 4) ctx.fillRect(0, y, n, 1);
+    ctx.fillStyle = "#d8cbb8";
+    for (let x = 1; x < n; x += 8) {
+      for (let y = 0; y < n; y += 2) ctx.fillRect(x, y, 1, 1);
+    }
+  });
+}
+
+function makeToiletPaper(x, y, z, yaw) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  g.rotation.y = yaw;
+  const paper = new THREE.MeshLambertMaterial({ map: paperTex(), color: 0xf6efe2 });
+  const tube = lambert(0xc9a06a);
+  addBox(g, unitBox, mats.chrome, 0, 0, -0.01, 0.16, 0.12, 0.02);
+  addBox(g, unitBox, mats.chrome, -0.07, 0, 0.05, 0.018, 0.08, 0.1);
+  addBox(g, unitBox, mats.chrome, 0.07, 0, 0.05, 0.018, 0.08, 0.1);
+  const spindle = new THREE.Mesh(unitCyl, mats.chrome);
+  spindle.rotation.z = Math.PI / 2;
+  spindle.scale.set(0.012, 0.145, 0.012);
+  spindle.position.set(0, 0, 0.055);
+  g.add(spindle);
+  const roll = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.11, 18, 1, true), paper);
+  roll.rotation.z = Math.PI / 2;
+  roll.position.set(0, 0, 0.055);
+  roll.castShadow = true;
+  g.add(roll);
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.112, 10), tube);
+  core.rotation.z = Math.PI / 2;
+  core.position.set(0, 0, 0.055);
+  g.add(core);
+  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.11), paper);
+  sheet.position.set(0, -0.075, 0.108);
+  sheet.rotation.x = 0.18;
+  g.add(sheet);
+  const fold = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.05), paper);
+  fold.position.set(0, -0.138, 0.118);
+  fold.rotation.x = 0.85;
+  g.add(fold);
+  const tags = ["IP", "LOL", "XOXO", "JAY"];
+  const ink = tags[Math.abs((x * 13.7 + z * 9.1 + y * 3) | 0) % tags.length];
+  const note = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.068, 0.026),
+    new THREE.MeshBasicMaterial({
+      map: tagTex(ink, "#c45a38", 1),
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      side: THREE.FrontSide,
+    })
+  );
+  note.position.set(0, 0.006, 0.0012);
+  sheet.add(note);
+  reserveWall(x, y - 0.05, z, 0.3, 0.42, yaw);
+  scene.add(g);
+  return g;
+}
+
+function crackTex() {
+  return px(64, 64, (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(20,16,12,0.55)";
+    ctx.fillRect(8, 30, 48, 2);
+    ctx.fillRect(28, 12, 2, 40);
+    ctx.fillRect(28, 28, 18, 2);
+    ctx.fillRect(14, 18, 16, 2);
+    ctx.fillStyle = "rgba(180,200,210,0.35)";
+    ctx.fillRect(12, 8, 10, 8);
+  });
+}
+
+function decal(map, x, y, z, w, h, yaw, occupy = true) {
+  const lift = 0.011;
+  const nx = Math.sin(yaw) * lift;
+  const nz = Math.cos(yaw) * lift;
+  const mat = new THREE.MeshBasicMaterial({
+    map,
+    transparent: true,
+    opacity: 0.94,
+    side: THREE.FrontSide,
+    depthWrite: false,
+    depthTest: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4,
+  });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  m.position.set(x + nx, y, z + nz);
+  m.rotation.y = yaw;
+  m.renderOrder = 2;
+  scene.add(m);
+  if (occupy) reserveWall(x, y, z, w, h, yaw);
+  return m;
+}
+
+function doorIsOpen(s) {
+  if (s.swing) return Math.abs(s.swing.userData.ang || 0) > 0.45;
+  if (s.door) return frontDoorAng < -0.35;
+  return false;
+}
+
+function makeHingeDoor(x, z, yaw, w, h, kind, swingDir = 1) {
+  const hinge = new THREE.Group();
+  hinge.position.set(x, 0, z);
+  hinge.userData.baseYaw = yaw;
+  hinge.rotation.y = yaw;
+  scene.add(hinge);
+  const door = addBox(hinge, unitBox, mats.woodDark, (w / 2) * swingDir, h / 2, 0, w, h, 0.05);
+  addBox(hinge, unitBox, mats.brass, (w - 0.12) * swingDir, 1.05, 0.03, 0.04, 0.1, 0.04);
+  door.userData.kind = kind;
+  door.userData.root = door;
+  door.userData.hinge = hinge;
+  door.userData.ang = 0;
+  door.userData.want = 0;
+  door.userData.open = false;
+  door.userData.swingDir = swingDir;
+  registerPick(door);
+  swingDoors.push(door);
+  const cx = x + Math.cos(yaw) * (w / 2) * swingDir;
+  const cz = z - Math.sin(yaw) * (w / 2) * swingDir;
+  const hx = Math.abs(Math.cos(yaw)) * (w / 2) + 0.1;
+  const hz = Math.abs(Math.sin(yaw)) * (w / 2) + 0.1;
+  worldSolids.push({ minx: cx - hx, maxx: cx + hx, minz: cz - hz, maxz: cz + hz, swing: door, top: h, climb: false });
+  camBox(cx, h / 2, cz, hx * 2, h, hz * 2, { swing: door });
+  return door;
+}
+
+function makeToilet(x, z, yaw) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  g.rotation.y = yaw;
+  const porcelain = lambert(0xece4d8);
+  const glaze = lambert(0xf6f0e6);
+  const inner = lambert(0xd4ccc0);
+  const water = lambert(0x3a8aaa, { transparent: true, opacity: 0.58 });
+  const seat = lambert(0xf2e6d0);
+  const add = (mesh, px, py, pz) => {
+    mesh.position.set(px, py, pz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    g.add(mesh);
+    return mesh;
+  };
+  add(new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.16, 0.16, 14), porcelain), 0, 0.08, 0.17);
+  const bowl = add(new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.125, 0.18, 18), porcelain), 0, 0.24, 0.17);
+  add(new THREE.Mesh(new THREE.CylinderGeometry(0.155, 0.07, 0.12, 16), inner), 0, 0.26, 0.17);
+  const wet = new THREE.Mesh(new THREE.CircleGeometry(0.13, 18), water);
+  wet.rotation.x = -Math.PI / 2;
+  add(wet, 0, 0.305, 0.17);
+  const drain = new THREE.Mesh(new THREE.CircleGeometry(0.028, 10), lambert(0x1a1a1c));
+  drain.rotation.x = -Math.PI / 2;
+  add(drain, 0, 0.307, 0.17);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.172, 0.024, 8, 20), glaze);
+  rim.rotation.x = Math.PI / 2;
+  add(rim, 0, 0.335, 0.17);
+  const seatRing = new THREE.Mesh(new THREE.TorusGeometry(0.155, 0.03, 8, 20), seat);
+  seatRing.rotation.x = Math.PI / 2;
+  add(seatRing, 0, 0.358, 0.17);
+  addBox(g, unitBox, porcelain, 0, 0.36, -0.02, 0.18, 0.14, 0.2);
+  addBox(g, unitBox, porcelain, 0, 0.62, -0.2, 0.38, 0.4, 0.16);
+  addBox(g, unitBox, glaze, 0, 0.83, -0.2, 0.4, 0.03, 0.18);
+  addBox(g, unitBox, seat, 0, 0.64, -0.1, 0.34, 0.28, 0.04);
+  addBox(g, unitBox, mats.chrome, 0.15, 0.72, -0.1, 0.05, 0.02, 0.07);
+  scene.add(g);
+  bowl.userData.kind = "toilet";
+  bowl.userData.root = bowl;
+  const sit = {
+    x: x + Math.sin(yaw) * 0.12,
+    z: z + Math.cos(yaw) * 0.12,
+    y: 1.16,
+    yaw,
+    kind: "toilet",
+    fixture: g,
+    standX: x + Math.sin(yaw) * 0.78,
+    standZ: z + Math.cos(yaw) * 0.78,
+  };
+  bowl.userData.sit = sit;
+  bowl.userData.toilet = g;
+  g.userData.water = wet;
+  g.userData.bowlWorld = new THREE.Vector3(x + Math.sin(yaw) * 0.17, 0.31, z + Math.cos(yaw) * 0.17);
+  g.userData.sit = sit;
+  g.userData.drainR = 0.28;
+  registerPick(bowl);
+  toilets.push(g);
+  worldSolid(x + Math.sin(yaw) * 0.06, z + Math.cos(yaw) * 0.06, 0.32, 0.36, 0.44);
+  return g;
+}
+
+function makeUrinal(x, z, yaw) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  g.rotation.y = yaw;
+  const porcelain = lambert(0xe6dfd4);
+  const inner = lambert(0xcfc6b8);
+  const water = lambert(0x2a6a8a, { transparent: true, opacity: 0.48 });
+  addBox(g, unitBox, porcelain, 0, 0.98, -0.02, 0.36, 0.9, 0.06);
+  addBox(g, unitBox, porcelain, 0, 1.3, 0.08, 0.36, 0.1, 0.18);
+  addBox(g, unitBox, porcelain, -0.16, 0.86, 0.12, 0.05, 0.66, 0.28);
+  addBox(g, unitBox, porcelain, 0.16, 0.86, 0.12, 0.05, 0.66, 0.28);
+  addBox(g, unitBox, inner, 0, 0.9, 0.03, 0.24, 0.6, 0.04);
+  const bowl = addBox(g, unitBox, porcelain, 0, 0.5, 0.14, 0.3, 0.18, 0.26);
+  addBox(g, unitBox, porcelain, 0, 0.42, 0.22, 0.28, 0.06, 0.12);
+  const cup = new THREE.Mesh(unitCyl, porcelain);
+  cup.scale.set(0.12, 0.2, 0.1);
+  cup.position.set(0, 0.68, 0.12);
+  cup.rotation.x = 0.62;
+  g.add(cup);
+  const wet = addBox(g, unitBox, water, 0, 0.52, 0.14, 0.16, 0.03, 0.14);
+  addBox(g, unitBox, lambert(0x1a1a1c), 0, 0.46, 0.12, 0.05, 0.02, 0.05);
+  addBox(g, unitBox, mats.chrome, 0, 1.4, 0.0, 0.05, 0.12, 0.05);
+  addBox(g, unitBox, mats.chrome, 0, 1.48, 0.1, 0.04, 0.04, 0.18);
+  addBox(g, unitBox, mats.chrome, 0.12, 1.4, 0.03, 0.12, 0.03, 0.03);
+  scene.add(g);
+  bowl.userData.kind = "urinal";
+  bowl.userData.root = bowl;
+  bowl.userData.toilet = g;
+  g.userData.kind = "urinal";
+  g.userData.water = wet;
+  g.userData.bowlWorld = new THREE.Vector3(x + Math.sin(yaw) * 0.14, 0.52, z + Math.cos(yaw) * 0.14);
+  g.userData.drainR = 0.14;
+  registerPick(bowl);
+  toilets.push(g);
+  worldSolid(x + Math.sin(yaw) * 0.04, z + Math.cos(yaw) * 0.04, 0.26, 0.26);
+  return g;
+}
+
+function makeUrinalDivider(x, z, yaw) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  g.rotation.y = yaw;
+  addBox(g, unitBox, lambert(0x5a3a28), 0, 0.86, 0.14, 0.04, 1.36, 0.46);
+  scene.add(g);
+  worldSolid(x + Math.sin(yaw) * 0.14, z + Math.cos(yaw) * 0.14, 0.1, 0.4);
+}
+
+function hash01(x, z, i) {
+  const n = Math.sin(x * 12.9898 + z * 78.233 + i * 37.719) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function stallGraffiti(x, z, yaw, room, hw, hd) {
+  const fx = Math.sin(yaw);
+  const fz = Math.cos(yaw);
+  const rx = Math.cos(yaw);
+  const rz = -Math.sin(yaw);
+  const leftFace = yaw - Math.PI / 2;
+  const rightFace = yaw + Math.PI / 2;
+  const walls = [
+    { x: x + rx * (hw - 0.04), z: z + rz * (hw - 0.04), face: leftFace, alongX: fx, alongZ: fz, span: hd * 0.88 },
+    { x: x - rx * (hw - 0.04), z: z - rz * (hw - 0.04), face: rightFace, alongX: fx, alongZ: fz, span: hd * 0.88 },
+    { x: x - fx * (hd - 0.04), z: z - fz * (hd - 0.04), face: yaw, alongX: rx, alongZ: rz, span: hw * 0.78 },
+  ];
+  const men = [
+    ["555-6969", "#3dfff2", 2],
+    ["CALL ME", "#ff3dac", 2],
+    ["I EAT ASS", "#e8c547", 2],
+    ["SUCK IT", "#c41e3a", 2],
+    ["DTF TONIGHT", "#ff3dac", 2],
+    ["BLOW ME", "#3dfff2", 2],
+    ["867-5309", "#e8c547", 2],
+    ["FREE HJ", "#c41e3a", 2],
+    ["JAY HAS HERPES", "#ff3dac", 1],
+    ["BIG DICK", "#3dfff2", 2],
+    ["PISS HERE", "#3dfff2", 1],
+    ["NICE COCK", "#e8c547", 2],
+    ["IP 4EVER", "#3dfff2", 2],
+    ["WASH ME", "#c41e3a", 2],
+    ["KISS IT", "#ff3dac", 2],
+    ["HOUSE BOT", "#e8c547", 2],
+  ];
+  const women = [
+    ["555-0142", "#ff3dac", 2],
+    ["ASK FOR KIM", "#3dfff2", 2],
+    ["FOR A GOOD TIME", "#e8c547", 1],
+    ["KISS ME", "#ff3dac", 2],
+    ["EAT ME", "#c41e3a", 2],
+    ["HOOK UP", "#3dfff2", 2],
+    ["555-4200", "#e8c547", 2],
+    ["BETTY 4EVER", "#ff3dac", 2],
+    ["CALL MOM", "#3dfff2", 2],
+    ["I WAS HERE", "#e8c547", 2],
+    ["XOXO", "#ff3dac", 2],
+    ["DTF", "#3dfff2", 2],
+    ["TEXT JAY", "#e8c547", 2],
+    ["LOVE BITES", "#c41e3a", 1],
+    ["CUTE ASS", "#ff3dac", 2],
+    ["STALL 2", "#3dfff2", 2],
+  ];
+  const pool = room === "men" ? men : women;
+  const count = 6 + ((hash01(x, z, 0) * 4) | 0);
+  const used = new Set();
+  for (let i = 0; i < count; i++) {
+    let pick = (hash01(x, z, i + 3) * pool.length) | 0;
+    let guard = 0;
+    while (used.has(pick) && guard++ < pool.length) pick = (pick + 1) % pool.length;
+    used.add(pick);
+    const [label, col, scale] = pool[pick];
+    const wall = walls[(hash01(x, z, i + 11) * walls.length) | 0];
+    const along = (hash01(x, z, i + 19) - 0.5) * wall.span;
+    const y = 0.62 + hash01(x, z, i + 29) * 1.15;
+    graffiti(label, col, wall.x + wall.alongX * along, y, wall.z + wall.alongZ * along, wall.face, scale);
+  }
+  for (let i = 0; i < 2; i++) {
+    const wall = walls[(hash01(x, z, 80 + i) * walls.length) | 0];
+    const along = (hash01(x, z, 90 + i) - 0.5) * wall.span * 0.7;
+    placeDecal(scribbleTex((hash01(x, z, 100 + i) * 4) | 0), wall.x + wall.alongX * along, 0.5 + hash01(x, z, 110 + i) * 0.4, wall.z + wall.alongZ * along, 0.3, 0.18, wall.face);
+  }
+}
+
+function makeStall(x, z, yaw, room) {
+  const stallMat = lambert(0x5a3a28);
+  const fx = Math.sin(yaw);
+  const fz = Math.cos(yaw);
+  const rx = Math.cos(yaw);
+  const rz = -Math.sin(yaw);
+  const h = 1.85;
+  const w = 1.4;
+  const d = 1.5;
+  const hw = w / 2;
+  const hd = d / 2;
+  const bx = x - fx * hd;
+  const bz = z - fz * hd;
+  addBox(scene, unitBox, stallMat, bx, h / 2, bz, Math.abs(rx) * w + 0.08, h, Math.abs(rz) * w + 0.08);
+  worldSolid(bx, bz, Math.abs(rx) * w + 0.14, Math.abs(rz) * w + 0.14);
+  camBox(bx, h / 2, bz, Math.abs(rx) * w + 0.14, h, Math.abs(rz) * w + 0.14);
+  for (const s of [-1, 1]) {
+    const sx = x + rx * hw * s - fx * 0.02;
+    const sz = z + rz * hw * s - fz * 0.02;
+    addBox(scene, unitBox, stallMat, sx, h / 2, sz, Math.abs(fx) * d + 0.07, h, Math.abs(rx) * d + 0.07);
+    worldSolid(sx, sz, Math.abs(fx) * d + 0.12, Math.abs(rx) * d + 0.12);
+    camBox(sx, h / 2, sz, Math.abs(fx) * d + 0.12, h, Math.abs(rx) * d + 0.12);
+  }
+  const doorW = 0.86;
+  const hx = x + fx * hd - rx * (hw - 0.04);
+  const hz = z + fz * hd - rz * (hw - 0.04);
+  makeHingeDoor(hx, hz, yaw, doorW, 1.78, "stallDoor", 1);
+  const fillW = Math.max(0.24, w - doorW - 0.1);
+  const fillX = x + fx * hd + rx * (hw - fillW / 2);
+  const fillZ = z + fz * hd + rz * (hw - fillW / 2);
+  addBox(scene, unitBox, stallMat, fillX, h / 2, fillZ, Math.abs(rx) * fillW + 0.08, h, Math.abs(rz) * fillW + 0.08);
+  worldSolid(fillX, fillZ, Math.abs(rx) * fillW + 0.12, Math.abs(rz) * fillW + 0.12);
+  camBox(fillX, h / 2, fillZ, Math.abs(rx) * fillW + 0.12, h, Math.abs(rz) * fillW + 0.12);
+  const tpX = x + rx * (hw - 0.05) - fx * 0.08;
+  const tpZ = z + rz * (hw - 0.05) - fz * 0.08;
+  makeToiletPaper(tpX, 0.92, tpZ, Math.atan2(-rx, -rz));
+  const spanX = Math.abs(fx) * d + Math.abs(rx) * w;
+  const spanZ = Math.abs(fz) * d + Math.abs(rz) * w;
+  stallZones.push({
+    minx: x - spanX / 2 + 0.08,
+    maxx: x + spanX / 2 - 0.08,
+    minz: z - spanZ / 2 + 0.08,
+    maxz: z + spanZ / 2 - 0.08,
+  });
+  stallGraffiti(x, z, yaw, room, hw, hd);
+  makeToilet(x - fx * 0.28, z - fz * 0.28, yaw);
+}
+
+function makeBathSink(x, z, yaw, room) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  g.rotation.y = yaw;
+  const porcelain = lambert(0xe8e0d4);
+  addBox(g, unitBox, lambert(0x4a4038), 0, 0.42, -0.02, 0.52, 0.84, 0.28);
+  const basin = addBox(g, unitBox, porcelain, 0, 0.86, 0.04, 0.46, 0.08, 0.32);
+  addBox(g, unitBox, lambert(0x2a6a8a, { transparent: true, opacity: 0.35 }), 0, 0.84, 0.05, 0.32, 0.02, 0.2);
+  addBox(g, unitBox, mats.chrome, 0, 1.02, -0.08, 0.05, 0.18, 0.05);
+  addBox(g, unitBox, mats.chrome, 0, 1.1, 0.04, 0.04, 0.04, 0.18);
+  addBox(g, unitBox, lambert(0x3a322c), 0, 1.55, -0.16, 0.62, 0.72, 0.03);
+  addBox(g, unitBox, lambert(0xb8d0dc, { transparent: true, opacity: 0.62 }), 0, 1.55, -0.14, 0.54, 0.64, 0.03);
+  const stream = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.18, 8), lambert(0x8ad4ea, { transparent: true, opacity: 0.5 }));
+  stream.position.set(0, 0.96, 0.08);
+  stream.visible = false;
+  g.add(stream);
+  const splash = new THREE.Mesh(new THREE.CircleGeometry(0.08, 10), lambert(0x9adcea, { transparent: true, opacity: 0.4 }));
+  splash.rotation.x = -Math.PI / 2;
+  splash.position.set(0, 0.845, 0.08);
+  splash.visible = false;
+  g.add(splash);
+  scene.add(g);
+  g.userData.kind = "bathSink";
+  g.userData.root = g;
+  g.userData.sink = g;
+  g.userData.running = false;
+  g.userData.stream = stream;
+  g.userData.splash = splash;
+  basin.userData.kind = "bathSink";
+  basin.userData.root = g;
+  basin.userData.sink = g;
+  registerPick(g);
+  registerPick(basin);
+  sinks.push(g);
+  const back = 0.16;
+  worldSolid(x - Math.sin(yaw) * back, z - Math.cos(yaw) * back, 0.28, 0.16, 0.82);
+  const mx = x - Math.sin(yaw) * 0.16;
+  const mz = z - Math.cos(yaw) * 0.16;
+  placeDecal(
+    flyerTex(room === "men" ? "AIM" : "SMILE", room === "men" ? "THEN FLUSH" : "YOU LOOK", "#f4ead0", "#8b2020"),
+    mx + Math.cos(yaw) * 0.14,
+    1.72,
+    mz - Math.sin(yaw) * 0.14,
+    0.2,
+    0.26,
+    yaw
+  );
+  graffiti(room === "men" ? "PISS SHY" : "XOXO", room === "men" ? "#c41e3a" : "#ff3dac", mx - Math.cos(yaw) * 0.12, 1.32, mz + Math.sin(yaw) * 0.12, yaw, 2);
+  decal(crackTex(), mx, 1.52, mz, 0.34, 0.34, yaw);
+  return g;
+}
+
+function toggleBathSink(sink) {
+  if (!sink) return;
+  sink.userData.running = !sink.userData.running;
+  const on = sink.userData.running;
+  if (sink.userData.stream) sink.userData.stream.visible = on;
+  if (sink.userData.splash) sink.userData.splash.visible = on;
+  if (on) {
+    audio.sinkStart();
+    audio.splash();
+  } else {
+    if (!sinks.some((s) => s.userData.running)) audio.sinkStop();
+  }
+}
+
+function buildBathrooms() {
+  const plaster = lambert(0x7a7468);
+  const rust = lambert(0x6a4030);
+  const tileMap = bathTileTex();
+  tileMap.wrapS = tileMap.wrapT = THREE.RepeatWrapping;
+  tileMap.repeat.set(8, 6);
+  const tileMat = new THREE.MeshLambertMaterial({ map: tileMap, color: 0xd8d0c4 });
+  const wallTile = bathTileTex();
+  wallTile.wrapS = wallTile.wrapT = THREE.RepeatWrapping;
+  wallTile.repeat.set(5, 4);
+  const wallMat = new THREE.MeshLambertMaterial({ map: wallTile, color: 0xc4b8aa });
+  const bathH = 3.05;
+  const WX0 = -12.52;
+  const WX1 = -8.18;
+  const MZ0 = -6.7;
+  const MZ1 = -3.7;
+  const WZ0 = -1.7;
+  const WZ1 = 1.36;
+  const HX0 = -10.12;
+  const CX = (WX0 + WX1) / 2;
+
+  const wall = (x, z, sx, sz) => {
+    addBox(scene, unitBox, wallMat, x, bathH / 2, z, sx, bathH, sz);
+    worldSolid(x, z, Math.max(0.28, sx + 0.06), Math.max(0.28, sz + 0.06));
+    camBox(x, bathH / 2, z, sx + 0.1, bathH, sz + 0.1);
+  };
+  const floor = (x, z, w, d) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), tileMat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(x, 0.012, z);
+    m.receiveShadow = true;
+    scene.add(m);
+    addBox(scene, unitBox, plaster, x, bathH + 0.04, z, w, 0.1, d);
+    camBox(x, bathH, z, w, 0.16, d);
+    addCeiling(x, z, w, d, bathH - 0.02);
+  };
+
+  floor(CX, (MZ0 + MZ1) / 2, WX1 - WX0, MZ1 - MZ0);
+  floor((HX0 + WX1) / 2, (MZ1 + WZ0) / 2, WX1 - HX0, WZ0 - MZ1);
+  floor(CX, (WZ0 + WZ1) / 2, WX1 - WX0, WZ1 - WZ0);
+
+  wall(WX0, (MZ0 + MZ1) / 2, 0.16, MZ1 - MZ0);
+  wall(CX, MZ0, WX1 - WX0, 0.16);
+  wall(WX1, (MZ0 + MZ1) / 2, 0.16, MZ1 - MZ0);
+  wall((WX0 - 9.55) / 2, MZ1, -9.55 - WX0, 0.16);
+  wall((-8.42 + WX1) / 2, MZ1, WX1 + 8.42, 0.16);
+
+  wall(HX0, (MZ1 + WZ0) / 2, 0.16, WZ0 - MZ1);
+  wall(WX0, (MZ1 + WZ0) / 2, 0.16, WZ0 - MZ1);
+
+  wall(WX0, (WZ0 + WZ1) / 2, 0.16, WZ1 - WZ0);
+  wall(CX, WZ1, WX1 - WX0, 0.16);
+  wall(WX1, (WZ0 + WZ1) / 2, 0.16, WZ1 - WZ0);
+  wall((WX0 - 9.55) / 2, WZ0, -9.55 - WX0, 0.16);
+  wall((-8.42 + WX1) / 2, WZ0, WX1 + 8.42, 0.16);
+
+  addBox(scene, unitBox, mats.woodDark, -8, 1.08, -3.52, 0.18, 2.16, 0.1);
+  addBox(scene, unitBox, mats.woodDark, -8, 1.08, -1.88, 0.18, 2.16, 0.1);
+  addBox(scene, unitBox, mats.woodDark, -8, 2.28, -2.7, 0.18, 0.24, 1.74);
+
+  const restSign = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.7, 0.32),
+    new THREE.MeshBasicMaterial({ map: neonTex("RESTROOMS", 0x3dfff2), side: THREE.DoubleSide })
+  );
+  restSign.position.set(-7.82, 2.55, -2.7);
+  restSign.rotation.y = Math.PI / 2;
+  scene.add(restSign);
+  const menSign = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.9, 0.24),
+    new THREE.MeshBasicMaterial({ map: neonTex("MEN", 0x3dfff2), side: THREE.DoubleSide })
+  );
+  menSign.position.set(-9.4, 2.42, -3.58);
+  scene.add(menSign);
+  const womenSign = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.15, 0.24),
+    new THREE.MeshBasicMaterial({ map: neonTex("WOMEN", 0xff3dac), side: THREE.DoubleSide })
+  );
+  womenSign.position.set(-9.4, 2.42, -1.82);
+  womenSign.rotation.y = Math.PI;
+  scene.add(womenSign);
+
+  const plMen = new THREE.PointLight(0xffd2a0, 1.15, 6);
+  plMen.position.set(-10.35, 2.5, -5.2);
+  scene.add(plMen);
+  const plWomen = new THREE.PointLight(0xffd2a0, 1.15, 6);
+  plWomen.position.set(-10.35, 2.5, -0.15);
+  scene.add(plWomen);
+  const plHall = new THREE.PointLight(0xc8e6f4, 0.7, 4);
+  plHall.position.set(-9.1, 2.4, -2.7);
+  scene.add(plHall);
+  bathFlicker = plMen;
+
+  makeHingeDoor(-9.55, MZ1, 0, 1.1, 2.15, "restroomDoor", 1);
+  makeHingeDoor(-9.55, WZ0, Math.PI, 1.1, 2.15, "restroomDoor", -1);
+
+  makeUrinal(WX0 + 0.16, -4.05, Math.PI / 2);
+  makeUrinal(WX0 + 0.16, -4.72, Math.PI / 2);
+  makeUrinalDivider(WX0 + 0.16, -4.38, Math.PI / 2);
+  makeStall(-11.68, MZ0 + 0.78, Math.PI / 2, "men");
+  makeBathSink(-8.46, -4.95, -Math.PI / 2, "men");
+
+  makeStall(-11.78, WZ1 - 0.70, Math.PI, "women");
+  makeStall(-10.28, WZ1 - 0.70, Math.PI, "women");
+  makeBathSink(-8.46, -0.95, -Math.PI / 2, "women");
+
+  addBox(scene, unitBox, rust, -8.58, 0.22, -3.88, 0.28, 0.44, 0.28);
+  addBox(scene, unitBox, lambert(0x2a2018), -8.48, 1.55, -6.15, 0.08, 0.22, 0.16);
+  addBox(scene, unitBox, lambert(0xf4ead0), -8.5, 1.38, -6.15, 0.06, 0.14, 0.12);
+  addBox(scene, unitBox, lambert(0x3a322c), -10.45, 0.28, -3.92, 0.28, 0.56, 0.28);
+  addBox(scene, unitBox, lambert(0xf4ead0), -10.45, 0.62, -3.92, 0.22, 0.12, 0.22);
+  addBox(scene, unitBox, lambert(0x3a322c), -12.1, 0.28, -1.45, 0.28, 0.56, 0.28);
+  addBox(scene, unitBox, lambert(0xf4ead0), -12.1, 0.62, -1.45, 0.22, 0.12, 0.22);
+
+  const flyers = [
+    flyerTex("POOL NITE", "FRI 9PM", "#e8c547", "#1a1008"),
+    flyerTex("LOST KEYS", "ASK BAR", "#f4ead0", "#8b2020"),
+    flyerTex("WASH HANDS", "PLEASE", "#d8e8f0", "#1a3040"),
+    flyerTex("BAND", "SAT LATE", "#ff3dac", "#1a0810"),
+    flyerTex("TIP BAR", "OR ELSE", "#c44b3c", "#f4ead0"),
+    flyerTex("OUT", "OF ORDER", "#f0d080", "#3a2008"),
+    flyerTex("HOUSE BOT", "SUCKS", "#2a2a30", "#3dfff2"),
+    flyerTex("GOOD TIME", "ASK JAY", "#f4c4d4", "#4a1020"),
+    flyerTex("FREE HJ", "STALL 1", "#f4ead0", "#8b2020"),
+    flyerTex("DTF", "TEXT JAY", "#ff3dac", "#1a0810"),
+  ];
+  placeDecal(flyers[0], WX0 + 0.09, 1.7, -5.7, 0.42, 0.52, Math.PI / 2);
+  placeDecal(flyers[1], WX0 + 0.09, 1.55, -3.95, 0.4, 0.5, Math.PI / 2);
+  placeDecal(flyers[2], -8.28, 1.72, -6.05, 0.4, 0.5, -Math.PI / 2);
+  placeDecal(flyers[3], -11.15, 1.85, MZ0 + 0.09, 0.44, 0.54, 0);
+  placeDecal(flyers[8], WX0 + 0.09, 1.25, -6.15, 0.36, 0.46, Math.PI / 2);
+  placeDecal(flyers[4], WX0 + 0.09, 1.65, 0.85, 0.42, 0.52, Math.PI / 2);
+  placeDecal(flyers[5], WX0 + 0.09, 1.5, -0.25, 0.4, 0.5, Math.PI / 2);
+  placeDecal(flyers[6], -8.28, 1.8, 0.95, 0.42, 0.52, -Math.PI / 2);
+  placeDecal(flyers[7], -11.0, 1.9, WZ1 - 0.09, 0.44, 0.54, Math.PI);
+  placeDecal(flyers[9], -9.4, 1.55, WZ1 - 0.09, 0.36, 0.46, Math.PI);
+
+  graffiti("JAY", "#3dfff2", -11.7, 2.15, MZ0 + 0.09, 0, 2);
+  graffiti("IP 4EVER", "#e8c547", -10.2, 2.18, MZ0 + 0.09, 0, 2);
+  graffiti("POUR", "#e8c547", WX0 + 0.09, 2.18, -5.55, Math.PI / 2, 2);
+  graffiti("WASTED", "#c41e3a", -8.28, 2.22, -4.55, -Math.PI / 2, 2);
+  graffiti("FLUSH", "#2e6bff", WX0 + 0.09, 1.15, 0.55, Math.PI / 2, 2);
+  graffiti("TITS", "#ff3dac", WX0 + 0.09, 2.15, -4.55, Math.PI / 2, 2);
+  graffiti("555-0134", "#3dfff2", -8.28, 1.18, -5.35, -Math.PI / 2, 2);
+  graffiti("SUCK IT", "#c41e3a", WX0 + 0.09, 2.12, 0.2, Math.PI / 2, 2);
+  graffiti("IP", "#ff3dac", -9.35, 2.18, WZ1 - 0.09, Math.PI, 2);
+  graffiti("DTF", "#ff3dac", -8.28, 2.2, 0.35, -Math.PI / 2, 2);
+  graffiti("555-6969", "#e8c547", HX0 + 0.09, 1.55, -2.7, Math.PI / 2, 2);
+  graffiti("CALL ME", "#ff3dac", HX0 + 0.09, 1.28, -2.35, Math.PI / 2, 2);
+  graffiti("PISS HERE", "#3dfff2", WX0 + 0.09, 0.72, -4.7, Math.PI / 2, 1);
+  graffiti("EAT ASS", "#c41e3a", -8.28, 0.95, 0.55, -Math.PI / 2, 2);
+  graffiti("BLOWJOBS 5", "#e8c547", -10.7, 0.72, MZ0 + 0.09, 0, 1);
+  graffiti("I LOVE PISS", "#ff3dac", -11.3, 0.7, WZ1 - 0.09, Math.PI, 1);
+  placeDecal(scribbleTex(), -9.55, 1.28, MZ0 + 0.09, 0.46, 0.28, 0);
+  placeDecal(scribbleTex(1), WX0 + 0.09, 0.95, -6.2, 0.36, 0.22, Math.PI / 2);
+  placeDecal(scribbleTex(2), -8.28, 1.05, -0.05, 0.4, 0.24, -Math.PI / 2);
+  placeDecal(scribbleTex(3), HX0 + 0.09, 1.85, -2.95, 0.36, 0.22, Math.PI / 2);
+  placeDecal(flyerTex("BAND", "TONIGHT", "#3dfff2", "#081018"), -8.28, 1.35, 0.15, 0.36, 0.46, -Math.PI / 2);
+  decal(crackTex(), WX0 + 0.09, 1.02, -5.85, 0.4, 0.4, Math.PI / 2);
+  placeDecal(scribbleTex(), -10.12, 1.45, -2.7, 0.42, 0.24, Math.PI / 2);
+
+  const wet = lambert(0x3a4038, { transparent: true, opacity: 0.22 });
+  const stain = new THREE.Mesh(new THREE.CircleGeometry(0.28, 10), wet);
+  stain.rotation.x = -Math.PI / 2;
+  stain.position.set(-10.6, 0.02, -4.55);
+  scene.add(stain);
+  const stain2 = stain.clone();
+  stain2.position.set(-10.15, 0.02, 0.15);
+  stain2.scale.setScalar(0.7);
+  scene.add(stain2);
+  const stain3 = stain.clone();
+  stain3.position.set(-9.2, 0.02, -2.7);
+  stain3.scale.setScalar(0.45);
+  scene.add(stain3);
+
+  setPeeDrainFn((x, y, z) => {
+    for (const toilet of toilets) {
+      const b = toilet.userData.bowlWorld;
+      if (!b) continue;
+      const urinal = toilet.userData.kind === "urinal";
+      const r = urinal ? 0.14 : (toilet.userData.drainR || 0.42);
+      const top = urinal ? (b.y || 0.52) + 0.08 : (b.y || 0.5) + 0.42;
+      if (Math.hypot(x - b.x, z - b.z) <= r && y <= top) return true;
+    }
+    for (const s of stallZones) {
+      if (x >= s.minx && x <= s.maxx && z >= s.minz && z <= s.maxz && y < 0.16) return true;
+    }
+    return false;
+  });
+}
+
+function toggleSwing(door) {
+  if (!door) return;
+  door.userData.open = !door.userData.open;
+  const dir = door.userData.swingDir || 1;
+  door.userData.want = door.userData.open ? -1.85 * dir : 0;
+  audio.doorThump();
+}
+
+function tickBathrooms(dt) {
+  for (const door of swingDoors) {
+    const diff = door.userData.want - door.userData.ang;
+    if (Math.abs(diff) < 0.002) door.userData.ang = door.userData.want;
+    else door.userData.ang += diff * Math.min(1, dt * 6.4);
+    const hinge = door.userData.hinge;
+    if (hinge) hinge.rotation.y = (hinge.userData.baseYaw || 0) + door.userData.ang;
+  }
+  for (const t of toilets) {
+    if (t.userData.water && t.userData.bowlWorld) {
+      t.updateMatrixWorld(true);
+      t.userData.water.getWorldPosition(t.userData.bowlWorld);
+    }
+  }
+  for (const s of sinks) {
+    if (!s.userData.running) continue;
+    const stream = s.userData.stream;
+    const splash = s.userData.splash;
+    if (stream) {
+      stream.scale.y = 0.9 + Math.sin(tWorld * 28) * 0.08;
+      stream.material.opacity = 0.42 + Math.sin(tWorld * 22) * 0.08;
+    }
+    if (splash) {
+      const pulse = 0.85 + Math.sin(tWorld * 18) * 0.15;
+      splash.scale.setScalar(pulse);
+      splash.material.opacity = 0.28 + Math.sin(tWorld * 16) * 0.1;
+    }
+  }
+  if (bathFlicker) {
+    bathFlicker.intensity = 1.05 + Math.sin(tWorld * 9.2) * 0.08 + (Math.random() < 0.02 ? -0.35 : 0);
+  }
+}
+
+function inBathroom(x, z) {
+  return x < -8.05 && x > -12.7 && z > -6.85 && z < 1.5;
+}
+
+function peeTargetOf() {
+  if (sitting?.kind === "toilet" && sitting.fixture?.userData?.bowlWorld) return sitting.fixture.userData.bowlWorld;
+  const k = look?.userData?.kind;
+  if ((k === "toilet" || k === "urinal") && look.userData.toilet?.userData?.bowlWorld) {
+    return look.userData.toilet.userData.bowlWorld;
+  }
+  let best = null;
+  let bestD = 1.25;
+  for (const t of toilets) {
+    const b = t.userData.bowlWorld;
+    if (!b) continue;
+    const d = Math.hypot(b.x - bodyPos.x, b.z - bodyPos.z);
+    if (d < bestD) {
+      bestD = d;
+      best = b;
+    }
+  }
+  return best;
+}
+
+function sitHeight() {
+  return sitting?.y || SIT_Y;
+}
+
+function lookDoorOpen(obj) {
+  return Math.abs(obj?.userData.ang || 0) > 0.45;
+}
 function updateGlassVisual() {
   if (!glassMesh) return;
   const liq = glassMesh.userData.liq;
@@ -1536,12 +2902,28 @@ function setGlassType(type) {
     glassMesh.position.copy(pos);
     scene.add(glassMesh);
     registerPick(glassMesh);
+    audio.clink();
   }
   updateGlassVisual();
 }
 
 function glassCapacityOz(type) {
   return { shot: 1.5, rocks: 8, pint: 16, highball: 12, wine: 6, coupe: 5, can: 12 }[type] || 10;
+}
+
+function setPassoutMode(kind) {
+  const title = $("passoutTitle");
+  const cta = $("passoutCta");
+  const box = $("passout");
+  if (kind === "arrest") {
+    if (title) title.textContent = "ARRESTED";
+    if (cta) cta.textContent = "CLICK TO POST BAIL";
+    box?.classList.add("arrest");
+  } else {
+    if (title) title.textContent = "YOU BLACKED OUT";
+    if (cta) cta.textContent = "CLICK TO GET BACK UP";
+    box?.classList.remove("arrest");
+  }
 }
 
 function toast(msg) {
@@ -1562,7 +2944,8 @@ function penaltyDrink(msg, oz = 1.1) {
   bac += (5 / 40) * (oz / 1.2) * 0.028;
   bumpDrink();
   pours += 1;
-  score += 6;
+  score += drinkScore(5, oz);
+  audio.gulp("sip");
   toast(msg);
   hud();
   maybePassOut();
@@ -1570,20 +2953,55 @@ function penaltyDrink(msg, oz = 1.1) {
 
 function sitOn(spot) {
   if (!spot || inCar) return;
-  sitting = { x: spot.x, z: spot.z };
+  sitting = {
+    x: spot.x,
+    z: spot.z,
+    y: spot.y || SIT_Y,
+    yaw: spot.yaw,
+    kind: spot.kind || "stool",
+    fixture: spot.fixture || null,
+    standX: spot.standX ?? spot.x,
+    standZ: spot.standZ ?? spot.z + 0.12,
+  };
   vy = 0;
   onGround = true;
-  camera.position.set(spot.x, SIT_Y, spot.z);
-  bodyPos.set(spot.x, SIT_Y, spot.z);
+  standY = 0;
+  camera.position.set(sitting.x, sitting.y, sitting.z);
+  bodyPos.set(sitting.x, sitting.y, sitting.z);
+  if (sitting.kind === "toilet" && sitting.yaw != null) {
+    const camYaw = sitting.yaw + Math.PI;
+    savedYaw = camYaw;
+    view2Yaw = camYaw;
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = camYaw;
+  }
+  audio.sit();
 }
 
 function standUp() {
   if (!sitting) return;
-  camera.position.set(sitting.x, eyeY(), sitting.z + 0.12);
-  bodyPos.set(sitting.x, eyeY(), sitting.z + 0.12);
+  const onToilet = sitting.kind === "toilet";
+  const wasPee = peeing;
+  const x = sitting.standX ?? sitting.x;
+  const z = sitting.standZ ?? sitting.z + 0.12;
+  const [nx, nz] = collide(x, z, 0.28);
+  camera.position.set(nx, eyeY(), nz);
+  bodyPos.set(nx, eyeY(), nz);
   sitting = null;
   onGround = true;
   vy = 0;
+  standY = 0;
+  if (wasPee && onToilet) {
+    peeing = false;
+    peeUntil = 0;
+    audio.peeStop();
+    audio.flush();
+  } else if (localGender === "f" && wasPee) {
+    peeing = false;
+    peeUntil = 0;
+    audio.peeStop();
+  }
+  audio.stand();
 }
 
 function playing() {
@@ -1676,17 +3094,44 @@ function hud() {
 }
 
 function promptFrom(obj) {
-  if (sitting) return houseGames?.prompt(obj) || "stool. WASD or E stand · F sip · G chug";
-  if (inCar) return "WASD drive · SHIFT get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
+  if (inCar) {
+    if (wanted) return "WASD drive · mouse orbit · SHIFT drift · E get out · lose the cops";
+    return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
+  }
+  if (wanted) {
+    const near = nearestCar(3.4);
+    if (stunT > 0) {
+      if (near?.cop) return "stunned · E steal the cop car · click punch to keep them back";
+      if (near) return "stunned · E get in · click punch to keep them back";
+      return "stunned · cops inbound · click punch to keep them back";
+    }
+    if (near?.cop) return "E steal the cop car · SPACE onto the hood · click punch";
+    if (near) return "E get in · SPACE onto the hood · click punch";
+    return "cops on you · click punch · RUN · E still gets you in a car";
+  }
+  if (sitting) {
+    if (sitting.kind === "toilet") {
+      return "toilet. E stand · P pee";
+    }
+    return houseGames?.prompt(obj) || "stool. WASD or E stand · F sip · G chug";
+  }
+  if (inCar) return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   if (!obj) {
     const gamePrompt = houseGames?.prompt(null) || "";
     if (gamePrompt) return gamePrompt;
     const car = nearestCar(3.4);
-    if (car) return "E get in the car · SHIFT later to bail";
+    if (car) {
+      if (standY > 1.2) return "on the roof · SPACE off · E get in";
+      if (standY > 0.45) return "on the hood · SPACE onto the roof · E get in";
+      return "E get in · SPACE onto the hood or trunk";
+    }
     if (held && held.userData.kind === "glass") {
       return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  Q set down";
     }
-    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · patio games to the left · 1/2/3 camera";
+    if (inBathroom(camera.position.x, camera.position.z)) {
+      return localGender === "f" ? "restrooms · E sit · P pee on the toilet" : "restrooms · E sit or open doors · P pee";
+    }
+    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · patio games to the left · restrooms behind the left wall";
     return started && !controls.isLocked ? "click the bar to capture mouse" : "";
   }
   const k = obj.userData.kind;
@@ -1705,16 +3150,21 @@ function promptFrom(obj) {
     return "E grab cup  ·  4–9 glassware";
   }
   if (k === "tap") return `E tap  ${drink.name}`;
-  if (k === "fridge") return fridgeOpen ? "E grab a cold one" : "E open fridge";
+  if (k === "toilet") return localGender === "f" ? "E sit · then P pee" : "E sit";
+  if (k === "urinal") return localGender === "f" ? "girls sit on the toilet" : "P to pee";
+  if (k === "restroomDoor") return lookDoorOpen(obj) ? "E close the restroom door" : "E open the restroom door";
+  if (k === "stallDoor") return lookDoorOpen(obj) ? "E close the stall" : "E open the stall";
   if (k === "register" || k === "hatch") return "E / T  summon any drink";
   if (k === "sink") return "E dump glass";
+  if (k === "bathSink") return obj.userData.sink?.userData.running ? "E turn the sink off" : "E turn the sink on";
   if (k === "juke") return audio.juke ? "E silence the juke" : "E fire up the juke";
   if (k === "door") return frontDoorOpen ? "E close the front door" : "E open the front door";
-  if (k === "car") return inCar ? "SHIFT get out" : "E get in · drink and drive";
+  if (k === "copcar") return "E steal the cop car · SPACE onto the hood · click punch";
+  if (k === "car") return inCar ? "E get out · SHIFT drift" : "E get in · SPACE onto the hood or trunk";
   if (k === "stool") return sitting ? "E or WASD stand up" : "E sit at the bar";
   const gamePrompt = houseGames?.prompt(look) || "";
   if (gamePrompt) return gamePrompt;
-  if (inCar) return "WASD drive · SHIFT get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
+  if (inCar) return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   return "";
 }
 
@@ -1739,10 +3189,12 @@ function isLocalHit(obj) {
 }
 
 function facingYaw() {
+  if (inCar) return savedYaw;
   return viewMode === 2 ? view2Yaw : camera.rotation.y;
 }
 
 function facingPitch() {
+  if (inCar) return savedPitch;
   return viewMode === 2 ? view2Pitch : camera.rotation.x;
 }
 
@@ -1784,10 +3236,10 @@ function nearbyUse() {
     const dx = _pickWorld.x - bodyPos.x;
     const dz = _pickWorld.z - bodyPos.z;
     const dist = Math.hypot(dx, dz);
-    const max = kind === "car" ? 3.6 : kind === "door" ? 2.8 : reach;
+    const max = kind === "car" ? 3.6 : kind === "door" || kind === "restroomDoor" || kind === "stallDoor" ? 2.8 : reach;
     if (dist > max) continue;
     const forward = dist < 0.15 ? 1 : (dx * fx + dz * fz) / dist;
-    if (kind !== "door" && kind !== "car" && kind !== "stool" && forward < -0.25) continue;
+    if (kind !== "door" && kind !== "car" && kind !== "stool" && kind !== "restroomDoor" && kind !== "stallDoor" && kind !== "toilet" && kind !== "urinal" && kind !== "bathSink" && kind !== "darts" && forward < -0.25) continue;
     const score = dist - Math.max(0, forward) * 0.9 - (kind === "door" ? 0.4 : 0);
     if (!best || score < best.score) best = { root, distance: dist, point: _pickWorld.clone(), score };
   }
@@ -1806,7 +3258,7 @@ function pick() {
   if (fromBody) return fromBody;
 
   if (viewMode === 2 || viewMode === 3) {
-    const useYaw = inCar && viewMode === 3 ? inCar.yaw : yaw;
+    const useYaw = yaw;
     const p = THREE.MathUtils.clamp(pit, -1.35, 1.35);
     const cp2 = Math.cos(p);
     const sp2 = Math.sin(p);
@@ -1876,15 +3328,16 @@ function attachHeld(obj) {
     return;
   }
   const kind = obj.userData.drink?.bottle || "spirit";
-  const y = kind === "can" ? -0.04 : kind === "wine" ? -0.09 : kind === "beer" ? -0.06 : -0.07;
-  obj.scale.setScalar(0.72);
-  obj.position.set(0.0, y, 0.01);
-  obj.rotation.set(0.12, 0.4, 0.08);
+  const y = kind === "can" ? 0.08 : kind === "wine" ? -0.09 : kind === "beer" ? -0.06 : -0.07;
+  obj.scale.setScalar(kind === "can" ? 0.92 : 0.72);
+  obj.position.set(kind === "can" ? 0.012 : 0, y, kind === "can" ? 0.03 : 0.01);
+  obj.rotation.set(kind === "can" ? 0.04 : 0.12, kind === "can" ? 0.08 : 0.4, kind === "can" ? 0.04 : 0.08);
   rightHand.userData.grip.add(obj);
   held = obj;
   setRightGrip(true);
   poseHands();
   audio.clink();
+  if (kind === "can") audio.canOpen();
 }
 
 function dropHeld() {
@@ -1893,6 +3346,7 @@ function dropHeld() {
   detachHeld();
   held = null;
   setRightGrip(false);
+  audio.drop(obj.userData.kind);
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const p = camera.position.clone().add(dir.multiplyScalar(0.75));
@@ -1933,12 +3387,13 @@ function dumpHeldEmpty() {
   held = null;
   setRightGrip(false);
   poseHands();
+  audio.empty();
   if (empty.userData.stock) {
     const home = empty.userData.home;
     empty.scale.setScalar(1.75);
     empty.position.set(home.x, home.y, home.z);
     empty.rotation.set(0, home.rot, 0);
-    empty.userData.volume = 0;
+    empty.userData.volume = 1;
     scene.add(empty);
     registerPick(empty);
   } else {
@@ -1998,6 +3453,7 @@ function focusSummonBox() {
 function openSummon(openedBy = null) {
   summonOpen = true;
   summonOpenedBy = openedBy;
+  audio.summonOpen();
   $("summon").classList.add("open");
   if (controls.isLocked) controls.unlock();
   $("q").value = "";
@@ -2026,6 +3482,7 @@ function closeSummon(relock = true) {
   summonOpenedBy = null;
   $("q").value = "";
   $("summon").classList.remove("open");
+  audio.summonClose();
   if (relock && started && !passedOut) controls.lock();
 }
 
@@ -2057,6 +3514,43 @@ function sipAmount(kind) {
   return 0.22;
 }
 
+function drinkScore(abv, oz) {
+  const strength = Math.max(0, Number(abv) || 0) / 5;
+  const pour = Math.max(0, Number(oz) || 0) / 1.2;
+  return Math.max(1, Math.round(strength * pour * 3));
+}
+
+function uniqueScore(abv) {
+  return Math.max(6, Math.round((Number(abv) || 0) * 1.6));
+}
+
+function bottleCapOz(drink) {
+  return drink?.bottle === "can" || drink?.bottle === "beer" ? 12 : 25;
+}
+
+function heldServingOz(drink, kind, volume) {
+  const cap = bottleCapOz(drink);
+  const left = Math.max(0, (Number(volume) || 0) * cap);
+  if (kind === "chug") return left;
+  const bottle = drink?.bottle;
+  if (bottle === "can" || bottle === "beer") return left;
+  if (bottle === "wine") return Math.min(left, 5);
+  return Math.min(left, 1.5);
+}
+
+function drinksIrl(abv, oz) {
+  return Math.max(0, (Number(abv) || 0) * (Number(oz) || 0) / 60);
+}
+
+function addPours(abv, oz) {
+  pourBank += drinksIrl(abv, oz);
+  const n = Math.floor(pourBank + 1e-9);
+  if (n > 0) {
+    pours += n;
+    pourBank -= n;
+  }
+}
+
 function bumpDrink() {
   bacWait = BAC_HOLD;
   bacSoberT = 0;
@@ -2068,27 +3562,27 @@ function bumpDrink() {
 
 function drinkGlass(kind) {
   if (glassState.fill < 0.02) return;
-  const frac = Math.min(glassState.fill, sipAmount(kind));
-  const oz = frac * glassCapacityOz(glassState.type);
+  const cap = glassCapacityOz(glassState.type);
+  const left = glassState.fill * cap;
+  const oz = kind === "chug" || glassState.type === "shot" ? left : Math.min(left, cap * sipAmount(kind));
+  const frac = cap > 0 ? oz / cap : glassState.fill;
   const abv = mixAbv(glassState.parts);
   const name = nameMix(glassState.parts);
   bac += (abv / 40) * (oz / 1.2) * 0.028;
   bumpDrink();
-  glassState.fill -= frac;
+  glassState.fill = Math.max(0, glassState.fill - frac);
+  score += drinkScore(abv, oz);
+  addPours(abv, oz);
   if (glassState.fill < 0.03) {
     glassState.fill = 0;
     if (!unique.has(name)) {
       unique.add(name);
-      score += 25;
+      score += uniqueScore(abv);
     }
-    pours += 1;
-    score += kind === "chug" ? 15 : 8;
     glassState.parts = [];
-  } else {
-    score += 3;
   }
   updateGlassVisual();
-  audio.gulp();
+  audio.gulp(kind);
   hud();
   maybePassOut();
 }
@@ -2096,23 +3590,22 @@ function drinkGlass(kind) {
 function drinkHeld(kind) {
   if (!held) return;
   const drink = held.userData.drink;
-  const frac = kind === "chug" ? held.userData.volume : Math.min(held.userData.volume, 0.2);
-  const cap = drink.bottle === "can" || drink.bottle === "beer" ? 12 : 25;
-  const oz = frac * cap;
+  const cap = bottleCapOz(drink);
+  const oz = heldServingOz(drink, kind, held.userData.volume);
+  const frac = cap > 0 ? oz / cap : held.userData.volume;
   bac += (drink.abv / 40) * (oz / 1.2) * 0.028;
   bumpDrink();
-  held.userData.volume -= frac;
-  if (kind === "chug") pours += 1;
+  held.userData.volume = Math.max(0, held.userData.volume - frac);
+  score += drinkScore(drink.abv, oz);
+  addPours(drink.abv, oz);
   if (kind === "chug" || held.userData.volume <= 0.02) {
     if (!unique.has(drink.name)) {
       unique.add(drink.name);
-      score += 25;
+      score += uniqueScore(drink.abv);
     }
-    if (kind !== "chug") pours += 1;
-    score += kind === "chug" ? 15 : 8;
     dumpHeldEmpty();
-  } else score += 3;
-  audio.gulp();
+  }
+  audio.gulp(kind);
   hud();
   maybePassOut();
 }
@@ -2122,6 +3615,10 @@ function maybePassOut() {
   passedOut = true;
   if (controls.isLocked) controls.unlock();
   audio.pourStop();
+  audio.peeStop();
+  audio.sinkStop();
+  audio.passout();
+  setPassoutMode("blackout");
   $("passoutStats").textContent = `score ${score}  ·  ${pours} pours  ·  ${unique.size} unique  ·  peak bac ${bac.toFixed(3)}`;
   $("passout").classList.add("open");
   if (inCar) exitCar(true);
@@ -2149,23 +3646,27 @@ function startShift() {
     collide,
     onRestock(by) {
       restockDrinks();
-      audio.clink();
+      audio.restock();
       toast(`${by} restocked the bar`);
     },
   });
+  setLocalHitHandler(() => audio.hit());
   setPoseSources(
     () => held?.userData?.drink?.name || (held?.userData?.kind === "glass" ? "cup" : ""),
     () => pouring,
     () => drunkLevel(),
     () => ({
       x: bodyPos.x,
-      y: sitting ? SIT_Y : bodyPos.y,
+      y: sitting ? sitHeight() : bodyPos.y,
       z: bodyPos.z,
       yaw: (viewMode === 2 ? view2Yaw : savedYaw) + Math.PI,
       pit: viewMode === 2 ? view2Pitch : savedPitch,
       s: sitting ? 1 : 0,
       u: peeing ? 1 : 0,
       g: localGender,
+      ...(peeing && peeTargetOf()
+        ? { ax: peeTargetOf().x, ay: peeTargetOf().y, az: peeTargetOf().z }
+        : {}),
     })
   );
   setGameHandler((msg) => houseGames?.onNet(msg));
@@ -2185,7 +3686,8 @@ function startShift() {
 
 function clockIn() {
   passedOut = false;
-  $("passout").classList.remove("open");
+  $("passout").classList.remove("open", "arrest");
+  setPassoutMode("blackout");
   resetShift();
   controls.lock();
 }
@@ -2209,25 +3711,14 @@ function useLook() {
     const add = pourIntoGlass(look.userData.drink, 0.28);
     if (add) audio.clink();
     else toast("glass is full");
-  } else if (k === "fridge") {
-    if (!fridgeOpen) {
-      fridgeOpen = true;
-      hatchDoor.rotation.y = -1.2;
-      hatchDoor.position.x = -4.55;
-      hatchDoor.position.z = -2.35;
-    } else if (!held) {
-      const can = randomDrink((d) => d.bottle === "can" || d.type === "rtd");
-      const b = makeBottle(can);
-      b.userData.stock = false;
-      scene.add(b);
-      bottles.push(b);
-      attachHeld(b);
-    }
   } else if (k === "register" || k === "hatch") openSummon("e");
   else if (k === "sink") {
     glassState.fill = 0;
     glassState.parts = [];
     updateGlassVisual();
+    audio.splash();
+  } else if (k === "bathSink") {
+    toggleBathSink(look.userData.sink || look);
   } else if (k === "juke") {
     audio.toggleJuke();
   } else if (k === "door") {
@@ -2330,6 +3821,9 @@ function ensureLocalAvatar() {
       pee: false,
       freezeFacing: false,
       freezeHead: false,
+      hyaw: 0,
+      byaw: 0,
+      bodyLock: null,
     };
     bindLocalHands();
   } catch (err) {
@@ -2358,20 +3852,39 @@ function applyDrunkCam(dt, extra = 0) {
   shakePhase += dt * 1.05;
   const moving = sitting == null && inCar == null && onGround && (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD);
   if (moving) shakeWalk += dt * 5.2;
-  if (zoomHold) {
-    camera.fov = 22;
-    camera.updateProjectionMatrix();
-    return;
+  const zoom = zoomHold;
+  const feel = zoom ? 1.2 : 1;
+  if (amp < 0.03) {
+    drunkCam.yaw = 0;
+    drunkCam.pit = 0;
+    drunkCam.roll = extra;
+  } else {
+    drunkCam.yaw = (Math.sin(shakePhase * 0.73) * 0.16 + Math.sin(shakePhase * 1.85) * 0.05) * amp * feel;
+    drunkCam.pit = (Math.cos(shakePhase * 0.61) * 0.1 + Math.sin(shakeWalk) * 0.035 * (moving ? 1 : 0.2)) * amp * feel;
+    drunkCam.roll = (Math.sin(shakePhase) * 0.2 + Math.sin(shakeWalk) * 0.055 * (moving ? 1 : 0.1)) * amp * feel + extra;
   }
-  if (viewMode === 2) {
-    camera.fov = 78 + extra * 8;
-    camera.updateProjectionMatrix();
-    return;
-  }
-  const roll = Math.sin(shakePhase) * 0.2 * amp + Math.sin(shakeWalk) * 0.055 * amp * (moving ? 1 : 0.1);
-  camera.rotation.z = (amp < 0.03 ? 0 : roll) + extra;
-  camera.fov = 78 + extra * 8 + (amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * 4.2 * amp) + heartKick * 16;
+  const base = zoom ? 22 : 78 + extra * 8;
+  const pulse = amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * (zoom ? 1.8 : 4.2) * amp;
+  camera.fov = base + pulse + heartKick * (zoom ? 6 : 16);
   camera.updateProjectionMatrix();
+}
+
+function applyDrunkLook() {
+  if (Math.abs(drunkCam.yaw) + Math.abs(drunkCam.pit) + Math.abs(drunkCam.roll) < 1e-5) return;
+  camera.rotation.order = "YXZ";
+  _drunkEuler.setFromQuaternion(camera.quaternion, "YXZ");
+  _drunkEuler.y += drunkCam.yaw;
+  _drunkEuler.x += drunkCam.pit;
+  _drunkEuler.z += drunkCam.roll;
+  camera.quaternion.setFromEuler(_drunkEuler);
+  camera.rotation.copy(_drunkEuler);
+  const head = localPeer?.rig?.userData?.head;
+  if (head && viewMode !== 1 && localPeer.rig.visible) {
+    head.rotation.order = "YXZ";
+    head.rotation.y += drunkCam.yaw;
+    head.rotation.x += drunkCam.pit;
+    head.rotation.z += drunkCam.roll * 0.65;
+  }
 }
 
 function setFrontDoor(open, silent) {
@@ -2403,22 +3916,56 @@ function carSeat(car) {
 
 function togglePee() {
   if (inCar) return;
-  if (sitting) standUp();
-  peeing = peeing ? false : true;
-  peeUntil = peeing ? tWorld + 8 : 0;
+  if (localGender === "f") {
+    if (peeing) {
+      const flush = sitting?.kind === "toilet";
+      peeing = false;
+      peeUntil = 0;
+      audio.peeStop();
+      if (flush) audio.flush();
+      return;
+    }
+    if (sitting?.kind !== "toilet") {
+      toast("sit on the toilet first");
+      return;
+    }
+  }
+  if (sitting && sitting.kind !== "toilet") standUp();
+  if (peeing) {
+    const flush = sitting?.kind === "toilet";
+    peeing = false;
+    peeUntil = 0;
+    audio.peeStop();
+    if (flush) audio.flush();
+    return;
+  }
+  peeing = true;
+  peeUntil = tWorld + 8;
+  peeStart = tWorld;
+  audio.peeStart();
 }
 
 function enterCar(car) {
   if (car == null || inCar) return;
+  bindRideCar(null);
   inCar = car;
   car.speed = 0;
   vy = 0;
   onGround = true;
+  standY = 0;
   const s = carSeat(car);
   camera.position.set(s.x, s.y, s.z);
   bodyPos.set(s.x, s.y, s.z);
+  savedYaw = car.yaw;
+  savedPitch = 0.18;
+  view2Yaw = car.yaw;
+  view2Pitch = 0.18;
+  camera.rotation.order = "YXZ";
+  camera.rotation.y = savedYaw;
+  camera.rotation.x = savedPitch;
   audio.doorThump();
   audio.engineStart();
+  if (car.cop) hijackCopCar(car);
 }
 
 function exitCar(silent) {
@@ -2432,13 +3979,21 @@ function exitCar(silent) {
   bodyPos.set(nx, eyeY(), nz);
   inCar = null;
   car.speed = 0;
+  car.drift = 0;
+  standY = 0;
+  bindRideCar(null);
   audio.engineStop();
   if (silent) return;
   audio.doorThump();
 }
 
 function warpBar() {
+  if (wanted) {
+    toast("cops cut the cab line");
+    return;
+  }
   if (inCar) exitCar(true);
+  audio.warp();
   camera.position.set(0, eyeY(), -1.05);
   camera.rotation.set(0, 0, 0);
   savedYaw = 0;
@@ -2448,6 +4003,7 @@ function warpBar() {
   bodyPos.set(0, eyeY(), -1.05);
   vy = 0;
   onGround = true;
+  standY = 0;
 }
 
 function tryPads() {
@@ -2461,36 +4017,719 @@ function tryPads() {
   return false;
 }
 
+function syncCarMesh(car) {
+  if (!car?.mesh) return;
+  car.mesh.position.set(car.x, car.wreckY || 0, car.z);
+  car.mesh.rotation.y = car.yaw;
+  car.mesh.rotation.z = (car.wreckRoll || 0) - (car.drift || 0) * 0.12;
+}
+
+function resolveDrive(car, nx, nz) {
+  const fx = -Math.sin(car.yaw);
+  const fz = -Math.cos(car.yaw);
+  const lx = Math.cos(car.yaw);
+  const lz = -Math.sin(car.yaw);
+  let px = nx;
+  let pz = nz;
+  let hitKind = "";
+  for (const [ox, oz] of [[0, -2.05], [0, 2.05], [-1.02, -0.7], [1.02, -0.7], [-1.02, 0.7], [1.02, 0.7]]) {
+    const sx = px + lx * ox + fx * oz;
+    const sz = pz + lz * ox + fz * oz;
+    const [qx, qz] = collideWorld(sx, sz, 0.26);
+    const dx = qx - sx;
+    const dz = qz - sz;
+    if (dx * dx + dz * dz > 1e-7) {
+      px += dx;
+      pz += dz;
+      hitKind = "building";
+    }
+  }
+  const [cx, cz, other] = collideCars(px, pz, 1.25, car);
+  if (other) return { x: cx, z: cz, hitKind: "car", hitCar: other };
+  return { x: px, z: pz, hitKind, hitCar: null };
+}
+
+function shoveCar(other, from, spd) {
+  if (!other || other.cop) return;
+  const dx = other.x - from.x;
+  const dz = other.z - from.z;
+  const d = Math.hypot(dx, dz) || 1;
+  const push = Math.min(1.6, 0.22 + spd * 0.09);
+  other.x += (dx / d) * push;
+  other.z += (dz / d) * push;
+  const [hx, hz] = collideWorld(other.x, other.z, 1.2);
+  other.x = hx;
+  other.z = hz;
+  other.yaw += (Math.random() - 0.5) * Math.min(0.7, spd * 0.04);
+  other.wreckRoll = (other.wreckRoll || 0) + (Math.random() - 0.5) * 0.12;
+  syncCarMesh(other);
+}
+
+function dressCopCar(car) {
+  car.cop = true;
+  car.mesh.userData.kind = "copcar";
+  car.mesh.userData.car = car;
+  const red = lambert(0xff2440, { emissive: 0xff2440, emissiveIntensity: 1.3 });
+  const blu = lambert(0x2450ff, { emissive: 0x2450ff, emissiveIntensity: 1.3 });
+  const blk = lambert(0x111318);
+  addBox(car.mesh, unitBox, blk, 0, 1.58, 0.1, 0.72, 0.12, 1.18);
+  addBox(car.mesh, unitBox, red, -0.22, 1.68, 0.1, 0.28, 0.1, 0.42);
+  addBox(car.mesh, unitBox, blu, 0.22, 1.68, 0.1, 0.28, 0.1, 0.42);
+  addBox(car.mesh, unitBox, lambert(0xe8e4dc), 0, 0.62, 0, 2.18, 0.06, 3.2);
+  car.sirenMats = [red, blu];
+}
+
+function hijackCopCar(car) {
+  if (!car?.cop) return;
+  for (const pack of cops) {
+    if (pack.car !== car) continue;
+    pack.arrived = true;
+    pack.hijacked = true;
+    car.speed = 0;
+    for (const off of pack.officers) {
+      if (off.dead || !off.rig) continue;
+      const side = off.seat < 0 ? -1 : 1;
+      const lx = Math.cos(car.yaw);
+      const lz = -Math.sin(car.yaw);
+      off.x = car.x + lx * side * 2.55;
+      off.z = car.z + lz * side * 2.55;
+      [off.x, off.z] = collideWorld(off.x, off.z, 0.28);
+      off.state = "stagger";
+      off.staggerT = 1.05;
+      off.swingT = 0;
+      off.outT = 1;
+      off.yaw = Math.atan2(bodyPos.x - off.x, bodyPos.z - off.z);
+      off.rig.position.set(off.x, 0, off.z);
+      off.rig.rotation.y = off.yaw;
+    }
+  }
+  toast("you stole the cop car");
+}
+
+function punchCops() {
+  if (!cops.length || inCar) return false;
+  const yaw = viewMode === 2 ? view2Yaw : savedYaw;
+  const fx = Math.sin(yaw);
+  const fz = Math.cos(yaw);
+  const x = bodyPos.x;
+  const z = bodyPos.z;
+  let hit = false;
+  for (const pack of cops) {
+    for (const off of pack.officers) {
+      if (off.dead || off.state === "ride") continue;
+      const dx = off.x - x;
+      const dz = off.z - z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 2.35 || dist < 0.04) continue;
+      const aim = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
+      if (aim < 0.08) continue;
+      const push = 2.35 + Math.max(0, 2.35 - dist) * 0.4;
+      let nx = off.x + fx * push;
+      let nz = off.z + fz * push;
+      [nx, nz] = collideWorld(nx, nz, 0.28);
+      off.x = nx;
+      off.z = nz;
+      off.state = "stagger";
+      off.staggerT = 1.2;
+      off.swingT = 0;
+      off.yaw = Math.atan2(x - off.x, z - off.z);
+      off.rig.position.set(off.x, 0, off.z);
+      off.rig.rotation.y = off.yaw;
+      hit = true;
+    }
+  }
+  return hit;
+}
+
+function makeOfficer() {
+  const rig = makeAvatar(`cop-${++copSerial}`, "P.D.", "m");
+  if (rig.userData.shirt) rig.userData.shirt.color.setHex(0x1b2d55);
+  if (rig.userData.tag) rig.userData.tag.visible = false;
+  const head = rig.userData.head;
+  if (head) {
+    addBox(head, unitBox, lambert(0x111318), 0, 0.16, 0, 0.32, 0.1, 0.32);
+    addBox(head, unitBox, lambert(0x111318), 0, 0.12, 0.12, 0.32, 0.04, 0.12);
+    addBox(head, unitBox, lambert(0xc9a227), 0, 0.16, 0.15, 0.08, 0.04, 0.02);
+  }
+  const held = rig.userData.held;
+  if (held) {
+    held.visible = true;
+    held.material = lambert(0x4a2c14);
+    held.scale.set(0.045, 0.62, 0.045);
+    held.position.set(0.08, -0.55, 0.04);
+  }
+  scene.add(rig);
+  return rig;
+}
+
+function clearPolice() {
+  audio.sirenStop();
+  for (const pack of cops) {
+    for (const off of pack.officers) {
+      off.rig?.parent?.remove(off.rig);
+    }
+    if (pack.car) {
+      const i = cars.indexOf(pack.car);
+      if (i >= 0) cars.splice(i, 1);
+      pack.car.mesh?.parent?.remove(pack.car.mesh);
+    }
+  }
+  cops.length = 0;
+  wanted = false;
+  copWave = 0;
+  bindRideCar(null);
+}
+
+function addCopPack(x, z) {
+  wanted = true;
+  audio.sirenStart();
+  copWave += 1;
+  const roads = [22, 58, 94];
+  let rz = roads[0];
+  for (const r of roads) if (Math.abs(r - z) < Math.abs(rz - z)) rz = r;
+  rz += ((copWave % 3) - 1) * 3.4;
+  const side = copWave % 2 === 0 ? (x >= 0 ? 1 : -1) : (x >= 0 ? -1 : 1);
+  const sx = THREE.MathUtils.clamp(x + side * (52 + (copWave % 4) * 8), -WORLD_X + 8, WORLD_X - 8);
+  const car = makeCar(sx, rz, Math.atan2(sx - x, rz - z), 0x12141c);
+  dressCopCar(car);
+  car.speed = 16;
+  const pack = {
+    car,
+    officers: [],
+    tx: x,
+    tz: z,
+    arrived: false,
+    driveT: 0,
+    hijacked: false,
+  };
+  for (let i = 0; i < 2; i++) {
+    pack.officers.push({
+      id: copSerial + 1,
+      rig: makeOfficer(),
+      car,
+      seat: i === 0 ? -0.46 : 0.46,
+      state: "ride",
+      x: sx,
+      z: rz,
+      yaw: car.yaw,
+      phase: i * 1.4,
+      swingT: 0,
+      outT: 0,
+      dead: false,
+    });
+  }
+  cops.push(pack);
+}
+
+function spawnPolice(x, z) {
+  toast(cops.length ? "more cops incoming" : "cops incoming");
+  addCopPack(x, z);
+}
+
+function angDiff(from, to) {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function flopLimb(node, L, rest, dt) {
+  if (!node || !L) return;
+  L.wx += (rest.x - L.x) * 9 * dt;
+  L.wy += (rest.y - L.y) * 9 * dt;
+  L.wz += (rest.z - L.z) * 9 * dt;
+  L.wx *= Math.max(0, 1 - dt * 3.4);
+  L.wy *= Math.max(0, 1 - dt * 3.4);
+  L.wz *= Math.max(0, 1 - dt * 3.4);
+  L.x += L.wx * dt;
+  L.y += L.wy * dt;
+  L.z += L.wz * dt;
+  node.rotation.set(L.x, L.y, L.z);
+}
+
+function ragLimb(wx = 0, wy = 0, wz = 0) {
+  return { x: 0, y: 0, z: 0, wx, wy, wz };
+}
+
+const COP_DEAD_LIMBS = {
+  head: { x: 0.42, y: 0.38, z: 0.16 },
+  armL: { x: -0.28, y: 0.12, z: 1.32 },
+  armR: { x: 0.46, y: -0.18, z: -1.18 },
+  legL: { x: 0.38, y: 0.22, z: 0.16 },
+  legR: { x: -0.22, y: -0.14, z: -0.2 },
+};
+
+function applyCopRagdoll(off) {
+  const rd = off.rd;
+  const rig = off.rig;
+  if (!rd || !rig) return;
+  rig.position.set(rd.x, rd.y, rd.z);
+  rig.rotation.order = "YXZ";
+  rig.rotation.set(rd.rx, rd.ry, rd.rz);
+}
+
+function startCopRagdoll(off, car, spd) {
+  const rig = off.rig;
+  if (!rig) return;
+  const u = rig.userData;
+  u.disposeFx?.();
+  if (u.tag) u.tag.visible = false;
+  if (u.stars) u.stars.visible = false;
+  if (u.body) {
+    u.body.position.set(0, -0.92, 0);
+    u.body.rotation.set(0, 0, 0);
+  }
+  let fx = 0;
+  let fz = 1;
+  if (car) {
+    const sign = Math.sign(car.speed || 1);
+    fx = -Math.sin(car.yaw) * sign;
+    fz = -Math.cos(car.yaw) * sign;
+    const loc = carWorldToLocal(car, off.x, off.z);
+    const lx = Math.cos(car.yaw);
+    const lz = -Math.sin(car.yaw);
+    fx += lx * THREE.MathUtils.clamp(loc.lx, -1.2, 1.2) * 0.42;
+    fz += lz * THREE.MathUtils.clamp(loc.lx, -1.2, 1.2) * 0.42;
+    const len = Math.hypot(fx, fz) || 1;
+    fx /= len;
+    fz /= len;
+  }
+  const kick = 7.2 + Math.min(18, spd) * 0.82;
+  const up = 5.6 + Math.min(16, spd) * 0.22;
+  const side = Math.random() - 0.5;
+  const keep = off.rd && !off.rd.settled;
+  off.rd = {
+    x: keep ? off.rd.x : off.x,
+    y: keep ? Math.max(0.55, off.rd.y) : Math.max(0.72, (rig.position.y || 0) + 0.92),
+    z: keep ? off.rd.z : off.z,
+    vx: fx * kick + side * 2.8,
+    vy: up,
+    vz: fz * kick + (Math.random() - 0.5) * 2.8,
+    rx: keep ? off.rd.rx : 0.2,
+    ry: keep ? off.rd.ry : off.yaw || 0,
+    rz: keep ? off.rd.rz : side * 0.5,
+    wx: 5 + Math.random() * 9,
+    wy: (Math.random() - 0.5) * 12,
+    wz: 7 + Math.random() * 9,
+    face: Math.random() < 0.5 ? 1 : -1,
+    bounce: 0,
+    t: 0,
+    settled: false,
+    skipCar: car || null,
+    skipT: 0.42,
+    limbs: {
+      head: ragLimb((Math.random() - 0.5) * 16, (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 10),
+      armL: ragLimb((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 10, 12 + Math.random() * 8),
+      armR: ragLimb((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 10, -12 - Math.random() * 8),
+      legL: ragLimb((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 7, (Math.random() - 0.5) * 7),
+      legR: ragLimb((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 7, (Math.random() - 0.5) * 7),
+    },
+  };
+  applyCopRagdoll(off);
+}
+
+function settleCopRagdoll(off) {
+  const rd = off.rd;
+  const rig = off.rig;
+  if (!rd || !rig) return;
+  rd.settled = true;
+  rd.vx = rd.vy = rd.vz = 0;
+  rd.wx = rd.wy = rd.wz = 0;
+  rd.rx = rd.face * (Math.PI * 0.5 + (Math.random() - 0.5) * 0.18);
+  rd.rz = (Math.random() - 0.5) * 0.28;
+  rd.y = 0.2;
+  const [x, z] = collideWorld(rd.x, rd.z, 0.34, 0, true);
+  rd.x = x;
+  rd.z = z;
+  off.x = x;
+  off.z = z;
+  const u = rig.userData;
+  if (u.head) u.head.rotation.set(COP_DEAD_LIMBS.head.x, COP_DEAD_LIMBS.head.y, COP_DEAD_LIMBS.head.z);
+  if (u.armL) u.armL.rotation.set(COP_DEAD_LIMBS.armL.x, COP_DEAD_LIMBS.armL.y, COP_DEAD_LIMBS.armL.z);
+  if (u.armR) u.armR.rotation.set(COP_DEAD_LIMBS.armR.x, COP_DEAD_LIMBS.armR.y, COP_DEAD_LIMBS.armR.z);
+  if (u.legL) u.legL.rotation.set(COP_DEAD_LIMBS.legL.x, COP_DEAD_LIMBS.legL.y, COP_DEAD_LIMBS.legL.z);
+  if (u.legR) u.legR.rotation.set(COP_DEAD_LIMBS.legR.x, COP_DEAD_LIMBS.legR.y, COP_DEAD_LIMBS.legR.z);
+  applyCopRagdoll(off);
+}
+
+function tickRagdoll(off, dt) {
+  const rd = off.rd;
+  const rig = off.rig;
+  if (!rd || !rig) return;
+  if (rd.settled) return;
+  dt = Math.min(0.033, dt);
+  rd.t += dt;
+  if (rd.skipT > 0) rd.skipT -= dt;
+  rd.vy -= 26 * dt;
+  rd.x += rd.vx * dt;
+  rd.y += rd.vy * dt;
+  rd.z += rd.vz * dt;
+  rd.rx += rd.wx * dt;
+  rd.ry += rd.wy * dt;
+  rd.rz += rd.wz * dt;
+  let nx = rd.x;
+  let nz = rd.z;
+  [nx, nz] = collideWorld(nx, nz, 0.34, 0, true);
+  const skip = rd.skipT > 0 ? rd.skipCar : null;
+  const hit = collideCars(nx, nz, 0.42, skip);
+  nx = hit[0];
+  nz = hit[1];
+  if (Math.abs(nx - rd.x) > 1e-4) {
+    rd.vx *= -0.4;
+    rd.wy += (Math.random() - 0.5) * 4;
+  }
+  if (Math.abs(nz - rd.z) > 1e-4) {
+    rd.vz *= -0.4;
+    rd.wy += (Math.random() - 0.5) * 4;
+  }
+  rd.x = nx;
+  rd.z = nz;
+  off.x = rd.x;
+  off.z = rd.z;
+  const floor = 0.2;
+  if (rd.y < floor) {
+    rd.y = floor;
+    if (rd.vy < -2.2) {
+      rd.vy *= -0.36;
+      rd.vx *= 0.66;
+      rd.vz *= 0.66;
+      rd.wx += (Math.random() - 0.5) * 5;
+      rd.wz *= 0.52;
+      rd.bounce += 1;
+      audio.land(rd.bounce === 1);
+      for (const L of Object.values(rd.limbs)) {
+        L.wx += (Math.random() - 0.5) * 9;
+        L.wz += (Math.random() - 0.5) * 9;
+      }
+    } else {
+      rd.vy = 0;
+      rd.vx *= Math.max(0, 1 - dt * 3.8);
+      rd.vz *= Math.max(0, 1 - dt * 3.8);
+      rd.wx *= Math.max(0, 1 - dt * 4.4);
+      rd.wy *= Math.max(0, 1 - dt * 3.6);
+      rd.wz *= Math.max(0, 1 - dt * 4.4);
+    }
+    rd.wx += angDiff(rd.rx, rd.face * Math.PI * 0.5) * 11 * dt;
+    rd.wz += angDiff(rd.rz, 0) * 7 * dt;
+  } else {
+    rd.vx *= 1 - dt * 0.2;
+    rd.vz *= 1 - dt * 0.2;
+    rd.wx *= 1 - dt * 0.1;
+    rd.wy *= 1 - dt * 0.08;
+    rd.wz *= 1 - dt * 0.1;
+  }
+  const u = rig.userData;
+  flopLimb(u.head, rd.limbs.head, COP_DEAD_LIMBS.head, dt);
+  flopLimb(u.armL, rd.limbs.armL, COP_DEAD_LIMBS.armL, dt);
+  flopLimb(u.armR, rd.limbs.armR, COP_DEAD_LIMBS.armR, dt);
+  flopLimb(u.legL, rd.limbs.legL, COP_DEAD_LIMBS.legL, dt);
+  flopLimb(u.legR, rd.limbs.legR, COP_DEAD_LIMBS.legR, dt);
+  const speed = Math.hypot(rd.vx, rd.vy, rd.vz);
+  const spin = Math.hypot(rd.wx, rd.wy, rd.wz);
+  if (rd.y <= floor + 0.03 && speed < 0.55 && spin < 1.35 && rd.t > 0.65) {
+    settleCopRagdoll(off);
+    return;
+  }
+  applyCopRagdoll(off);
+}
+
+function killOfficer(off, car, spd = 10) {
+  if (!off || off.dead) return;
+  off.dead = true;
+  off.state = "dead";
+  if (off.rig) startCopRagdoll(off, car, spd);
+  audio.hit();
+  toast("cop down · two more inbound");
+  if (!passedOut) addCopPack(bodyPos.x, bodyPos.z);
+}
+
+function runOverCops(car, spd) {
+  if (!car || spd < 4.8 || passedOut) return 0;
+  let n = 0;
+  for (const pack of cops) {
+    for (const off of pack.officers) {
+      if (off.state === "ride") continue;
+      const loc = carWorldToLocal(car, off.rd ? off.rd.x : off.x, off.rd ? off.rd.z : off.z);
+      if (Math.abs(loc.lx) > 1.28 || Math.abs(loc.lz) > 2.4) continue;
+      if (off.dead) {
+        if (off.rd && (off.rd.settled || off.rd.t > 0.32)) {
+          startCopRagdoll(off, car, spd * 0.88);
+          audio.hit();
+        }
+        continue;
+      }
+      killOfficer(off, car, spd);
+      n += 1;
+    }
+  }
+  return n;
+}
+
+function yankFromCar(off) {
+  if (!inCar) return;
+  const sideX = off ? off.x : camera.position.x;
+  const sideZ = off ? off.z : camera.position.z;
+  exitCar(true);
+  const [nx, nz] = collide(sideX, sideZ, 0.3);
+  camera.position.set(nx, eyeY(), nz);
+  bodyPos.set(nx, eyeY(), nz);
+  audio.doorThump();
+  toast("pulled out of the car");
+}
+
+function beginCrash(spd, hitCar) {
+  if (crashCool > 0) return;
+  crashCool = 1.15;
+  audio.crash();
+  hurtFlash = 1;
+  flash("CRASH", "lose");
+  stunT = Math.max(stunT, 5.5);
+  if (inCar) {
+    const wreck = inCar;
+    wreck.speed = 0;
+    wreck.wreckRoll = (Math.random() < 0.5 ? -1 : 1) * 0.11;
+    wreck.wreckY = -0.05;
+    syncCarMesh(wreck);
+    exitCar(true);
+  }
+  if (!wanted && !passedOut) spawnPolice(bodyPos.x, bodyPos.z);
+}
+
+function poseCop(off, dt, moving) {
+  const u = off.rig?.userData;
+  if (!u) return;
+  off.phase += dt * (moving ? 9.2 : 3);
+  const swing = Math.sin(off.phase) * (moving ? 0.62 : 0.08);
+  if (u.body) u.body.rotation.x = off.state === "stagger" ? -0.28 : 0;
+  if (u.legL) u.legL.rotation.x = swing;
+  if (u.legR) u.legR.rotation.x = -swing;
+  if (u.armL) u.armL.rotation.x = off.state === "stagger" ? -1.15 + Math.sin(off.phase * 2) * 0.3 : -swing * 0.55;
+  if (u.armR) {
+    if (off.state === "stagger") {
+      u.armR.rotation.x = -0.85;
+      u.armR.rotation.z = 0.72;
+    } else if (off.state === "swing") {
+      const a = Math.sin(Math.min(1, off.swingT / 0.28) * Math.PI);
+      u.armR.rotation.x = -0.2 - a * 1.7;
+      u.armR.rotation.z = 0.15 + a * 0.5;
+    } else {
+      u.armR.rotation.x = 0.35;
+      u.armR.rotation.z = -0.45;
+    }
+  }
+}
+
+function arrestPlayer() {
+  if (passedOut) return;
+  passedOut = true;
+  if (controls.isLocked) controls.unlock();
+  audio.pourStop();
+  audio.peeStop();
+  audio.sinkStop();
+  audio.sirenStop();
+  audio.arrest();
+  setPassoutMode("arrest");
+  $("passoutStats").textContent = `the cops got you  ·  score ${score}  ·  ${pours} pours  ·  bac ${bac.toFixed(3)}`;
+  $("passout").classList.add("open");
+  if (inCar) exitCar(true);
+  clearPolice();
+  resetShift();
+}
+
+function tickPolice(dt) {
+  if (!cops.length) return;
+  audio.sirenTick(dt);
+  const blink = tWorld * 6 % 2 < 1;
+  const px = bodyPos.x;
+  const pz = bodyPos.z;
+  for (const pack of cops) {
+    const car = pack.car;
+    if (car?.sirenMats) {
+      car.sirenMats[0].emissiveIntensity = blink ? 1.8 : 0.12;
+      car.sirenMats[1].emissiveIntensity = blink ? 0.12 : 1.8;
+    }
+    if (inCar === car) {
+      pack.arrived = true;
+      pack.hijacked = true;
+    } else if (!pack.arrived) {
+      pack.driveT += dt;
+      pack.tx = px;
+      pack.tz = pz;
+      const dx = pack.tx - car.x;
+      const dz = pack.tz - car.z;
+      const dist = Math.hypot(dx, dz);
+      car.yaw = Math.atan2(car.x - pack.tx, car.z - pack.tz);
+      const step = Math.min(dist, 16 * dt);
+      if (dist > 0.001) {
+        const nx = car.x + (dx / dist) * step;
+        const nz = car.z + (dz / dist) * step;
+        const resolved = resolveDrive(car, nx, nz);
+        car.x = resolved.x;
+        car.z = resolved.z;
+      }
+      const close = dist < 6.2;
+      if ((pack.driveT >= 3 && close) || pack.driveT > 8) {
+        pack.arrived = true;
+        car.speed = 0;
+      }
+      syncCarMesh(car);
+    }
+    stickToRideCar();
+    for (const off of pack.officers) {
+      if (off.dead) {
+        tickRagdoll(off, dt);
+        continue;
+      }
+      if (off.state === "ride") {
+        const fx = -Math.sin(car.yaw);
+        const fz = -Math.cos(car.yaw);
+        const lx = Math.cos(car.yaw);
+        const lz = -Math.sin(car.yaw);
+        off.x = car.x + lx * off.seat + fx * 0.18;
+        off.z = car.z + lz * off.seat + fz * 0.18;
+        off.yaw = car.yaw + Math.PI;
+        off.rig.position.set(off.x, 0.55, off.z);
+        off.rig.rotation.y = off.yaw;
+        if (pack.arrived) {
+          off.state = "out";
+          off.outT = 0;
+        }
+        poseCop(off, dt, false);
+        continue;
+      }
+      if (off.state === "out") {
+        off.outT += dt;
+        const side = off.seat < 0 ? -1 : 1;
+        const lx = Math.cos(car.yaw);
+        const lz = -Math.sin(car.yaw);
+        const destX = car.x + lx * side * 2.35;
+        const destZ = car.z + lz * side * 2.35;
+        off.x += (destX - off.x) * Math.min(1, dt * 5);
+        off.z += (destZ - off.z) * Math.min(1, dt * 5);
+        off.yaw = Math.atan2(px - off.x, pz - off.z);
+        if (off.outT > 0.42) off.state = "chase";
+        off.rig.position.set(off.x, 0, off.z);
+        off.rig.rotation.y = off.yaw;
+        poseCop(off, dt, true);
+        continue;
+      }
+      if (off.state === "stagger") {
+        off.staggerT = (off.staggerT || 0) - dt;
+        const sdx = off.x - px;
+        const sdz = off.z - pz;
+        const sdist = Math.hypot(sdx, sdz) || 1;
+        let nx = off.x + (sdx / sdist) * 1.55 * dt;
+        let nz = off.z + (sdz / sdist) * 1.55 * dt;
+        [nx, nz] = collideWorld(nx, nz, 0.28);
+        off.x = nx;
+        off.z = nz;
+        off.yaw = Math.atan2(px - off.x, pz - off.z);
+        off.rig.position.set(off.x, 0, off.z);
+        off.rig.rotation.y = off.yaw;
+        poseCop(off, dt, false);
+        if (off.staggerT <= 0) off.state = "chase";
+        continue;
+      }
+      const dx = px - off.x;
+      const dz = pz - off.z;
+      const dist = Math.hypot(dx, dz);
+      off.yaw = Math.atan2(dx, dz);
+      const carSpd = inCar ? Math.abs(inCar.speed || 0) : 0;
+      const tooFast = inCar && carSpd > 4.2;
+      const reach = inCar ? 1.95 : 1.08;
+      if (off.state === "chase") {
+        if (dist > 0.8) {
+          let nx = off.x + (dx / (dist || 1)) * 3.28 * dt;
+          let nz = off.z + (dz / (dist || 1)) * 3.28 * dt;
+          [nx, nz] = collideWorld(nx, nz, 0.28);
+          off.x = nx;
+          off.z = nz;
+        }
+        if (dist < reach && stunT <= 0 && !tooFast) {
+          off.state = "swing";
+          off.swingT = 0;
+          audio.baton();
+        }
+      } else if (off.state === "swing") {
+        off.swingT += dt;
+        if (off.swingT > 0.16 && off.swingT < 0.34 && dist < reach + 0.22 && !tooFast) {
+          if (inCar) yankFromCar(off);
+          arrestPlayer();
+          return;
+        }
+        if (off.swingT > 0.52 || tooFast) off.state = "chase";
+      }
+      off.rig.position.set(off.x, 0, off.z);
+      off.rig.rotation.y = off.yaw;
+      poseCop(off, dt, off.state === "chase");
+    }
+  }
+}
+
 function updateCar(dt) {
   const car = inCar;
   if (!car) return;
+  if (car.drift == null) car.drift = 0;
   const drunk = drunkLevel();
   const throttle = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
   const steer = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+  const shifting = !!(keys.ShiftLeft || keys.ShiftRight);
   const maxV = 17 * (1 - Math.min(0.6, drunk * 0.48));
   const target = throttle * maxV;
   car.speed += (target - car.speed) * Math.min(1, dt * (throttle ? 1.8 : 3.2));
   const wobble = (Math.random() - 0.5) * drunk * 1.6 + Math.sin(tWorld * (1.4 + drunk)) * drunk * 0.9;
-  const grip = Math.min(1, 0.25 + Math.abs(car.speed) * 0.1);
-  car.yaw -= (steer + wobble * 0.35) * dt * 1.35 * grip * Math.sign(car.speed || throttle || 1);
+  const spd = Math.abs(car.speed);
+  const wantDrift = shifting && spd > 2.4 ? steer : 0;
+  car.drift += (wantDrift - car.drift) * Math.min(1, dt * (wantDrift ? 5.6 : 3.8));
+  if (Math.abs(car.drift) < 0.012) car.drift = 0;
+  const grip = Math.min(1, 0.25 + spd * 0.1) * (shifting ? 0.4 : 1);
+  const yawMul = 1.35 + Math.abs(car.drift) * 1.7;
+  car.yaw -= (steer + wobble * 0.35 + car.drift * 0.62) * dt * yawMul * Math.max(0.16, grip) * Math.sign(car.speed || throttle || 1);
+  if (shifting && spd > 2.4) car.speed *= 1 - dt * 0.16;
   const fx = -Math.sin(car.yaw);
   const fz = -Math.cos(car.yaw);
-  let nx = car.x + fx * car.speed * dt;
-  let nz = car.z + fz * car.speed * dt;
-  const [cx, cz] = collide(nx, nz, 1.15);
-  if (Math.hypot(cx - nx, cz - nz) > 0.01) car.speed *= -0.18;
-  car.x = cx;
-  car.z = cz;
-  car.mesh.position.set(car.x, 0, car.z);
-  car.mesh.rotation.y = car.yaw;
+  const rx = Math.cos(car.yaw);
+  const rz = -Math.sin(car.yaw);
+  const slip = car.drift * Math.min(11.8, 2.6 + spd * 0.74);
+  const nx = car.x + fx * car.speed * dt + rx * slip * dt;
+  const nz = car.z + fz * car.speed * dt + rz * slip * dt;
+  const hit = resolveDrive(car, nx, nz);
+  const bump = Math.hypot(hit.x - nx, hit.z - nz);
+  if (hit.hitKind && bump > 0.012) {
+    if (spd >= 5.6) {
+      if (hit.hitCar) shoveCar(hit.hitCar, car, spd);
+      car.x = hit.x;
+      car.z = hit.z;
+      car.speed = 0;
+      car.drift = 0;
+      syncCarMesh(car);
+      runOverCops(car, spd);
+      beginCrash(spd, hit.hitCar);
+      return;
+    }
+    car.speed *= -0.18;
+    car.drift *= 0.35;
+    if (hit.hitCar && spd > 2.4) shoveCar(hit.hitCar, car, spd);
+  }
+  car.x = hit.x;
+  car.z = hit.z;
+  syncCarMesh(car);
+  if (runOverCops(car, spd)) car.speed *= 0.84;
   const s = carSeat(car);
-  camera.position.set(s.x, s.y + Math.abs(car.speed) * 0.008, s.z);
+  camera.position.set(s.x, s.y + spd * 0.008, s.z);
   bodyPos.set(s.x, s.y, s.z);
   audio.engineTick(car.speed);
-  applyDrunkCam(dt, Math.min(0.12, Math.abs(car.speed) * 0.004));
+  applyDrunkCam(dt, Math.min(0.16, spd * 0.004 + Math.abs(car.drift) * 0.05));
 }
 
 function stashLook() {
+  if (inCar) {
+    const s = carSeat(inCar);
+    bodyPos.set(s.x, s.y, s.z);
+    view2Yaw = savedYaw;
+    view2Pitch = savedPitch;
+    return;
+  }
   if (viewMode === 2) {
     camera.rotation.order = "YXZ";
     camera.rotation.y = view2Yaw;
@@ -2506,10 +4745,10 @@ function stashLook() {
 
 function restoreBodyPos() {
   camera.position.copy(bodyPos);
-  if (viewMode === 2) {
+  if (inCar || viewMode === 2) {
     camera.rotation.order = "YXZ";
-    camera.rotation.y = view2Yaw;
-    camera.rotation.x = view2Pitch;
+    camera.rotation.y = inCar ? savedYaw : view2Yaw;
+    camera.rotation.x = inCar ? savedPitch : view2Pitch;
     camera.rotation.z = 0;
     camera.quaternion.setFromEuler(camera.rotation);
   }
@@ -2519,9 +4758,9 @@ function restoreBodyPos() {
 function restoreBodyLook() {
   camera.position.copy(bodyPos);
   camera.rotation.order = "YXZ";
-  if (viewMode === 2) {
-    camera.rotation.y = view2Yaw;
-    camera.rotation.x = view2Pitch;
+  if (inCar || viewMode === 2) {
+    camera.rotation.y = inCar ? savedYaw : view2Yaw;
+    camera.rotation.x = inCar ? savedPitch : view2Pitch;
   } else {
     camera.rotation.y = savedYaw;
     camera.rotation.x = savedPitch;
@@ -2582,7 +4821,7 @@ function snapLocalRig() {
   const eye = eyeY();
   const off = sitting ? 0.22 : Math.max(0, bodyPos.y - eye);
   localPeer.rig.position.set(bodyPos.x, off, bodyPos.z);
-  localPeer.rig.rotation.y = localPeer.tyaw;
+  localPeer.rig.rotation.y = localPeer.byaw ?? localPeer.tyaw;
 }
 
 function localHeadWorld() {
@@ -2615,10 +4854,12 @@ function applyView() {
     localPeer.pouring = pouring;
     localPeer.sit = Boolean(sitting);
     localPeer.pee = Boolean(peeing);
+    localPeer.peeAim = peeing ? peeTargetOf() : null;
     localPeer.gender = localGender;
-    localPeer.freezeFacing = viewMode !== 1;
+    localPeer.freezeFacing = true;
     localPeer.freezeHead = viewMode === 2;
-    const showSelf = showBody || peeing;
+    localPeer.bodyLock = sitting?.yaw != null ? sitting.yaw : inCar ? inCar.yaw + Math.PI : null;
+    const showSelf = showBody;
     const u = localPeer.rig.userData;
     localPeer.rig.visible = showSelf;
     if (u.body) u.body.visible = showSelf;
@@ -2630,7 +4871,8 @@ function applyView() {
     if (inCar) {
       const s = carSeat(inCar);
       localPeer.rig.position.set(s.x, 0.12, s.z);
-      localPeer.rig.rotation.y = inCar.yaw + Math.PI;
+      localPeer.byaw = inCar.yaw + Math.PI;
+      localPeer.rig.rotation.y = localPeer.byaw;
     }
   }
   if (viewMode === 1) {
@@ -2643,13 +4885,12 @@ function applyView() {
     return;
   }
   const dist = viewMode === 2 ? (inCar ? 5.4 : 2.55) : inCar ? 8.4 : 3.5;
-  const useYaw = inCar && viewMode === 3 ? inCar.yaw : yaw;
   const head = localHeadWorld();
   if (viewMode === 2) {
-    orbitHeadCam(head, dist, useYaw, pitch, true);
+    orbitHeadCam(head, dist, yaw, pitch, true);
     aimLocalHeadAtCamera();
   } else {
-    orbitHeadCam(head, dist, useYaw, pitch, false);
+    orbitHeadCam(head, dist, yaw, pitch, false);
   }
 }
 
@@ -2660,19 +4901,22 @@ function updateLocalAvatar(dt) {
 
 function updatePlayer(dt) {
   if (inCar) {
+    bindRideCar(null);
     updateCar(dt);
     return;
   }
+  stickToRideCar();
   if (sitting) {
     if (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || keys.Space) standUp();
     else {
-      camera.position.set(sitting.x, SIT_Y, sitting.z);
+      camera.position.set(sitting.x, sitHeight(), sitting.z);
       applyDrunkCam(dt);
       return;
     }
   }
   const drunk = drunkLevel();
-  const speed = (keys.ShiftLeft || keys.ShiftRight ? 4.2 : 2.6) * (1 - Math.min(0.7, drunk * 0.42)) * (peeing ? 0.45 : 1);
+  const stunned = stunT > 0;
+  const speed = (keys.ShiftLeft || keys.ShiftRight ? 4.2 : 2.6) * (1 - Math.min(0.7, drunk * 0.42)) * (peeing ? 0.45 : 1) * (stunned ? 0.12 : 1);
   const fwd = Number(!!keys.KeyW) - Number(!!keys.KeyS);
   const side = Number(!!keys.KeyD) - Number(!!keys.KeyA);
   const len = Math.hypot(fwd, side);
@@ -2695,27 +4939,57 @@ function updatePlayer(dt) {
       controls.moveRight(s + slip * 0.5 + hitch);
     }
   }
+  const eye = eyeY();
   if (keys.Space && onGround && !peeing) {
-    vy = 5.2;
+    vy = 5.5;
     onGround = false;
+    audio.jump();
   }
-  vy -= 18 * dt;
-  camera.position.y += vy * dt;
-  if (camera.position.y <= eyeY()) {
-    camera.position.y = eyeY();
-    vy = 0;
-    onGround = true;
+  if (!onGround) {
+    vy -= 18 * dt;
+    camera.position.y += vy * dt;
   }
-  const [nx, nz] = collide(camera.position.x, camera.position.z);
+  const feet = camera.position.y - eye;
+  const [nx, nz] = collide(camera.position.x, camera.position.z, 0.28, onGround ? standY : Math.max(feet, standY), !onGround);
   camera.position.x = nx;
   camera.position.z = nz;
+  const top = climbTopUnder(nx, nz, onGround ? standY : feet, !onGround);
+  if (!onGround) {
+    const want = eye + top;
+    const canVault = top > standY + 0.08 && feet + 0.44 >= top && (vy <= 0 || feet >= top - 0.58);
+    if (canVault || (vy <= 0 && camera.position.y <= want + 0.02)) {
+      audio.land(top > standY + 0.15 || vy < -2.6);
+      standY = top;
+      camera.position.y = want;
+      vy = 0;
+      onGround = true;
+      bindRideCar(top > 0.2 ? climbCarHit : null);
+    }
+  } else if (top < standY - 0.05) {
+    onGround = false;
+    if (top < 0.2) bindRideCar(null);
+  } else {
+    standY = top;
+    bindRideCar(top > 0.2 ? climbCarHit : null);
+  }
+  const ceil = ceilingAt(nx, nz);
+  const headClear = 0.16;
+  if (Number.isFinite(ceil) && camera.position.y + headClear > ceil) {
+    camera.position.y = ceil - headClear;
+    if (vy > 0.2) audio.bump();
+    if (vy > 0) vy = -Math.min(2.2, vy * 0.35);
+  }
   if (onGround && len > 0) {
+    const prevWalk = walkT;
     walkT += dt * (7 + drunk * 5);
+    if (((prevWalk / Math.PI) | 0) !== ((walkT / Math.PI) | 0)) audio.step();
     const limpBob = 0.055 + drunk * 0.05;
     const hitchBob = Math.max(0, -Math.sin(walkT)) * drunk * 0.04;
-    camera.position.y = eyeY() + Math.abs(Math.sin(walkT)) * limpBob + hitchBob;
+    camera.position.y = Math.min(eye + standY + Math.abs(Math.sin(walkT)) * limpBob + hitchBob, (Number.isFinite(ceil) ? ceil : 99) - headClear);
+  } else if (onGround) {
+    camera.position.y = Math.min(eye + standY, (Number.isFinite(ceil) ? ceil : 99) - headClear);
   }
-  applyDrunkCam(dt);
+  applyDrunkCam(dt, stunT > 0 ? 0.2 : 0);
   if (camera.position.z > 16 && tryPads()) return;
 }
 
@@ -2768,7 +5042,29 @@ function tick() {
   const dt = Math.min(0.05, clock.getDelta());
   tWorld += dt;
   if (sipT > 0) sipT = Math.max(0, sipT - dt);
-  if (peeing && peeUntil && tWorld > peeUntil) peeing = false;
+  if (punchT > 0) punchT = Math.max(0, punchT - dt);
+  if (stunT > 0) stunT = Math.max(0, stunT - dt);
+  if (crashCool > 0) crashCool = Math.max(0, crashCool - dt);
+  if (hurtFlash > 0) {
+    hurtFlash = Math.max(0, hurtFlash - dt * 1.35);
+    const hurt = $("hurt");
+    if (hurt) hurt.style.opacity = String(hurtFlash);
+  } else {
+    const hurt = $("hurt");
+    if (hurt && hurt.style.opacity !== "0") hurt.style.opacity = "0";
+  }
+  if (peeing && peeUntil && tWorld > peeUntil) {
+    const flush = sitting?.kind === "toilet";
+    peeing = false;
+    peeUntil = 0;
+    audio.peeStop();
+    if (flush) audio.flush();
+  }
+  if (localGender === "f" && peeing && sitting?.kind !== "toilet") {
+    peeing = false;
+    peeUntil = 0;
+    audio.peeStop();
+  }
   if (bac > 0.0001) {
     if (tWorld < bacHoldUntil) {
       bacWait = bacHoldUntil - tWorld;
@@ -2805,12 +5101,14 @@ function tick() {
   if (neonB) neonB.intensity = 1.8 + Math.sin(tWorld * 5 + 1) * 0.2;
   if (jukeLight) jukeLight.color.setHSL((tWorld * 0.12) % 1, 0.85, 0.55);
   tickFrontDoor(dt);
+  tickBathrooms(dt);
   restoreBodyPos();
   look = null;
   if (playing()) {
     const p = pick();
     look = p ? p.root : null;
     updatePlayer(dt);
+    tickPolice(dt);
     if (!inCar) updatePour(dt);
     stashLook();
   } else audio.pourStop();
@@ -2835,8 +5133,9 @@ function tick() {
   } catch (err) {
     console.warn("mp", err);
   }
-  if (localPeer) updateLocalAvatar(dt);
   applyView();
+  applyDrunkLook();
+  if (localPeer) updateLocalAvatar(dt);
   tickHeartbeat(dt);
   hud();
   renderer.render(scene, camera);
@@ -2858,8 +5157,8 @@ function bind() {
       document.querySelectorAll(".gender-picks button").forEach((b) => b.classList.toggle("on", b === btn));
       try { localStorage.setItem("infinite-pour-gender", localGender); } catch (err) { /* ignore */ }
       if (onGround && !sitting && !inCar) {
-        camera.position.y = eyeY();
-        bodyPos.y = eyeY();
+        camera.position.y = eyeY() + standY;
+        bodyPos.y = eyeY() + standY;
       }
     });
   });
@@ -2903,8 +5202,11 @@ function bind() {
     if (playing() && houseGames?.pointerDown(look)) {
       return;
     }
-    if (playing() && houseGames?.playing?.() == null && inCar == null && sitting == null) {
-      tryPunch();
+    if (playing() && houseGames?.playing?.() == null && inCar == null && sitting == null && !peeing) {
+      punchT = 0.32;
+      if (localPeer) localPeer.punchT = 0.32;
+      audio.punch();
+      if (tryPunch() || punchCops()) audio.hit();
     }
     if (playing() && look && look !== held) {
       if (look.userData.kind === "bottle") attachHeld(look);
@@ -2917,11 +5219,20 @@ function bind() {
     houseGames?.pointerUp();
   });
   window.addEventListener("mousemove", (e) => {
-    if (viewMode === 2) {
+    if (inCar || viewMode === 2) {
       if (!started || summonOpen || passedOut) return;
       if (!controls.isLocked && !dragging) return;
-      view2Yaw -= e.movementX * 0.0024;
-      view2Pitch = THREE.MathUtils.clamp(view2Pitch - e.movementY * 0.0024, -1.35, 1.35);
+      const dx = e.movementX * 0.0024;
+      const dy = e.movementY * 0.0024;
+      if (inCar) {
+        savedYaw -= dx;
+        savedPitch = THREE.MathUtils.clamp(savedPitch - dy, -0.92, 0.58);
+        view2Yaw = savedYaw;
+        view2Pitch = savedPitch;
+      } else {
+        view2Yaw -= dx;
+        view2Pitch = THREE.MathUtils.clamp(view2Pitch - dy, -1.35, 1.35);
+      }
       return;
     }
     if (!dragging || controls.isLocked || summonOpen) return;
@@ -2964,17 +5275,27 @@ function bind() {
     if (summonOpen && e.key === "Escape") closeSummon();
     if (!playing()) return;
     if (e.repeat && (e.code === "KeyF" || e.code === "KeyG" || e.code === "KeyE")) return;
-    if ((e.code === "ShiftLeft" || e.code === "ShiftRight") && inCar) {
-      e.preventDefault();
-      exitCar();
-      return;
-    }
     if (e.code === "KeyE") {
       e.preventDefault();
-      if (inCar) return;
+      if (inCar) {
+        exitCar();
+        return;
+      }
       if (houseGames?.use(look) || houseGames?.use(null)) return;
       if (houseGames?.playing?.()) {
         houseGames.leave();
+        return;
+      }
+      if (look && (look.userData.kind === "restroomDoor" || look.userData.kind === "stallDoor")) {
+        toggleSwing(look);
+        return;
+      }
+      if (look && look.userData.kind === "toilet") {
+        if (sitting) {
+          standUp();
+          return;
+        }
+        sitOn(look.userData.sit || look.userData.toilet?.userData.sit);
         return;
       }
       if (sitting) {
@@ -2985,12 +5306,12 @@ function bind() {
         sitOn(look.userData.sit || look.userData.root?.userData.sit);
         return;
       }
-      if (look && look.userData.kind === "car") {
+      if (look && (look.userData.kind === "car" || look.userData.kind === "copcar")) {
         enterCar(look.userData.car);
         return;
       }
       const car = nearestCar(3.4);
-      if (car && (!look || look.userData.kind === "car")) {
+      if (car && (!look || look.userData.kind === "car" || look.userData.kind === "copcar")) {
         enterCar(car);
         return;
       }
@@ -3022,6 +5343,7 @@ function bind() {
       glassState.fill = 0;
       glassState.parts = [];
       updateGlassVisual();
+      audio.splash();
     }
     if (e.code === "KeyF") {
       if (held && held.userData.kind === "bottle") drinkHeld("sip");
@@ -3042,7 +5364,7 @@ function bind() {
       restockDrinks();
       publishRestock();
       toast("bar restocked for everyone");
-      audio.clink();
+      audio.restock();
     }
     const glassKeys = {
       Digit4: "pint",

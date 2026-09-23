@@ -24,6 +24,9 @@ function addMesh(parent, geo, mat, x, y, z, sx, sy, sz) {
 
 export function createGames(api) {
   const { scene, camera, lambert, registerPick, solid, worldSolid, toast, audio } = api;
+  function playerPos() {
+    return api.playerPos?.() || camera.position;
+  }
 
   const felt = lambert(0x1a6b38);
   const rail = lambert(0x4a2a14);
@@ -444,7 +447,8 @@ export function createGames(api) {
       addMesh(g, sphGeo, white, 0, 0.01, 0.026, 0.014, 0.014, 0.008);
     } else if (striped) {
       addMesh(g, sphGeo, white, 0, 0, 0, r, r, r);
-      addMesh(g, sphGeo, lambert(color), 0, 0, 0, r * 1.03, r * 0.42, r * 1.03);
+      addMesh(g, sphGeo, lambert(color), 0, 0, 0, r * 1.045, r * 0.74, r * 1.045);
+      addMesh(g, sphGeo, lambert(color), 0, 0, 0, r * 1.02, r * 0.62, r * 1.02);
     } else {
       addMesh(g, sphGeo, lambert(color), 0, 0, 0, r, r, r);
       addMesh(g, sphGeo, white, 0, 0.01, 0.026, 0.012, 0.012, 0.006);
@@ -726,6 +730,7 @@ export function createGames(api) {
     if (cup.userData.owner === "you") table.youCups = Math.max(0, table.youCups - 1);
     else table.themCups = Math.max(0, table.themCups - 1);
     audio.beep(880, 0.1, "square", 0.06);
+    audio.splash?.();
     const yours = cup.userData.owner === "you";
     const mine = isMyTeam(table, who);
     if (mine && !yours) toast("cup. their rack.");
@@ -1062,8 +1067,8 @@ export function createGames(api) {
     mark(g, "pool");
     registerPick(g);
     scene.add(g);
-    solid(pool.x, pool.z, 2.3, 1.36);
-    worldSolid(pool.x, pool.z, 2.3, 1.36);
+    solid(pool.x, pool.z, 2.3, 1.36, 0.91);
+    worldSolid(pool.x, pool.z, 2.3, 1.36, 0.91);
 
     pool.balls = [];
     for (let i = 0; i < 15; i++) {
@@ -1091,7 +1096,7 @@ export function createGames(api) {
     mark(g, kind);
     registerPick(g);
     scene.add(g);
-    worldSolid(table.x, table.z, w + 0.2, d + 0.2);
+    worldSolid(table.x, table.z, w + 0.2, d + 0.2, 0.79);
   }
 
   function buildYard() {
@@ -1107,9 +1112,331 @@ export function createGames(api) {
     rackDye();
   }
 
+  
+  const DART_ORDER = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
+  const darts = {
+    x: 7.68,
+    y: 1.73,
+    z: 4.88,
+    lineX: 5.28,
+    r: 0.228,
+    turn: "you",
+    you: 501,
+    them: 501,
+    dartsLeft: 3,
+    turnStart: 501,
+    charging: false,
+    charge: 0,
+    over: false,
+    winner: "",
+    botWait: 0,
+    flying: [],
+    stuck: [],
+    board: null,
+  };
+
+  function dartTex() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 512;
+    const ctx = c.getContext("2d");
+    const cx = 256;
+    const cy = 256;
+    const R = 250;
+    ctx.fillStyle = "#0d0c0a";
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fill();
+    const rings = [
+      [1, "#121014"],
+      [0.95, "#d8c9a0"],
+      [0.90, "#121014"],
+      [0.62, "#d8c9a0"],
+      [0.57, "#121014"],
+    ];
+    for (let i = 0; i < 20; i++) {
+      const a0 = ((i * 18 - 9) * Math.PI) / 180 - Math.PI / 2;
+      const a1 = (((i + 1) * 18 - 9) * Math.PI) / 180 - Math.PI / 2;
+      const dark = i % 2 === 0;
+      ctx.fillStyle = dark ? "#1a120c" : "#e8d9b0";
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, R * 0.90, a0, a1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = dark ? "#1f8a4c" : "#c41e3a";
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 0.95, a0, a1);
+      ctx.arc(cx, cy, R * 0.90, a1, a0, true);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 0.62, a0, a1);
+      ctx.arc(cx, cy, R * 0.57, a1, a0, true);
+      ctx.closePath();
+      ctx.fill();
+      const mid = (a0 + a1) / 2;
+      ctx.fillStyle = dark ? "#f4ead0" : "#121014";
+      ctx.font = "bold 22px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(DART_ORDER[i]), cx + Math.cos(mid) * R * 0.82, cy + Math.sin(mid) * R * 0.82);
+    }
+    ctx.fillStyle = "#1f8a4c";
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * 0.085, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#c41e3a";
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * 0.032, 0, Math.PI * 2);
+    ctx.fill();
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  function dartAngleOf(n) {
+    const i = DART_ORDER.indexOf(n);
+    return ((i < 0 ? 0 : i) * 18 * Math.PI) / 180;
+  }
+
+  function scoreDart(lx, ly) {
+    const r = Math.hypot(lx, ly);
+    const boardR = darts.r;
+    if (r > boardR * 1.02) return { score: 0, label: "MISS", double: false };
+    if (r <= boardR * 0.032) return { score: 50, label: "D-BULL", double: true };
+    if (r <= boardR * 0.085) return { score: 25, label: "BULL", double: false };
+    let ang = Math.atan2(-lx, ly);
+    if (ang < 0) ang += Math.PI * 2;
+    const idx = Math.floor((ang * 180 / Math.PI + 9) / 18) % 20;
+    const n = DART_ORDER[idx];
+    const rr = r / boardR;
+    if (rr >= 0.90 && rr <= 1.0) return { score: n * 2, label: `D${n}`, double: true };
+    if (rr >= 0.57 && rr <= 0.62) return { score: n * 3, label: `T${n}`, double: false };
+    return { score: n, label: String(n), double: false };
+  }
+
+  function makeDartMesh(color = 0xc41e3a) {
+    const g = new THREE.Group();
+    addMesh(g, boxGeo, lambert(0xc9b49a), 0, 0, 0, 0.012, 0.012, 0.16);
+    addMesh(g, boxGeo, lambert(color), 0, 0, -0.07, 0.04, 0.002, 0.05);
+    addMesh(g, boxGeo, lambert(color), 0, 0, -0.07, 0.002, 0.04, 0.05);
+    addMesh(g, boxGeo, lambert(0xc9a227), 0, 0, 0.075, 0.01, 0.01, 0.03);
+    return g;
+  }
+
+  function clearDarts(list) {
+    for (const d of list) scene.remove(d.mesh);
+    list.length = 0;
+  }
+
+  function resetDartsPlay() {
+    darts.you = 501;
+    darts.them = 501;
+    darts.turn = "you";
+    darts.dartsLeft = 3;
+    darts.turnStart = 501;
+    darts.charging = false;
+    darts.charge = 0;
+    darts.over = false;
+    darts.winner = "";
+    darts.botWait = 0;
+    clearDarts(darts.flying);
+    clearDarts(darts.stuck);
+  }
+
+  function applyDartScore(who, hit) {
+    if (darts.over) return;
+    const key = who === "you" ? "you" : "them";
+    const next = darts[key] - hit.score;
+    if (next < 0 || next === 1 || (next === 0 && !hit.double)) {
+      darts[key] = darts.turnStart;
+      darts.dartsLeft = 0;
+      toast(who === "you" ? `bust · ${hit.label}` : `house bust · ${hit.label}`);
+      audio.beep(140, 0.1, "square", 0.05);
+      return;
+    }
+    darts[key] = next;
+    toast(who === "you" ? `${hit.label} · you ${next}` : `${hit.label} · house ${next}`);
+    if (next === 0) {
+      darts.over = true;
+      darts.winner = who;
+      flash(who === "you" ? "YOU WIN" : "HOUSE WINS", who === "you" ? "" : "lose");
+      if (who === "you") api.score?.(30);
+      else api.houseDrink?.("lost at darts. drink.");
+      darts.botWait = 2.4;
+    }
+  }
+
+  function endDartTurn() {
+    if (darts.over) return;
+    darts.turn = darts.turn === "you" ? "them" : "you";
+    darts.dartsLeft = 3;
+    darts.turnStart = darts.turn === "you" ? darts.you : darts.them;
+    clearDarts(darts.stuck);
+    if (darts.turn === "them") darts.botWait = 0.55;
+  }
+
+  function worldFromBoard(lx, ly) {
+    return new THREE.Vector3(darts.x - 0.04, darts.y + ly, darts.z + lx);
+  }
+
+  function throwDart(from, vel, who) {
+    const mesh = makeDartMesh(who === "you" ? 0x3dfff2 : 0xff3dac);
+    mesh.position.copy(from);
+    scene.add(mesh);
+    darts.flying.push({ mesh, vel: vel.clone(), who, life: 2.4 });
+    audio.beep(640, 0.05, "square", 0.035);
+  }
+
+  function behindDartLine() {
+    const p = playerPos();
+    if (p.x > darts.lineX + 0.02) return false;
+    if (p.x < darts.lineX - 1.85) return false;
+    if (Math.abs(p.z - darts.z) > 1.15) return false;
+    return true;
+  }
+
+  function canThrowDarts() {
+    return active === "darts" && !darts.over && darts.turn === "you" && !darts.flying.length && behindDartLine();
+  }
+
+  function throwFromLook(power, who) {
+    if (who === "you" && !behindDartLine()) {
+      toast("throw from behind the line");
+      return;
+    }
+    const d = lookDir();
+    const from = camera.position.clone().add(d.clone().multiplyScalar(0.42));
+    const spd = 7.2 + power * 9.5;
+    const vel = d.multiplyScalar(spd);
+    vel.y += 0.15 + power * 0.25;
+    throwDart(from, vel, who);
+    if (who === "you") send({ t: "pshot", g: "darts", x: from.x, y: from.y, z: from.z, vx: vel.x, vy: vel.y, vz: vel.z });
+  }
+
+  function houseThrowDart() {
+    const remain = darts.them;
+    let n = 20;
+    let rr = 0.4;
+    if (remain === 50) {
+      n = 20;
+      rr = 0.01;
+    } else if (remain <= 40 && remain % 2 === 0) {
+      n = remain / 2;
+      rr = 0.925;
+    } else if (remain > 60) {
+      n = 20;
+      rr = 0.595;
+    } else if (remain % 2 === 1) {
+      n = 1;
+      rr = 0.4;
+    }
+    const ang = dartAngleOf(n) + (Math.random() - 0.5) * 0.18;
+    const r = Math.max(0, rr + (Math.random() - 0.5) * 0.08) * darts.r;
+    const lx = -Math.sin(ang) * r;
+    const ly = Math.cos(ang) * r;
+    const target = worldFromBoard(lx, ly);
+    const from = new THREE.Vector3(darts.lineX - 0.12, 1.55 + Math.random() * 0.1, darts.z + (Math.random() - 0.5) * 0.15);
+    const vel = target.clone().sub(from);
+    const t = 0.38;
+    vel.x /= t;
+    vel.y = vel.y / t + 4.9 * t;
+    vel.z /= t;
+    throwDart(from, vel, "them");
+  }
+
+  function stickDart(f, lx, ly) {
+    const hit = scoreDart(lx, ly);
+    f.mesh.position.copy(worldFromBoard(lx, ly));
+    f.mesh.rotation.set(0, -Math.PI / 2, 0);
+    darts.stuck.push(f);
+    audio.dart?.();
+    applyDartScore(f.who, hit);
+    darts.dartsLeft = Math.max(0, darts.dartsLeft - 1);
+    if (!darts.over && darts.dartsLeft <= 0) endDartTurn();
+  }
+
+  function tickDarts(dt) {
+    if (darts.charging && !behindDartLine()) {
+      darts.charging = false;
+      darts.charge = 0;
+      toast("step behind the line");
+    }
+    if (darts.charging) darts.charge = Math.min(1, darts.charge + dt * 0.95);
+    if (darts.over) {
+      darts.botWait -= dt;
+      if (darts.botWait <= 0) resetDartsPlay();
+    } else if (active === "darts" && darts.turn === "them" && darts.flying.length === 0) {
+      darts.botWait -= dt;
+      if (darts.botWait <= 0) houseThrowDart();
+    }
+    for (let i = darts.flying.length - 1; i >= 0; i--) {
+      const f = darts.flying[i];
+      f.life -= dt;
+      f.vel.y -= 9.8 * dt;
+      f.mesh.position.addScaledVector(f.vel, dt);
+      if (f.vel.lengthSq() > 0.01) {
+        f.mesh.lookAt(f.mesh.position.x + f.vel.x, f.mesh.position.y + f.vel.y, f.mesh.position.z + f.vel.z);
+      }
+      const p = f.mesh.position;
+      if (p.x >= darts.x - 0.08 && f.vel.x > 0) {
+        const lx = p.z - darts.z;
+        const ly = p.y - darts.y;
+        if (Math.hypot(lx, ly) <= darts.r * 1.05) {
+          darts.flying.splice(i, 1);
+          stickDart(f, lx, ly);
+          continue;
+        }
+      }
+      if (f.life <= 0 || p.y < 0.04 || p.x > 8.4) {
+        scene.remove(f.mesh);
+        darts.flying.splice(i, 1);
+        applyDartScore(f.who, { score: 0, label: "MISS", double: false });
+        darts.dartsLeft = Math.max(0, darts.dartsLeft - 1);
+        audio.beep(90, 0.08, "sine", 0.04);
+        if (!darts.over && darts.dartsLeft <= 0) endDartTurn();
+      }
+    }
+  }
+
+  function buildDarts() {
+    const g = new THREE.Group();
+    const tex = dartTex();
+    const faceMat = new THREE.MeshLambertMaterial({
+      map: tex,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    const face = new THREE.Mesh(new THREE.CircleGeometry(darts.r, 48), faceMat);
+    face.rotation.y = -Math.PI / 2;
+    face.position.set(-0.04, darts.y, 0);
+    face.renderOrder = 2;
+    g.add(face);
+    addMesh(g, boxGeo, lambert(0x3a1e10), 0.05, darts.y, 0, 0.08, 0.58, 0.58);
+    addMesh(g, boxGeo, lambert(0x5a3218), 0.00, darts.y, 0, 0.04, 0.52, 0.52);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(darts.r + 0.012, 0.012, 8, 28), lambert(0xc9a227));
+    ring.rotation.y = Math.PI / 2;
+    ring.position.set(-0.04, darts.y, 0);
+    ring.renderOrder = 2;
+    g.add(ring);
+    g.position.set(darts.x, 0, darts.z);
+    mark(g, "darts");
+    registerPick(g);
+    registerPick(face);
+    face.userData.kind = "darts";
+    face.userData.root = g;
+    scene.add(g);
+    darts.board = g;
+    const oche = addMesh(scene, boxGeo, lambert(0xf4ead0), darts.lineX, 0.02, darts.z, 0.06, 0.02, 1.35);
+    mark(oche, "darts");
+  }
+
   function build() {
     buildPool();
     buildYard();
+    buildDarts();
   }
 
   function tryQueue(game) {
@@ -1206,6 +1533,7 @@ export function createGames(api) {
     if (k === "pool") return "pool";
     if (k === "pong" || k === "pong-join" || k === "cup") return "pong";
     if (k === "die" || k === "die-join") return "die";
+    if (k === "darts") return "darts";
     return null;
   }
 
@@ -1213,6 +1541,7 @@ export function createGames(api) {
     if (kind === "pool") return "8-ball";
     if (kind === "pong") return "beer pong";
     if (kind === "die") return "beer die";
+    if (kind === "darts") return "501 darts";
     return "the table";
   }
 
@@ -1220,6 +1549,7 @@ export function createGames(api) {
     if (!kind) return false;
     if (active === kind) return true;
     active = kind;
+    audio.table?.();
     if (kind === "pool") toast("8-ball. click-hold to shoot · E leave");
     if (kind === "pong") {
       if (humans().length && !pong.match) tryQueue("pong");
@@ -1228,6 +1558,10 @@ export function createGames(api) {
     if (kind === "die") {
       if (humans().length && !dye.match) tryQueue("die");
       else toast("beer die vs the house. click-hold to toss · E leave");
+    }
+    if (kind === "darts") {
+      resetDartsPlay();
+      toast("501. double out. 3 darts a turn. throw from behind the line · E leave");
     }
     return true;
   }
@@ -1238,9 +1572,11 @@ export function createGames(api) {
     pool.charging = false;
     pong.charging = false;
     dye.charging = false;
+    darts.charging = false;
     if (active === "pong" && pong.queued) tryQueue("pong");
     if (active === "die" && dye.queued) tryQueue("die");
     active = null;
+    audio.summonClose?.();
     toast(`left ${name}`);
     return true;
   }
@@ -1252,6 +1588,7 @@ export function createGames(api) {
       if (kind === "pool") return "E play 8-ball";
       if (kind === "pong") return "E play beer pong";
       if (kind === "die") return "E play beer die";
+      if (kind === "darts") return "E play 501 darts";
       return "";
     }
     if (active === "pool") {
@@ -1285,6 +1622,15 @@ export function createGames(api) {
         ? `toss ${Math.round(dye.charge * 100)}%  ·  release`
         : "BEER DIE  ·  your toss  ·  click-hold  ·  E leave";
     }
+    if (active === "darts") {
+      if (darts.over) return (darts.winner === "you" ? "YOU WIN" : "HOUSE WINS") + " · re-throwing… · E leave";
+      if (darts.turn !== "you") return "house is throwing · E leave";
+      if (darts.flying.length) return "dart in the air · E leave";
+      if (!behindDartLine()) return "step behind the line to throw · E leave";
+      return darts.charging
+        ? `throw ${Math.round(darts.charge * 100)}%  ·  ${darts.dartsLeft} left  ·  you ${darts.you}`
+        : `501  you ${darts.you}  house ${darts.them}  ·  ${darts.dartsLeft} darts  ·  click-hold  ·  E leave`;
+    }
     return "E leave the table";
   }
 
@@ -1306,6 +1652,10 @@ export function createGames(api) {
       const turn = dye.over ? (dye.youCups <= 0 ? loseLabel(dye) : "YOU WIN") : isMyPoss(dye) ? "your toss" : "their toss";
       return `BEER DIE  vs ${vs}  ·  your cups ${dye.youCups}  their cups ${dye.themCups}  ·  ${turn}` + (dye.catchUntil > _t ? "  ·  CATCH" : "");
     }
+    if (active === "darts") {
+      const turn = darts.over ? (darts.winner === "you" ? "YOU WIN" : "HOUSE WINS") : darts.turn === "you" ? `${darts.dartsLeft} darts` : "house throw";
+      return `501  you ${darts.you}  ·  house ${darts.them}  ·  ${turn}`;
+    }
     return "";
   }
 
@@ -1318,6 +1668,7 @@ export function createGames(api) {
       const who = dye.die.who;
       dye.die = null;
       toast("caught");
+      audio.catch?.();
       api.score?.(10);
       nextDiePoss(who);
       return true;
@@ -1356,6 +1707,16 @@ export function createGames(api) {
       dye.charge = 0.12;
       return true;
     }
+    if (active === "darts") {
+      if (darts.over || darts.turn !== "you" || darts.flying.length) return true;
+      if (!behindDartLine()) {
+        toast("throw from behind the line");
+        return true;
+      }
+      darts.charging = true;
+      darts.charge = 0.12;
+      return true;
+    }
     if (kindFromLook(look)) return true;
     return false;
   }
@@ -1382,6 +1743,14 @@ export function createGames(api) {
       if (canThrowDie()) throwFromCamera("die", pwr, "you");
       return true;
     }
+    if (darts.charging) {
+      darts.charging = false;
+      const pwr = darts.charge;
+      darts.charge = 0;
+      if (canThrowDarts()) throwFromLook(pwr, "you");
+      else if (active === "darts" && darts.turn === "you") toast("throw from behind the line");
+      return true;
+    }
     return false;
   }
 
@@ -1406,7 +1775,8 @@ export function createGames(api) {
       const vel = new THREE.Vector3(msg.vx, msg.vy, msg.vz);
       const who = msg.from || "them";
       if (msg.g === "pong") spawnPing(from, vel, who);
-      else spawnDie(from, vel, who);
+      else if (msg.g === "die") spawnDie(from, vel, who);
+      else if (msg.g === "darts") throwDart(from, vel, "them");
     }
   }
 
@@ -1414,6 +1784,7 @@ export function createGames(api) {
     _t = t;
     tickPool(dt);
     tickFly(dt);
+    tickDarts(dt);
     if (dye.catchUntil && dye.catchUntil < t) dye.catchUntil = 0;
   }
 
@@ -1422,6 +1793,8 @@ export function createGames(api) {
     pool.charging = false;
     pong.charging = false;
     dye.charging = false;
+    darts.charging = false;
+    resetDartsPlay();
     pong.queued = false;
     dye.queued = false;
     pong.match = null;
@@ -1435,7 +1808,7 @@ export function createGames(api) {
   }
 
   function pickRange(kind) {
-    if (kind === "pool" || kind === "pong" || kind === "die" || kind === "pong-join" || kind === "die-join" || kind === "cup") return 4.8;
+    if (kind === "pool" || kind === "pong" || kind === "die" || kind === "pong-join" || kind === "die-join" || kind === "cup" || kind === "darts") return 4.8;
     return 0;
   }
 

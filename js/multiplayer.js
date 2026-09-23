@@ -11,6 +11,7 @@ const _peeFwd = new THREE.Vector3();
 const _peeRight = new THREE.Vector3();
 const EYE = 1.58;
 const EYE_F = 1.45;
+const HEAD_YAW_MAX = (75 * Math.PI) / 180;
 export function eyeHeight(gender) {
   return gender === "f" ? EYE_F : EYE;
 }
@@ -88,6 +89,11 @@ export function setWorldCollide(fn) {
   collideFn = fn || ((x, z) => [x, z]);
 }
 
+let peeDrainFn = () => false;
+export function setPeeDrainFn(fn) {
+  peeDrainFn = typeof fn === "function" ? fn : () => false;
+}
+
 export function setLocalHitHandler(fn) {
   localHitFn = fn || null;
 }
@@ -121,8 +127,43 @@ function clamp(n, a = 0, b = 1) {
   return Math.max(a, Math.min(b, n));
 }
 
-function lambert(color) {
-  return new THREE.MeshLambertMaterial({ color });
+function wrapRad(a) {
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+function faceBody(peer, moving, vx, vz, dt) {
+  if (peer.hyaw == null) peer.hyaw = peer.tyaw || 0;
+  if (peer.byaw == null) peer.byaw = peer.hyaw;
+  if (peer.bodyLock != null && Number.isFinite(peer.bodyLock)) {
+    peer.byaw = wrapRad(peer.bodyLock);
+    peer.sitByaw = null;
+    return;
+  }
+  if (peer.sit) {
+    if (peer.sitByaw == null) peer.sitByaw = peer.tyaw != null ? peer.tyaw : peer.byaw;
+    peer.byaw = peer.sitByaw;
+    return;
+  }
+  peer.sitByaw = null;
+  if (moving) {
+    const moveYaw = Math.atan2(vx, vz);
+    let target = moveYaw;
+    const away = Math.abs(wrapRad(peer.hyaw - moveYaw));
+    if (away > (95 * Math.PI) / 180 && away < (265 * Math.PI) / 180) target = moveYaw + Math.PI;
+    peer.byaw += wrapRad(target - peer.byaw) * Math.min(1, dt * 8);
+  }
+  const off = wrapRad(peer.hyaw - peer.byaw);
+  if (off < -HEAD_YAW_MAX) peer.byaw = peer.hyaw + HEAD_YAW_MAX;
+  else if (off > HEAD_YAW_MAX) peer.byaw = peer.hyaw - HEAD_YAW_MAX;
+  peer.byaw = wrapRad(peer.byaw);
+}
+
+function headYawOffset(peer) {
+  return THREE.MathUtils.clamp(wrapRad((peer.hyaw || 0) - (peer.byaw || 0)), -HEAD_YAW_MAX, HEAD_YAW_MAX);
+}
+
+function lambert(color, extra = {}) {
+  return new THREE.MeshLambertMaterial({ color, ...extra });
 }
 
 function addBox(parent, mat, x, y, z, sx, sy, sz) {
@@ -162,19 +203,39 @@ function makeBartender(id, name, gender = "m") {
   g.add(body);
 
   const shirt = lambert(colorOf(id));
-  const skin = lambert(0xe8b48a);
+  const skin = lambert(0xe8b48a, { emissive: 0x5a3018, emissiveIntensity: 0.18 });
   const pantsMat = lambert(0x1d1d28);
   const hair = lambert(gender === "f" ? 0x3a1a12 : 0x2a1810);
   const eye = lambert(0x1a0c08);
   const starMat = lambert(0xffe066);
 
-  addBox(body, skin, 0, 0.96, 0, gender === "f" ? 0.30 : 0.32, 0.40, 0.18);
+  addBox(body, skin, 0, 0.98, 0, gender === "f" ? 0.30 : 0.32, 0.38, 0.18);
   addBox(body, skin, 0, 1.24, 0, 0.14, 0.10, 0.14);
-  const hipPants = addBox(body, pantsMat, 0, 0.66, 0, 0.36, 0.24, 0.20);
-  hipPants.userData.homeY = 0.66;
-  hipPants.userData.homeSX = 0.36;
-  hipPants.userData.homeSY = 0.24;
-  hipPants.userData.homeSZ = 0.20;
+  addBox(body, skin, 0, 0.74, 0, gender === "f" ? 0.26 : 0.28, 0.12, 0.12);
+  const girl = gender === "f";
+  const hipW = girl ? 0.37 : 0.36;
+  const hipD = girl ? 0.22 : 0.21;
+  const cakeX = girl ? 0.08 : 0.076;
+  const cakeW = girl ? 0.168 : 0.152;
+  const cakeH = girl ? 0.148 : 0.132;
+  const cakeD = girl ? 0.132 : 0.116;
+  const hipPants = addBox(body, pantsMat, 0, 0.74, -0.01, hipW, 0.18, hipD);
+  hipPants.userData.homeY = 0.74;
+  hipPants.userData.homeSX = hipW;
+  hipPants.userData.homeSY = 0.18;
+  hipPants.userData.homeSZ = hipD;
+  const hipCakeL = addBox(body, pantsMat, -cakeX, 0.685, -0.118, cakeW, cakeH, cakeD);
+  const hipCakeR = addBox(body, pantsMat, cakeX, 0.685, -0.118, cakeW, cakeH, cakeD);
+  const hipCakeC = addBox(body, pantsMat, 0, 0.672, -0.126, girl ? 0.1 : 0.09, 0.1, girl ? 0.098 : 0.088);
+  const butt = new THREE.Group();
+  addBox(butt, skin, -cakeX, 0.012, 0.01, cakeW, cakeH, cakeD);
+  addBox(butt, skin, cakeX, 0.012, 0.01, cakeW, cakeH, cakeD);
+  addBox(butt, skin, 0, 0, -0.008, girl ? 0.1 : 0.09, 0.1, girl ? 0.098 : 0.088);
+  addBox(butt, skin, -cakeX, -0.042, 0.018, cakeW * 0.92, 0.074, cakeD * 0.82);
+  addBox(butt, skin, cakeX, -0.042, 0.018, cakeW * 0.92, 0.074, cakeD * 0.82);
+  butt.position.set(0, 0.675, -0.118);
+  butt.visible = false;
+  body.add(butt);
   addBox(body, shirt, 0, 0.98, 0, gender === "f" ? 0.36 : 0.38, 0.46, 0.22);
   if (gender === "f") {
     addBox(body, shirt, -0.09, 1.02, 0.14, 0.15, 0.13, 0.13);
@@ -182,6 +243,7 @@ function makeBartender(id, name, gender = "m") {
   }
 
   const head = new THREE.Group();
+  head.rotation.order = "YXZ";
   head.position.set(0, 1.38, 0);
   addBox(head, skin, 0, 0, 0, 0.28, 0.28, 0.28);
   styleHair(head, hair, gender);
@@ -192,8 +254,8 @@ function makeBartender(id, name, gender = "m") {
   const armL = new THREE.Group();
   addBox(armL, shirt, 0, -0.08, 0, 0.13, 0.36, 0.13);
   addBox(armL, skin, 0, -0.3, 0, 0.11, 0.16, 0.11);
-  armL.position.set(-0.24, 1.1, 0);
-  armL.userData.homeX = -0.24;
+  armL.position.set(0.24, 1.1, 0);
+  armL.userData.homeX = 0.24;
   armL.userData.homeY = 1.1;
   armL.userData.homeZ = 0;
   body.add(armL);
@@ -203,41 +265,41 @@ function makeBartender(id, name, gender = "m") {
   addBox(armR, skin, 0, -0.3, 0, 0.11, 0.16, 0.11);
   const held = addBox(armR, lambert(0xc47b20), 0, -0.42, 0.02, 0.08, 0.16, 0.08);
   held.visible = false;
-  armR.position.set(0.24, 1.1, 0);
-  armR.userData.homeX = 0.24;
+  armR.position.set(-0.24, 1.1, 0);
+  armR.userData.homeX = -0.24;
   armR.userData.homeY = 1.1;
   armR.userData.homeZ = 0;
   body.add(armR);
 
   const legL = new THREE.Group();
-  addBox(legL, skin, 0, 0, 0, 0.14, 0.48, 0.14);
-  addBox(legL, skin, 0, -0.30, 0, 0.12, 0.28, 0.12);
-  addBox(legL, skin, 0, -0.45, 0.03, 0.12, 0.06, 0.18);
-  const pantL = addBox(legL, pantsMat, 0, -0.08, 0, 0.16, 0.62, 0.16);
-  pantL.userData.homeY = -0.08;
-  pantL.userData.homeSY = 0.62;
-  legL.position.set(-0.11, 0.42, 0);
+  addBox(legL, skin, 0, -0.20, 0, 0.13, 0.40, 0.13);
+  addBox(legL, skin, 0, -0.52, 0, 0.12, 0.28, 0.12);
+  addBox(legL, skin, 0, -0.74, 0.03, 0.13, 0.08, 0.20);
+  const pantL = addBox(legL, pantsMat, 0, -0.32, 0, 0.16, 0.64, 0.16);
+  pantL.userData.homeY = -0.32;
+  pantL.userData.homeSY = 0.64;
+  legL.position.set(-0.11, 0.78, 0);
   body.add(legL);
 
   const legR = new THREE.Group();
-  addBox(legR, skin, 0, 0, 0, 0.14, 0.48, 0.14);
-  addBox(legR, skin, 0, -0.30, 0, 0.12, 0.28, 0.12);
-  addBox(legR, skin, 0, -0.45, 0.03, 0.12, 0.06, 0.18);
-  const pantR = addBox(legR, pantsMat, 0, -0.08, 0, 0.16, 0.62, 0.16);
-  pantR.userData.homeY = -0.08;
-  pantR.userData.homeSY = 0.62;
-  legR.position.set(0.11, 0.42, 0);
+  addBox(legR, skin, 0, -0.20, 0, 0.13, 0.40, 0.13);
+  addBox(legR, skin, 0, -0.52, 0, 0.12, 0.28, 0.12);
+  addBox(legR, skin, 0, -0.74, 0.03, 0.13, 0.08, 0.20);
+  const pantR = addBox(legR, pantsMat, 0, -0.32, 0, 0.16, 0.64, 0.16);
+  pantR.userData.homeY = -0.32;
+  pantR.userData.homeSY = 0.64;
+  legR.position.set(0.11, 0.78, 0);
   body.add(legR);
 
   let pecker = null;
   if (gender !== "f") {
     pecker = new THREE.Group();
-    pecker.position.set(0, 0.55, 0.08);
+    pecker.position.set(0, 0.70, 0.08);
     pecker.rotation.order = "XYZ";
     pecker.rotation.set(-Math.PI / 6, 0, 0);
-    addBox(pecker, skin, 0, 0, 0.09, 0.042, 0.042, 0.18);
-    addBox(pecker, skin, -0.04, -0.034, 0.018, 0.055, 0.055, 0.055);
-    addBox(pecker, skin, 0.04, -0.034, 0.018, 0.055, 0.055, 0.055);
+    addBox(pecker, skin, 0, 0, 0.08, 0.042, 0.042, 0.16);
+    addBox(pecker, skin, -0.034, -0.014, 0.02, 0.05, 0.05, 0.05);
+    addBox(pecker, skin, 0.034, -0.014, 0.02, 0.05, 0.05, 0.05);
     pecker.visible = false;
     pecker.userData.len = 0.18;
     body.add(pecker);
@@ -270,6 +332,10 @@ function makeBartender(id, name, gender = "m") {
     skin,
     shirt,
     hipPants,
+    hipCakeL,
+    hipCakeR,
+    hipCakeC,
+    butt,
     pantL,
     pantR,
     pecker,
@@ -279,6 +345,8 @@ function makeBartender(id, name, gender = "m") {
     tall,
     walk: 0,
     peeEmit: 0,
+    peePull: 0,
+    pantDrop: 0,
     disposeFx: () => disposePeeFx(g.userData),
     flashMats: [shirt, skin, pantsMat, hair, eye],
     flashBase: [shirt, skin, pantsMat, hair, eye].map((m) => ({
@@ -324,6 +392,8 @@ function spawnPeer(id, state) {
     tz: state.z || 0,
     ty: state.y ?? eye,
     tyaw: yaw,
+    hyaw: yaw,
+    byaw: yaw,
     tpit: state.pit || 0,
     pit: state.pit || 0,
     bac: clamp(state.b, 0, DRUNK_NET),
@@ -378,6 +448,8 @@ function applyState(id, state) {
   peer.pouring = !!state.p;
   peer.sit = !!state.s;
   peer.pee = !!state.u;
+  if (state.ax != null && state.ay != null && state.az != null) peer.peeAim = { x: state.ax, y: state.ay, z: state.az };
+  else peer.peeAim = null;
   if (state.g) {
     const nextG = state.g === "f" ? "f" : "m";
     if (peer.gender !== nextG) {
@@ -519,7 +591,12 @@ function sendPose() {
     g: extra.g === "f" || local.gender === "f" ? "f" : "m",
     t: Date.now(),
   };
-  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}`;
+  if (extra.ax != null && extra.ay != null && extra.az != null) {
+    pose.ax = round(extra.ax, 2);
+    pose.ay = round(extra.ay, 2);
+    pose.az = round(extra.az, 2);
+  }
+  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.ax}|${pose.ay}|${pose.az}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -537,8 +614,18 @@ function poseSit(peer) {
   u.body.rotation.set(0.16, 0, 0);
   u.legL.rotation.set(-1.52, 0.1, 0.18);
   u.legR.rotation.set(-1.52, -0.1, -0.18);
-  u.armL.rotation.set(-0.72, 0, 0.22);
-  u.armR.rotation.set(peer.pouring ? -1.1 : -0.72, 0, -0.22);
+  u.armL.rotation.set(-0.72, 0, -0.22);
+  u.armR.rotation.set(peer.pouring ? -1.1 : -0.72, 0, 0.22);
+}
+
+function poseRightPunch(u, punchT) {
+  if (!u?.armR || punchT <= 0) return false;
+  const dur = 0.32;
+  const uPunch = 1 - Math.min(dur, punchT) / dur;
+  const swing = uPunch < 0.38 ? uPunch / 0.38 : 1 - (uPunch - 0.38) / 0.62;
+  u.armR.rotation.set(-1.75 * swing, -0.28 * swing, 0.48 * swing);
+  if (u.armL) u.armL.rotation.set(0.32 * swing, 0.1 * swing, -0.22);
+  return true;
 }
 
 function makePeeKit() {
@@ -631,17 +718,40 @@ function tickPee(peer, dt, t) {
   const drops = u.peeDrops || [];
   const girl = (peer.gender || u.gender) === "f";
   const drunk = clamp(peer.bac);
+  const fps = Boolean(peer.local && camera && !peer.sit && (!peer.rig.visible || !u.body?.visible));
   if (peer.pee) {
     u.peeEmit -= dt;
     let guard = 0;
-    while (u.peeEmit <= 0 && guard++ < 6) {
-      u.peeEmit += 0.011;
+    while (u.peeEmit <= 0 && guard++ < 8) {
+      u.peeEmit += fps ? 0.007 : 0.011;
       const drop = drops.find((m) => !m.visible);
       if (!drop) break;
       hostFx(drop);
       const wob = Math.sin(t * 21 + (peer.phase || 0)) * (0.028 + drunk * 0.09);
       const spray = (Math.random() - 0.5) * 0.06 + wob * 1.6;
-      if (u.pecker && u.pecker.visible) {
+      if (fps) {
+        camera.getWorldDirection(_peeFwd);
+        _peeOrigin.copy(camera.position).addScaledVector(_peeFwd, 0.24);
+        _peeOrigin.y -= 0.44;
+        _peeOrigin.x += (Math.random() - 0.5) * 0.012 + wob * 0.12;
+        if (peer.peeAim) {
+          _peeFwd.set(peer.peeAim.x - _peeOrigin.x, peer.peeAim.y - _peeOrigin.y, peer.peeAim.z - _peeOrigin.z);
+          if (_peeFwd.lengthSq() < 1e-8) _peeFwd.set(0, -1, 0);
+          else _peeFwd.normalize();
+        }
+        _peeRight.set(_peeFwd.z, 0, -_peeFwd.x);
+        if (_peeRight.lengthSq() < 1e-8) _peeRight.set(1, 0, 0);
+        else _peeRight.normalize();
+      } else if (peer.peeAim) {
+        _peeOrigin.set((Math.random() - 0.5) * 0.01 + wob * 0.2, (u.body ? u.body.position.y : 0) + (girl ? 0.4 : 0.48), 0.08);
+        peer.rig.localToWorld(_peeOrigin);
+        _peeFwd.set(peer.peeAim.x - _peeOrigin.x, peer.peeAim.y - _peeOrigin.y, peer.peeAim.z - _peeOrigin.z);
+        if (_peeFwd.lengthSq() < 1e-8) _peeFwd.set(0, -1, 0);
+        else _peeFwd.normalize();
+        _peeRight.set(_peeFwd.z, 0, -_peeFwd.x);
+        if (_peeRight.lengthSq() < 1e-8) _peeRight.set(1, 0, 0);
+        else _peeRight.normalize();
+      } else if (u.pecker && u.pecker.visible) {
         u.pecker.updateWorldMatrix(true, false);
         u.pecker.getWorldPosition(_peeOrigin);
         _peeFwd.set(0, 0, 1).transformDirection(u.pecker.matrixWorld).normalize();
@@ -655,13 +765,20 @@ function tickPee(peer, dt, t) {
         _peeRight.set(1, 0, 0).applyQuaternion(peer.rig.quaternion);
       }
       drop.position.copy(_peeOrigin);
-      const speed = girl ? 0.58 + Math.random() * 0.1 : 3.15 + Math.random() * 0.22;
+      const aim = Boolean(peer.peeAim);
+      let speed = girl ? (aim ? 1.15 : 0.58) + Math.random() * 0.1 : (aim ? 2.35 : 3.15) + Math.random() * 0.22;
+      if (aim) {
+        const dist = Math.hypot(peer.peeAim.x - _peeOrigin.x, peer.peeAim.y - _peeOrigin.y, peer.peeAim.z - _peeOrigin.z);
+        speed = Math.max(girl ? 0.7 : 0.95, Math.min(speed, 0.7 + dist * 2.6));
+      }
       drop.userData.v.set(
         _peeFwd.x * speed + _peeRight.x * spray,
-        u.pecker && u.pecker.visible ? _peeFwd.y * speed - 0.06 : girl ? -1.9 - Math.random() * 0.12 : -0.12 - Math.random() * 0.08,
+        aim ? _peeFwd.y * speed : u.pecker && u.pecker.visible ? _peeFwd.y * speed - 0.06 : girl ? -1.9 - Math.random() * 0.12 : -0.12 - Math.random() * 0.08,
         _peeFwd.z * speed + _peeRight.z * spray
       );
-      drop.userData.life = 0.48 + Math.random() * 0.12;
+      drop.userData.life = 0.55 + Math.random() * 0.12;
+      drop.userData.age = 0;
+      drop.renderOrder = 4;
       drop.visible = true;
     }
   } else {
@@ -670,17 +787,25 @@ function tickPee(peer, dt, t) {
   for (const drop of drops) {
     if (!drop.visible) continue;
     drop.userData.life -= dt;
+    drop.userData.age = (drop.userData.age || 0) + dt;
     drop.userData.v.y -= 12 * dt;
     drop.position.addScaledVector(drop.userData.v, dt);
     const v = drop.userData.v;
     const spd = Math.hypot(v.x, v.y, v.z);
     const stretch = 1.15 + Math.min(3.4, spd * 0.42);
-    drop.scale.set(0.72, 0.72, stretch);
+    drop.scale.set(fps ? 0.95 : 0.72, fps ? 0.95 : 0.72, stretch);
     if (spd > 0.08) {
       drop.lookAt(drop.position.x + v.x, drop.position.y + v.y, drop.position.z + v.z);
     }
+    if ((drop.userData.age || 0) > 0.07 && peeDrainFn(drop.position.x, drop.position.y, drop.position.z)) {
+      drop.visible = false;
+      drop.removeFromParent();
+      continue;
+    }
     if (drop.userData.life <= 0 || drop.position.y < 0.014) {
-      if (drop.position.y < 0.08) addPeePuddle(u, drop.position.x, drop.position.z);
+      if (drop.position.y < 0.08 && !peeDrainFn(drop.position.x, drop.position.y, drop.position.z)) {
+        addPeePuddle(u, drop.position.x, drop.position.z);
+      }
       drop.visible = false;
       drop.removeFromParent();
     }
@@ -818,14 +943,13 @@ function animatePeer(peer, dt, t) {
   const targetY = peer.sit ? 0.22 : air ? off : 0;
   rig.position.y += (targetY - rig.position.y) * (peer.local ? 1 : Math.min(1, dt * 16));
 
-  if (peer.freezeFacing) {
-    rig.rotation.y = peer.tyaw;
+  if (peer.hyaw == null) peer.hyaw = peer.tyaw || 0;
+  if (peer.byaw == null) peer.byaw = peer.hyaw;
+  if (peer.freezeFacing || peer.local) {
+    peer.hyaw = peer.tyaw;
     peer.pit = peer.tpit || 0;
   } else {
-    let dyaw = peer.tyaw - rig.rotation.y;
-    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
-    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-    rig.rotation.y += dyaw * (peer.local ? 1 : Math.min(1, dt * 12));
+    peer.hyaw += wrapRad(peer.tyaw - peer.hyaw) * Math.min(1, dt * 12);
     peer.pit += ((peer.tpit || 0) - peer.pit) * Math.min(1, dt * 14);
   }
 
@@ -835,6 +959,8 @@ function animatePeer(peer, dt, t) {
   peer.lz = rig.position.z;
   const vel = Math.hypot(vx, vz);
   const moving = !air && !peer.sit && !peer.pee && vel > 0.18;
+  faceBody(peer, moving, vx, vz, dt);
+  rig.rotation.y = peer.byaw;
 
   if (moving) u.walk += dt * (5.5 + drunk * 3.6) * (0.7 + Math.min(1.4, vel / 2.2));
   else if (drunk > 0.18 && !peer.sit && !peer.pee) u.walk += dt * drunk * 1.8;
@@ -853,24 +979,19 @@ function animatePeer(peer, dt, t) {
     const loft = Math.min(1, rig.position.y / 0.45);
     u.legL.rotation.set(-0.55 - loft * 0.2, 0, limp * 0.08);
     u.legR.rotation.set(-0.32 - loft * 0.15, 0, -limp * 0.04);
-    u.armL.rotation.set(0.55 + loft * 0.35, 0, -0.15);
-    u.armR.rotation.set(peer.pouring ? -1.1 : 0.42 + loft * 0.25, 0, 0.12);
+    u.armL.rotation.set(0.55 + loft * 0.35, 0, 0.15);
+    u.armR.rotation.set(peer.pouring ? -1.1 : 0.42 + loft * 0.25, 0, -0.12);
     u.body.position.y = 0;
     u.body.rotation.set(0.12 * loft, 0, 0);
   } else {
     u.legL.rotation.set(leftSwing, 0, limp * 0.2);
     u.legR.rotation.set(rightSwing, 0, -limp * 0.06);
-    u.armL.rotation.set(-leftSwing * (0.7 - limp * 0.2) + Math.sin(t * 2.4 + phase) * drunk * 0.32, 0, drunk * 0.16);
+    u.armL.rotation.set(-rightSwing * (0.7 - limp * 0.2) + Math.sin(t * 2.4 + phase) * drunk * 0.32, 0, -drunk * 0.16);
     u.armR.rotation.set(
-      peer.pouring ? -1.1 : -rightSwing * 0.65 + Math.sin(t * 1.7 + phase) * drunk * 0.26,
+      peer.pouring ? -1.1 : -leftSwing * 0.65 + Math.sin(t * 1.7 + phase) * drunk * 0.26,
       0,
-      -drunk * 0.1
+      drunk * 0.1
     );
-    if ((peer.punchT || 0) > 0) {
-      const uPunch = 1 - peer.punchT / 0.28;
-      const swing = uPunch < 0.38 ? uPunch / 0.38 : 1 - (uPunch - 0.38) / 0.62;
-      u.armR.rotation.set(-1.55 * swing, 0.2 * swing, -0.4 * swing);
-    }
     u.body.position.y = hitch;
     u.body.rotation.set(
       Math.sin(t * 0.9 + phase) * drunk * 0.14 + (moving ? Math.sin(warped) * drunk * 0.08 : 0),
@@ -879,18 +1000,26 @@ function animatePeer(peer, dt, t) {
     );
   }
 
-  if (peer.pee && !peer.sit && !air) {
-    u.body.position.y = hitch;
+  if (peer.pee && !peer.sit) u.peePull = Math.min(1, (u.peePull || 0) + dt * 2.4);
+  else u.peePull = Math.max(0, (u.peePull || 0) - dt * 3.2);
+  const pull = u.peePull || 0;
+
+  if (pull > 0.001 && !peer.sit && !air) {
+    u.body.position.y = 0;
     u.body.rotation.x = 0;
     u.legL.rotation.set(0, 0, 0);
     u.legR.rotation.set(0, 0, 0);
-    for (const [arm, z] of [[u.armL, 0.42], [u.armR, -0.42]]) {
+    const reach = Math.min(1, pull / 0.55);
+    const hold = Math.max(0, (pull - 0.55) / 0.45);
+    const rx = -0.18 - reach * 0.72 + hold * 0.35;
+    const rz = 0.12 + reach * 0.26 + hold * 0.04;
+    for (const [arm, side] of [[u.armL, -1], [u.armR, 1]]) {
       if (!arm) continue;
-      arm.position.set(arm.userData.homeX ?? (z > 0 ? -0.24 : 0.24), arm.userData.homeY ?? 1.1, arm.userData.homeZ ?? 0);
-      arm.rotation.set(-0.55, 0, z);
+      arm.position.set(arm.userData.homeX ?? -0.24 * side, arm.userData.homeY ?? 1.1, arm.userData.homeZ ?? 0);
+      arm.rotation.set(rx, 0, rz * side);
       arm.scale.set(1, 1, 1);
     }
-  } else {
+  } else if (!peer.sit) {
     for (const arm of [u.armL, u.armR]) {
       if (!arm || arm.userData.homeY == null) continue;
       arm.position.set(arm.userData.homeX, arm.userData.homeY, arm.userData.homeZ);
@@ -898,52 +1027,44 @@ function animatePeer(peer, dt, t) {
     }
   }
 
+  if (peer.pee) u.pantDrop = Math.min(1, (u.pantDrop || 0) + dt * 2.1);
+  else u.pantDrop = Math.max(0, (u.pantDrop || 0) - dt * 2.8);
+  const drop = u.pantDrop || 0;
+  const pantsUp = !peer.pee && drop < 0.02;
   if (u.hipPants) {
-    const down = peer.pee && !peer.sit;
-    const homeSX = u.hipPants.userData.homeSX || 0.36;
-    const homeSY = u.hipPants.userData.homeSY || 0.24;
-    const homeSZ = u.hipPants.userData.homeSZ || 0.20;
-    const targetY = down ? 0.08 : u.hipPants.userData.homeY;
-    const targetZ = down ? 0.04 : 0;
-    const k = Math.min(1, dt * 8);
-    u.hipPants.position.y += (targetY - u.hipPants.position.y) * k;
-    u.hipPants.position.z += (targetZ - u.hipPants.position.z) * k;
-    u.hipPants.scale.x += ((down ? homeSX * 1.12 : homeSX) - u.hipPants.scale.x) * k;
-    u.hipPants.scale.y += ((down ? 0.12 : homeSY) - u.hipPants.scale.y) * k;
-    u.hipPants.scale.z += ((down ? 0.22 : homeSZ) - u.hipPants.scale.z) * k;
+    u.hipPants.visible = pantsUp;
+    u.hipPants.position.y = u.hipPants.userData.homeY ?? 0.74;
+    u.hipPants.position.z = -0.01;
+    u.hipPants.scale.set(u.hipPants.userData.homeSX || 0.36, u.hipPants.userData.homeSY || 0.18, u.hipPants.userData.homeSZ || 0.21);
   }
-  const dropPants = peer.pee && !peer.sit;
+  for (const cake of [u.hipCakeL, u.hipCakeR, u.hipCakeC]) {
+    if (cake) cake.visible = pantsUp;
+  }
   for (const pant of [u.pantL, u.pantR]) {
     if (!pant) continue;
-    const k = Math.min(1, dt * 8);
-    const homeY = pant.userData.homeY ?? -0.08;
-    const homeSY = pant.userData.homeSY ?? 0.62;
-    pant.position.y += ((dropPants ? -0.4 : homeY) - pant.position.y) * k;
-    pant.scale.y += ((dropPants ? 0.12 : homeSY) - pant.scale.y) * k;
-    pant.scale.x += ((dropPants ? 0.18 : 0.16) - pant.scale.x) * k;
-    pant.scale.z += ((dropPants ? 0.18 : 0.16) - pant.scale.z) * k;
-    pant.visible = pant.scale.y > 0.05;
+    const homeY = pant.userData.homeY ?? -0.32;
+    const homeSY = pant.userData.homeSY ?? 0.64;
+    pant.position.y = homeY + (-0.68 - homeY) * drop;
+    pant.scale.y = homeSY + (0.16 - homeSY) * drop;
+    pant.scale.x = 0.16 + 0.04 * drop;
+    pant.scale.z = 0.16 + 0.04 * drop;
+    pant.visible = true;
+  }
+  if (u.butt) {
+    u.butt.visible = drop > 0.06;
+    u.butt.position.set(0, 0.675, -0.118);
+    u.butt.scale.set(1, 1, 1);
   }
   if (u.pecker) {
     u.pecker.rotation.set(-Math.PI / 6, 0, 0);
-    u.pecker.visible = dropPants;
+    u.pecker.visible = drop > 0.32;
   }
 
-  if ((peer.punchT || 0) > 0 && u.armR && !peer.pee) {
-    const uPunch = 1 - peer.punchT / 0.28;
-    const swing = uPunch < 0.38 ? uPunch / 0.38 : 1 - (uPunch - 0.38) / 0.62;
-    u.armR.rotation.set(-1.55 * swing, 0.2 * swing, -0.4 * swing);
-  }
-
-  if (peer.freezeFacing) {
-    u.body.rotation.y = 0;
-    u.body.rotation.z = 0;
-    u.body.rotation.x = 0;
-    if (!peer.pee) u.body.position.y = 0;
-  }
+  if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);
 
   if (!peer.freezeHead) {
-    u.head.rotation.set(-peer.pit, 0, Math.sin(t * 1.35 + phase) * drunk * 0.08);
+    u.head.rotation.order = "YXZ";
+    u.head.rotation.set(-peer.pit, headYawOffset(peer), Math.sin(t * 1.35 + phase) * drunk * 0.08);
   }
 
   const bases = u.flashBase || [];
@@ -998,6 +1119,8 @@ function ensureBot() {
     tz: 1.6,
     ty: EYE,
     tyaw: Math.PI,
+    hyaw: Math.PI,
+    byaw: Math.PI,
     tpit: 0,
     pit: 0,
     bac: 0.16,

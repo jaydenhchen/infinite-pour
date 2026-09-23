@@ -424,8 +424,26 @@ canvas.webgl {
 }
 #lookHint.show { display: block; }
 
+#hurt {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 43;
+  background: radial-gradient(ellipse at center, rgba(180, 20, 30, 0.12), rgba(70, 0, 10, 0.7));
+  opacity: 0;
+}
+
 #passout { display: none; z-index: 45; }
 #passout.open { display: flex; }
+#passout.arrest {
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(40, 80, 255, 0.22), transparent 50%),
+    rgba(6, 8, 16, 0.78);
+}
+#passout.arrest h1 {
+  color: #7aa2ff;
+  text-shadow: 4px 4px 0 #000, 0 0 18px rgba(70, 120, 255, 0.55);
+}
 
 .hidden { display: none !important; }
 
