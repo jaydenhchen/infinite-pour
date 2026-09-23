@@ -71,6 +71,19 @@ function d(name, type, abv, color, extra = {}) {
   };
 }
 
+export const PISS = {
+  id: "piss",
+  name: "Piss",
+  type: "spirit",
+  abv: 0,
+  color: 0xd6c044,
+  bottle: "spirit",
+  glass: "pint",
+  label: 0xc9a227,
+  brand: "House",
+  tags: ["piss", "pee", "urine"],
+};
+
 const BEERS = [
   ["Pilsner", 4.5, HEX.pils],
   ["Lager", 4.6, HEX.lager],

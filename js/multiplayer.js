@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { connectNet, sanitizeName, defaultName } from "./net.js?v=31";
+import { connectNet, sanitizeName, defaultName } from "./net.js?v=32";
 
 const SHIRTS = [0x3d6ea8, 0xc44b3c, 0x2e8b57, 0xb8860b, 0x7b4b9a, 0xd46aa0, 0x2c6e49, 0xe07a3d];
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
@@ -90,8 +90,76 @@ export function setWorldCollide(fn) {
 }
 
 let peeDrainFn = () => false;
+let localCupFn = null;
+let peeFillFn = null;
+const CUP_HELD = new Set(["cup", "pint", "shot", "wine", "rocks", "highball", "coupe", "glass"]);
+const _cupWorld = new THREE.Vector3();
 export function setPeeDrainFn(fn) {
   peeDrainFn = typeof fn === "function" ? fn : () => false;
+}
+
+export function setPeeCupHooks(getLocalCups, onFill) {
+  localCupFn = typeof getLocalCups === "function" ? getLocalCups : null;
+  peeFillFn = typeof onFill === "function" ? onFill : null;
+}
+
+export function isCupHeld(name) {
+  return CUP_HELD.has(String(name || "").trim().toLowerCase());
+}
+
+function cupWorldOf(peer) {
+  if (!peer || !peer.rig || !isCupHeld(peer.held)) return null;
+  const mesh = peer.rig.userData.cup || peer.rig.userData.held;
+  if (!mesh) return null;
+  peer.rig.updateMatrixWorld(true);
+  mesh.getWorldPosition(_cupWorld);
+  return {
+    id: peer.id,
+    local: !!peer.local,
+    x: _cupWorld.x,
+    y: _cupWorld.y + 0.055,
+    z: _cupWorld.z,
+    r: 0.12,
+    h: 0.16,
+  };
+}
+
+export function heldCupWorlds() {
+  const out = [];
+  const local = localCupFn && localCupFn();
+  if (Array.isArray(local)) {
+    for (const c of local) if (c) out.push({ ...c, local: true, id: c.id || "you" });
+  } else if (local) {
+    out.push({ ...local, local: true, id: local.id || "you" });
+  }
+  for (const peer of remotes.values()) {
+    const c = cupWorldOf(peer);
+    if (c) out.push(c);
+  }
+  if (bot) {
+    const c = cupWorldOf(bot);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+function dropHitsCup(pos, cup) {
+  const dx = pos.x - cup.x;
+  const dy = pos.y - cup.y;
+  const dz = pos.z - cup.z;
+  const r = cup.r || 0.12;
+  const h = cup.h || 0.16;
+  return dx * dx + dz * dz <= r * r && dy > -h && dy < 0.12;
+}
+
+function catchPeeDrop(drop, cups) {
+  if (!cups || !cups.length) return false;
+  for (const cup of cups) {
+    if (!dropHitsCup(drop.position, cup)) continue;
+    if (cup.local) peeFillFn && peeFillFn(0.01);
+    return true;
+  }
+  return false;
 }
 
 export function setLocalHitHandler(fn) {
@@ -176,10 +244,72 @@ function addBox(parent, mat, x, y, z, sx, sy, sz) {
   return m;
 }
 
+function nameLabel(name) {
+  return String(name || "?").toUpperCase().slice(0, 16);
+}
+
+function measureLabel(text, scale) {
+  let w = 0;
+  for (const ch of text) w += ch === " " ? 3 * scale : 4 * scale;
+  return w;
+}
+
+function paintNametag(tag, name) {
+  const label = nameLabel(name);
+  if (tag.userData.label === label && tag.material && tag.material.map) return;
+  tag.userData.label = label;
+  const scale = 2;
+  const padX = 4;
+  const padY = 3;
+  const tw = Math.max(4, measureLabel(label, scale));
+  const w = tw + padX * 2;
+  const h = 5 * scale + padY * 2;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+  ctx.fillRect(0, 0, w, h);
+  if (blitText) blitText(ctx, label, padX, padY, "#ffffff", scale);
+  else {
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 10px monospace";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, padX, h / 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  if (tag.material && tag.material.map) tag.material.map.dispose();
+  if (tag.material) tag.material.dispose();
+  tag.material = new THREE.SpriteMaterial({
+    map: tex,
+    color: 0xffffff,
+    transparent: true,
+    opacity: 1,
+    depthTest: false,
+    depthWrite: false,
+    sizeAttenuation: true,
+    toneMapped: false,
+  });
+  const worldH = 0.2;
+  tag.userData.baseScale = { x: worldH * (w / h), y: worldH };
+  tag.scale.set(tag.userData.baseScale.x, tag.userData.baseScale.y, 1);
+}
+
 function makeNametag(name) {
-  const tag = new THREE.Object3D();
-  tag.visible = false;
-  tag.userData.label = String(name || "?").toUpperCase().slice(0, 16);
+  const tag = new THREE.Sprite();
+  tag.center.set(0.5, 0);
+  tag.renderOrder = 30;
+  tag.frustumCulled = false;
+  tag.userData.locked = false;
+  tag.position.set(0, 1.86, 0);
+  paintNametag(tag, name);
+  tag.visible = true;
   return tag;
 }
 
@@ -265,6 +395,8 @@ function makeBartender(id, name, gender = "m") {
   addBox(armR, skin, 0, -0.3, 0, 0.11, 0.16, 0.11);
   const held = addBox(armR, lambert(0xc47b20), 0, -0.42, 0.02, 0.08, 0.16, 0.08);
   held.visible = false;
+  const cup = makePeerCup();
+  armR.add(cup);
   armR.position.set(-0.24, 1.1, 0);
   armR.userData.homeX = -0.24;
   armR.userData.homeY = 1.1;
@@ -327,6 +459,7 @@ function makeBartender(id, name, gender = "m") {
     legL,
     legR,
     held,
+    cup,
     tag,
     stars,
     skin,
@@ -369,8 +502,10 @@ export function tickAvatar(peer, dt, t) {
 }
 
 function setNametag(peer, name) {
-  const next = String(name || "?").toUpperCase().slice(0, 16);
-  if (peer.rig.userData.tag) peer.rig.userData.tag.userData.label = next;
+  const tag = peer?.rig?.userData?.tag;
+  if (!tag || tag.userData.locked) return;
+  paintNametag(tag, name);
+  tag.visible = true;
 }
 
 function spawnPeer(id, state) {
@@ -398,6 +533,8 @@ function spawnPeer(id, state) {
     pit: state.pit || 0,
     bac: clamp(state.b, 0, DRUNK_NET),
     held: state.h || "",
+    gf: clamp(state.gf, 0, 1),
+    gc: Number(state.gc) || 0,
     pouring: !!state.p,
     last: performance.now(),
     phase: phaseOf(id),
@@ -413,7 +550,10 @@ function spawnPeer(id, state) {
   };
   remotes.set(id, peer);
   if (remotes.size >= 1) killBot(false);
-  peer.rig.userData.held.visible = !!peer.held;
+  peer.seq = Number.isFinite(Number(state.t)) ? Number(state.t) : 0;
+  peer.pendingLeave = 0;
+  peer.rig.visible = true;
+  peer.rig.frustumCulled = false;
   toast?.(`${name} walked in`);
   return peer;
 }
@@ -428,11 +568,20 @@ function dropPeer(id, silent) {
 }
 
 function applyState(id, state) {
-  if (state && typeof state.t === "number" && Math.abs(Date.now() - state.t) > 20000) return;
+  if (!state || typeof state !== "object") return;
+  const seq = Number(state.t);
   let peer = remotes.get(id);
+  if (peer && Number.isFinite(seq) && Number.isFinite(peer.seq) && seq + 1 < peer.seq) return;
+  if (peer && peer.pendingLeave && Number.isFinite(seq) && seq <= (peer.seq || 0)) return;
   if (!peer) {
     if (remotes.size >= 20) return;
     peer = spawnPeer(id, state);
+  }
+  if (Number.isFinite(seq)) peer.seq = Math.max(peer.seq || 0, seq);
+  peer.pendingLeave = 0;
+  if (peer.rig) {
+    peer.rig.visible = true;
+    peer.rig.frustumCulled = false;
   }
   peer.name = sanitizeName(state.n || peer.name);
   setNametag(peer, peer.name);
@@ -445,6 +594,8 @@ function applyState(id, state) {
   peer.tpit = state.pit ?? peer.tpit;
   if (state.b != null) peer.bac = clamp(state.b, 0, DRUNK_NET);
   peer.held = state.h || "";
+  if (state.gf != null) peer.gf = clamp(state.gf, 0, 1);
+  if (state.gc != null) peer.gc = Number(state.gc) || 0;
   peer.pouring = !!state.p;
   peer.sit = !!state.s;
   peer.pee = !!state.u;
@@ -461,11 +612,12 @@ function applyState(id, state) {
       scene.add(rig);
       scene.remove(old);
       peer.rig = rig;
+      rig.visible = true;
+      rig.frustumCulled = false;
     }
     peer.gender = nextG;
   }
   peer.last = performance.now();
-  peer.rig.userData.held.visible = !!peer.held;
 }
 
 function slugRoom(s) {
@@ -532,7 +684,9 @@ export function bootMultiplayer(opts) {
       }
     },
     onPeerLeave(id) {
-      dropPeer(id);
+      const peer = remotes.get(id);
+      if (!peer) return;
+      peer.pendingLeave = performance.now();
     },
     onEvent(msg) {
       if (msg.t === "restock") {
@@ -589,6 +743,8 @@ function sendPose() {
     s: extra.s ? 1 : 0,
     u: extra.u ? 1 : 0,
     g: extra.g === "f" || local.gender === "f" ? "f" : "m",
+    gf: extra.gf != null ? round(clamp(extra.gf, 0, 1), 2) : 0,
+    gc: extra.gc ? (Number(extra.gc) || 0) : 0,
     t: Date.now(),
   };
   if (extra.ax != null && extra.ay != null && extra.az != null) {
@@ -596,7 +752,7 @@ function sendPose() {
     pose.ay = round(extra.ay, 2);
     pose.az = round(extra.az, 2);
   }
-  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.ax}|${pose.ay}|${pose.az}`;
+  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.gf}|${pose.gc}|${pose.ax}|${pose.ay}|${pose.az}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -626,6 +782,51 @@ function poseRightPunch(u, punchT) {
   u.armR.rotation.set(-1.75 * swing, -0.28 * swing, 0.48 * swing);
   if (u.armL) u.armL.rotation.set(0.32 * swing, 0.1 * swing, -0.22);
   return true;
+}
+
+function makePeerCup() {
+  const g = new THREE.Group();
+  const glass = lambert(0xc8e6f4, { transparent: true, opacity: 0.42 });
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.03, 0.11, 8, 1, true), glass);
+  wall.position.y = 0.055;
+  g.add(wall);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.012, 8), glass);
+  base.position.y = 0.006;
+  g.add(base);
+  const liq = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.03, 0.024, 1, 8),
+    lambert(0xd6c044, { transparent: true, opacity: 0.88, emissive: 0x3a3008, emissiveIntensity: 0.22 })
+  );
+  liq.position.y = 0.02;
+  liq.scale.y = 0.01;
+  liq.visible = false;
+  g.add(liq);
+  g.userData.liq = liq;
+  g.position.set(0.012, -0.5, 0.05);
+  g.rotation.set(0.18, 0, 0.08);
+  g.visible = false;
+  return g;
+}
+
+function poseHeld(peer) {
+  const u = peer.rig && peer.rig.userData;
+  if (!u) return;
+  const cupOn = isCupHeld(peer.held);
+  if (u.held) u.held.visible = !!peer.held && !cupOn;
+  if (!u.cup) return;
+  u.cup.visible = cupOn;
+  if (!cupOn) return;
+  const fill = clamp(peer.gf || 0, 0, 1);
+  const liq = u.cup.userData.liq;
+  if (!liq) return;
+  liq.visible = fill > 0.02;
+  if (!liq.visible) return;
+  const h = Math.max(0.012, 0.086 * fill);
+  liq.scale.y = h;
+  liq.position.y = 0.012 + h / 2;
+  const col = Number(peer.gc) || 0xd6c044;
+  liq.material.color.setHex(col);
+  if (liq.material.emissive) liq.material.emissive.setHex(col);
 }
 
 function makePeeKit() {
@@ -784,6 +985,7 @@ function tickPee(peer, dt, t) {
   } else {
     u.peeEmit = 0;
   }
+  const cups = heldCupWorlds();
   for (const drop of drops) {
     if (!drop.visible) continue;
     drop.userData.life -= dt;
@@ -796,6 +998,11 @@ function tickPee(peer, dt, t) {
     drop.scale.set(fps ? 0.95 : 0.72, fps ? 0.95 : 0.72, stretch);
     if (spd > 0.08) {
       drop.lookAt(drop.position.x + v.x, drop.position.y + v.y, drop.position.z + v.z);
+    }
+    if ((drop.userData.age || 0) > 0.04 && catchPeeDrop(drop, cups)) {
+      drop.visible = false;
+      drop.removeFromParent();
+      continue;
     }
     if ((drop.userData.age || 0) > 0.07 && peeDrainFn(drop.position.x, drop.position.y, drop.position.z)) {
       drop.visible = false;
@@ -935,11 +1142,21 @@ function animatePeer(peer, dt, t) {
     }
   }
 
+  if (!peer.local) {
+    rig.visible = true;
+    if (u.body) u.body.visible = true;
+  }
   const dx = peer.tx - rig.position.x;
   const dz = peer.tz - rig.position.z;
-  const k = peer.local ? 1 : Math.min(1, dt * (air ? 16 : 12));
-  rig.position.x += dx * k;
-  rig.position.z += dz * k;
+  const dist = Math.hypot(dx, dz);
+  if (!peer.local && dist > 8) {
+    rig.position.x = peer.tx;
+    rig.position.z = peer.tz;
+  } else {
+    const k = peer.local ? 1 : Math.min(1, dt * (air ? 14 : dist > 2.2 ? 10 : 7));
+    rig.position.x += dx * k;
+    rig.position.z += dz * k;
+  }
   const targetY = peer.sit ? 0.22 : air ? off : 0;
   rig.position.y += (targetY - rig.position.y) * (peer.local ? 1 : Math.min(1, dt * 16));
 
@@ -1079,9 +1296,17 @@ function animatePeer(peer, dt, t) {
     u.skin.color.setRGB(1, 0.12, 0.12);
   }
 
-  if (u.tag?.material) {
-    u.tag.material.color.setHSL(0.09 - Math.min(1, drunk) * 0.09, 0.15 + Math.min(1, drunk) * 0.75, 1);
-    u.tag.position.y = 1.8 * (u.tall || 1) + (u.stars.visible ? 0.08 : 0);
+  if (u.tag && !u.tag.userData.locked) {
+    if (u.tag.userData.label !== nameLabel(peer.name)) paintNametag(u.tag, peer.name);
+    if (!peer.local) u.tag.visible = true;
+    const tall = u.tall || 1;
+    u.tag.position.set(0, 1.78 * tall + (u.stars.visible ? 0.12 : 0.04), 0);
+    const base = u.tag.userData.baseScale;
+    if (base && camera) {
+      const d = camera.position.distanceTo(rig.position);
+      const s = THREE.MathUtils.clamp(0.92 + d * 0.028, 0.92, 1.85);
+      u.tag.scale.set(base.x * s, base.y * s, 1);
+    }
   }
 
   const showStars = drunk > 0.3;
@@ -1092,6 +1317,7 @@ function animatePeer(peer, dt, t) {
     u.stars.scale.setScalar(0.5 + drunk * 0.7);
   }
 
+  poseHeld(peer);
   tickPee(peer, dt, t);
 }
 
@@ -1125,6 +1351,8 @@ function ensureBot() {
     pit: 0,
     bac: 0.16,
     held: "House Whiskey",
+    gf: 0,
+    gc: 0,
     pouring: false,
     last: performance.now(),
     phase: phaseOf(BOT_ID),
@@ -1230,10 +1458,13 @@ export function tickMultiplayer(dt) {
   const now = performance.now();
   const t = now * 0.001;
   for (const [id, peer] of remotes) {
-    if (now - peer.last > 8000) {
+    const quiet = now - (peer.last || 0);
+    const leaving = peer.pendingLeave && now - peer.pendingLeave > 4000 && quiet > 4000;
+    if (leaving || quiet > 60000) {
       dropPeer(id);
       continue;
     }
+    if (peer.rig) peer.rig.visible = true;
     animatePeer(peer, dt, t);
   }
 
@@ -1246,13 +1477,13 @@ export function tickMultiplayer(dt) {
 
   poseAcc += dt;
   hbAcc += dt;
-  if (hbAcc >= 2) {
+  if (hbAcc >= 0.75) {
     hbAcc = 0;
     forcePose = true;
   }
   const y = poseFn?.()?.y ?? camera.position.y;
   const air = y > eyeHeight(local.gender) + 0.06;
-  if (forcePose || poseAcc >= (air ? 0.05 : 0.1)) {
+  if (forcePose || poseAcc >= (air ? 0.05 : 0.08)) {
     poseAcc = 0;
     sendPose();
   }
