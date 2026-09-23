@@ -736,6 +736,8 @@ function spawnPeer(id, state) {
     punchOn: false,
     kvx: 0,
     kvz: 0,
+    sipT: Number(state.sip) || 0,
+    sipKind: state.sk ? "chug" : "sip",
   };
   paintShirt(rig, state.sc != null ? state.sc : colorOf(id));
   remotes.set(id, peer);
@@ -815,6 +817,10 @@ function applyState(id, state) {
   if (state.gf != null) peer.gf = clamp(state.gf, 0, 1);
   if (state.gc != null) peer.gc = Number(state.gc) || 0;
   peer.pouring = !!state.p;
+  if (state.sip != null) {
+    peer.sipT = Number(state.sip) || 0;
+    peer.sipKind = state.sk ? "chug" : "sip";
+  }
   const wasDrive = !!peer.drive;
   const wasSi = peer.si == null ? 0 : peer.si | 0;
   peer.drive = !!state.v;
@@ -1112,6 +1118,8 @@ function sendPose() {
     b: round(clamp(drunkFn(), 0, DRUNK_NET), 2),
     h: String(heldFn() || "").slice(0, 24),
     p: pouringFn() ? 1 : 0,
+    sip: extra.sip > 0.02 ? round(extra.sip, 2) : 0,
+    sk: extra.sk ? 1 : 0,
     s: extra.s ? 1 : 0,
     u: extra.u ? 1 : 0,
     pn: extra.pn || extra.n ? 1 : 0,
@@ -1154,7 +1162,7 @@ function sendPose() {
     pose.hnx = lastHit.nx;
     pose.hnz = lastHit.nz;
   }
-  const key = `${pose.n}|${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.pn || 0}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.pk || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
+  const key = `${pose.n}|${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.pn || 0}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.pk || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}|${pose.sip || 0}|${pose.sk || 0}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -1651,6 +1659,7 @@ function animatePeer(peer, dt, t) {
   if (peer.stunT > 0) peer.stunT = Math.max(0, peer.stunT - dt);
   if (peer.hurtT > 0) peer.hurtT = Math.max(0, peer.hurtT - dt);
   if (peer.punchT > 0) peer.punchT = Math.max(0, peer.punchT - dt);
+  if (peer.sipT > 0) peer.sipT = Math.max(0, peer.sipT - dt);
   if (!peer.local && (peer.kvx || peer.kvz)) {
     const [kx, kz, nvx, nvz] = stepKnock(peer.tx, peer.tz, peer.kvx, peer.kvz, dt, collideFn, 0.32);
     peer.tx = kx;
@@ -1803,6 +1812,27 @@ function animatePeer(peer, dt, t) {
   if (String(peer.held || "") === "baton" && (peer.punchT || 0) <= 0 && !peer.pouring && !peer.sit && !peer.drive && pull <= 0.001) {
     const ready = moving ? leftSwing * 0.16 : 0;
     u.armR.rotation.set(0.34 + ready, 0.04, -0.44);
+  }
+
+  if ((peer.sipT || 0) > 0.01 && !punching && pull <= 0.001 && !peer.drive) {
+    const chug = peer.sipKind === "chug";
+    const dur = chug ? 1.08 : 0.64;
+    const uSip = 1 - Math.min(1, peer.sipT / dur);
+    const upEnd = 0.24;
+    const holdEnd = chug ? 0.78 : 0.56;
+    let lift;
+    if (uSip < upEnd) {
+      const a = uSip / upEnd;
+      lift = a * a * (3 - 2 * a);
+    } else if (uSip < holdEnd) lift = 1;
+    else {
+      const a = (uSip - holdEnd) / (1 - holdEnd || 1);
+      lift = 1 - a * a * (3 - 2 * a);
+    }
+    const gulp = chug && lift > 0.72 ? Math.sin(t * 24) * 0.06 : 0;
+    u.armR.rotation.set(-0.35 - 1.28 * lift + gulp, -0.12 * lift, 0.18 + 0.42 * lift);
+    if (u.armL) u.armL.rotation.x += 0.08 * lift;
+    if (u.head && !peer.freezeHead) u.head.rotation.x += 0.16 * lift;
   }
 
   if (punching) poseRightPunch(u, peer.punchT);
