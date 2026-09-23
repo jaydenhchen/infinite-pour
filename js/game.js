@@ -868,6 +868,9 @@ const audio = {
   summonClose() {
     this.beep(400, 0.06, "square", 0.03);
   },
+  chat() {
+    this.beep(690, 0.045, "square", 0.03);
+  },
   restock() {
     this.clink();
     setTimeout(() => this.clink(), 70);
@@ -1054,6 +1057,10 @@ let winPopT = 0;
 let summonOpen = false;
 let summonCat = "all";
 let summonOpenedBy = null;
+let chatOpen = false;
+let chatOpenedBy = null;
+const chatLines = [];
+const CHAT_COLORS = ["#55FF55", "#55FFFF", "#FFFF55", "#FF55FF", "#FFAA00", "#FFFFFF", "#FF5555", "#55FF55"];
 let resultIndex = 0;
 let results = [];
 let passedOut = false;
@@ -1884,6 +1891,7 @@ function resetShift() {
   peeUntil = 0;
   pantsStart = 0;
   viewPantDrop = 0;
+  closeChat(false);
   hud();
 }
 
@@ -3736,7 +3744,7 @@ function standUp() {
 }
 
 function playing() {
-  return started && !summonOpen && !passedOut;
+  return started && !summonOpen && !chatOpen && !passedOut;
 }
 
 function drunkWord(d) {
@@ -3783,12 +3791,12 @@ function hud() {
     $("heldMeta").textContent = `${held.userData.drink.type} · ${held.userData.drink.abv}% ABV · ${Math.round(held.userData.volume * 100)}% left`;
   } else {
     $("heldName").textContent = "empty hands";
-    $("heldMeta").textContent = "E grab bottle or cup · T summon";
+    $("heldMeta").textContent = "E grab bottle or cup · Y summon · T chat";
   }
   const d = drunkLevel();
   $("vignette").style.filter = `hue-rotate(${Math.min(180, d * 40)}deg) saturate(${1 + Math.min(4, d)})`;
   $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(6, 50 - d * 12)}%, rgba(${Math.min(220, 40 + d * 40)}, 8, 20, ${Math.min(0.92, 0.45 + d * 0.12)}) 100%)`;
-  $("lookHint").classList.toggle("show", started && !controls.isLocked && !summonOpen && !passedOut);
+  $("lookHint").classList.toggle("show", started && !controls.isLocked && !summonOpen && !chatOpen && !passedOut);
   const list = $("onlineList");
   if (list) {
     const people = roster();
@@ -3906,7 +3914,7 @@ function promptFrom(obj) {
   if (k === "urinal") return localGender === "f" ? "girls sit on the toilet" : "P to pee";
   if (k === "restroomDoor") return lookDoorOpen(obj) ? "E close the restroom door" : "E open the restroom door";
   if (k === "stallDoor") return lookDoorOpen(obj) ? "E close the stall" : "E open the stall";
-  if (k === "register" || k === "hatch") return "E / T  summon any drink";
+  if (k === "register" || k === "hatch") return "E / Y  summon any drink";
   if (k === "sink") return "E dump glass";
   if (k === "bathSink") return obj.userData.sink?.userData.running ? "E turn the sink off" : "E turn the sink on";
   if (k === "juke") return audio.juke ? "E silence the juke" : "E fire up the juke";
@@ -4209,6 +4217,149 @@ function paintCats() {
   ).join("");
 }
 
+function chatColor(name) {
+  let h = 0;
+  for (const ch of String(name || "")) h = (h * 33 + ch.charCodeAt(0)) | 0;
+  return CHAT_COLORS[Math.abs(h) % CHAT_COLORS.length];
+}
+
+function cleanChatName(s) {
+  return String(s || "regular").replace(/[^\w \-'.]/g, "").replace(/\s+/g, " ").trim().slice(0, 16) || "regular";
+}
+
+function cleanChatText(s) {
+  return String(s || "").replace(/[\u0000-\u001f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+function escChat(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function neighborKey(ch) {
+  const lower = ch.toLowerCase();
+  const rows = ["1234567890-=", "qwertyuiop[]\\", "asdfghjkl;'", "zxcvbnm,./"];
+  for (let r = 0; r < rows.length; r++) {
+    const i = rows[r].indexOf(lower);
+    if (i < 0) continue;
+    const opts = [];
+    for (const [dr, dc] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+      const row = rows[r + dr];
+      if (!row) continue;
+      const n = row[i + dc];
+      if (n) opts.push(n);
+    }
+    if (!opts.length) return ch;
+    const pick = opts[(Math.random() * opts.length) | 0];
+    if (ch !== lower && /[a-z]/.test(pick)) return pick.toUpperCase();
+    return pick;
+  }
+  return ch;
+}
+
+function drunkTypeChar(ch) {
+  if (!/[a-zA-Z0-9]/.test(ch)) return ch;
+  const d = drunkLevel();
+  const chance = THREE.MathUtils.clamp((d - 0.16) / 3.6, 0, 0.7);
+  if (Math.random() >= chance) return ch;
+  return neighborKey(ch);
+}
+
+function insertChatChar(ch) {
+  const box = $("chatQ");
+  if (!box) return;
+  const start = box.selectionStart ?? box.value.length;
+  const end = box.selectionEnd ?? box.value.length;
+  const next = (box.value.slice(0, start) + ch + box.value.slice(end)).slice(0, 120);
+  box.value = next;
+  const caret = Math.min(120, start + ch.length);
+  box.setSelectionRange(caret, caret);
+}
+
+function paintChat() {
+  const log = $("chatLog");
+  if (!log) return;
+  const now = performance.now();
+  const lines = chatOpen
+    ? chatLines.slice(-80)
+    : chatLines.filter((line) => now - line.t < 12500).slice(-12);
+  log.innerHTML = lines
+    .map((line) => {
+      const age = now - line.t;
+      const fade = !chatOpen && age > 10000;
+      const gone = !chatOpen && age > 12500;
+      const cls = [fade ? "fade" : "", gone ? "gone" : ""].filter(Boolean).join(" ");
+      return `<li class="${cls}"><span class="who" style="color:${chatColor(line.name)}">&lt;${escChat(line.name)}&gt;</span> ${escChat(line.text)}</li>`;
+    })
+    .join("");
+  log.scrollTop = log.scrollHeight;
+}
+
+function addChat(name, text, you) {
+  const who = cleanChatName(name);
+  const msg = cleanChatText(text);
+  if (!msg) return;
+  chatLines.push({ name: who, text: msg, you: !!you, t: performance.now() });
+  if (chatLines.length > 80) chatLines.shift();
+  paintChat();
+  audio.chat();
+}
+
+function openChat() {
+  if (!started || passedOut || summonOpen || chatOpen) return;
+  chatOpen = true;
+  chatOpenedBy = "t";
+  for (const k of Object.keys(keys)) keys[k] = false;
+  $("chat").classList.add("open");
+  $("chatQ").value = "";
+  if (controls.isLocked) controls.unlock();
+  paintChat();
+  const onUp = (ev) => {
+    if (!chatOpenedBy || ev.code === "KeyT" || ev.key.toLowerCase() === "t") {
+      window.removeEventListener("keyup", onUp, true);
+      $("chatQ").focus();
+      setTimeout(() => {
+        chatOpenedBy = null;
+      }, 30);
+    }
+  };
+  window.addEventListener("keyup", onUp, true);
+  setTimeout(() => {
+    $("chatQ")?.focus();
+    chatOpenedBy = null;
+  }, 120);
+}
+
+function closeChat(relock = true) {
+  if (!chatOpen && !$("chat")?.classList.contains("open")) {
+    chatOpenedBy = null;
+    return;
+  }
+  chatOpen = false;
+  chatOpenedBy = null;
+  const box = $("chatQ");
+  if (box) {
+    box.value = "";
+    box.blur();
+  }
+  $("chat")?.classList.remove("open");
+  paintChat();
+  if (relock && started && !passedOut && !summonOpen) {
+    try {
+      controls.lock();
+    } catch {
+      /* pointer lock is optional */
+    }
+  }
+}
+
+function sendChat() {
+  const text = cleanChatText($("chatQ")?.value || "");
+  closeChat(true);
+  if (!text) return;
+  addChat(playerName(), text, true);
+  publishEvent({ t: "chat", n: playerName(), m: text });
+}
+
 function focusSummonBox() {
   if (!summonOpen) return;
   const box = $("q");
@@ -4227,7 +4378,7 @@ function openSummon(openedBy = null) {
   paintCats();
   renderResults("");
   const onUp = (ev) => {
-    if (!summonOpenedBy || ev.key.toLowerCase() === summonOpenedBy || ev.code === "KeyE" || ev.code === "KeyT") {
+    if (!summonOpenedBy || ev.key.toLowerCase() === summonOpenedBy || ev.code === "KeyE" || ev.code === "KeyY") {
       window.removeEventListener("keyup", onUp, true);
       focusSummonBox();
       setTimeout(() => {
@@ -4391,6 +4542,7 @@ function maybePassOut() {
   setPassoutMode("blackout");
   $("passoutStats").textContent = `score ${score}  ·  ${pours} pours  ·  ${unique.size} unique  ·  peak bac ${bac.toFixed(3)}`;
   $("passout").classList.add("open");
+  closeChat(false);
   if (inCar) exitCar(true);
   resetShift();
 }
@@ -4482,6 +4634,10 @@ function startShift() {
     }
     if (msg?.t === "world") {
       applyWorld(msg);
+      return;
+    }
+    if (msg?.t === "chat") {
+      addChat(msg.n || "regular", msg.m || "");
       return;
     }
     houseGames?.onNet(msg);
@@ -6535,6 +6691,7 @@ function tick() {
   updateDeliveries(dt);
   if (playing()) houseGames?.tick(dt, tWorld);
   $("prompt").textContent = playing() ? promptFrom(look) : "";
+  if (chatLines.length && !chatOpen) paintChat();
   if (toastT > 0) {
     toastT -= dt;
     if (toastT <= 0) $("toast").classList.remove("show");
@@ -6614,15 +6771,15 @@ function bind() {
     started = true;
   });
   controls.addEventListener("unlock", () => {
-    if (!summonOpen && !passedOut && !started) $("title").classList.remove("hidden");
+    if (!summonOpen && !chatOpen && !passedOut && !started) $("title").classList.remove("hidden");
   });
   window.addEventListener("mousedown", (e) => {
     if (e.target.closest("#restock") || e.target.closest("#warp")) return;
     if (e.button !== 0) return;
     mouseDown = true;
-    dragging = started && !controls.isLocked && !summonOpen;
+    dragging = started && !controls.isLocked && !summonOpen && !chatOpen;
     if (!started) return;
-    if (!controls.isLocked && !summonOpen && !passedOut && !e.target.closest("#summon") && !e.target.closest("#restock") && !e.target.closest("#warp")) {
+    if (!controls.isLocked && !summonOpen && !chatOpen && !passedOut && !e.target.closest("#summon") && !e.target.closest("#chat") && !e.target.closest("#restock") && !e.target.closest("#warp")) {
       controls.lock();
     }
     if (playing() && houseGames?.pointerDown(look)) {
@@ -6647,7 +6804,7 @@ function bind() {
   });
   window.addEventListener("mousemove", (e) => {
     if (inCar || viewMode === 2) {
-      if (!started || summonOpen || passedOut) return;
+      if (!started || summonOpen || chatOpen || passedOut) return;
       if (!controls.isLocked && !dragging) return;
       const dx = e.movementX * 0.0024;
       const dy = e.movementY * 0.0024;
@@ -6662,20 +6819,27 @@ function bind() {
       }
       return;
     }
-    if (!dragging || controls.isLocked || summonOpen) return;
+    if (!dragging || controls.isLocked || summonOpen || chatOpen) return;
     camera.rotation.y -= e.movementX * 0.0024;
     camera.rotation.x = THREE.MathUtils.clamp(camera.rotation.x - e.movementY * 0.0024, -1.2, 1.2);
   });
   window.addEventListener("keydown", (e) => {
     const typing =
+      chatOpen ||
       e.target === $("q") ||
+      e.target === $("chatQ") ||
       e.target === $("playerName") ||
       e.target === $("barCode") ||
-      (e.target && e.target.closest && e.target.closest("#summon"));
+      (e.target && e.target.closest && (e.target.closest("#summon") || e.target.closest("#chat")));
     if (e.code === "Space" && !typing) e.preventDefault();
-    if (!e.repeat) keys[e.code] = true;
-    else if (e.code !== "KeyF" && e.code !== "KeyG") keys[e.code] = true;
+    if (!typing) {
+      if (!e.repeat) keys[e.code] = true;
+      else if (e.code !== "KeyF" && e.code !== "KeyG") keys[e.code] = true;
+    }
     if (summonOpenedBy && e.key.toLowerCase() === summonOpenedBy) {
+      e.preventDefault();
+    }
+    if (chatOpenedBy && (e.code === "KeyT" || e.key.toLowerCase() === "t")) {
       e.preventDefault();
     }
     if (e.target === $("q")) {
@@ -6696,6 +6860,21 @@ function bind() {
         e.preventDefault();
         resultIndex = Math.max(0, resultIndex - 1);
         [...$("results").children].forEach((li, i) => li.classList.toggle("active", i === resultIndex));
+      }
+      return;
+    }
+    if (chatOpen || e.target === $("chatQ")) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeChat();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        sendChat();
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !e.isComposing) {
+        e.preventDefault();
+        insertChatChar(drunkTypeChar(e.key));
       }
       return;
     }
@@ -6782,9 +6961,13 @@ function bind() {
       if (held && held.userData.kind === "bottle") drinkHeld("chug");
       else drinkGlass("chug");
     }
+    if (e.code === "KeyY") {
+      e.preventDefault();
+      openSummon("y");
+    }
     if (e.code === "KeyT") {
       e.preventDefault();
-      openSummon("t");
+      openChat();
     }
     if (e.code === "KeyC") {
       zoomHold = true;
