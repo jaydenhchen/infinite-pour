@@ -61,7 +61,6 @@ export function createClub(api) {
   const platters = [];
   const knobs = [];
   let ledWall = null;
-  let ball = null;
   let haze = [];
   let fader = null;
   let built = false;
@@ -542,17 +541,6 @@ export function createClub(api) {
       scene.add(pl);
       strobes.push({ light: pl, hex: SKY[i % SKY.length], phase: i * 0.9 });
     }
-    ball = addMesh(
-      scene,
-      new THREE.SphereGeometry(0.24, 10, 8),
-      lambert(0xd0d8e0, { emissive: 0x8899aa, emissiveIntensity: 0.45 }),
-      19.0,
-      4.55,
-      0.4,
-      1,
-      1,
-      1
-    );
     for (let i = 0; i < 3; i++) {
       const h = new THREE.Mesh(
         new THREE.PlaneGeometry(12, 2.6),
@@ -1041,7 +1029,6 @@ export function createClub(api) {
       b.mesh.material.opacity = flash ? 0.16 : 0.055;
     }
     if (ledWall) ledWall.material.color.setHSL((t * 0.22) % 1, 0.9, 0.48);
-    if (ball) ball.rotation.y = t * 0.95;
     for (const p of platters) p.rotation.y = t * 4.8;
     for (let i = 0; i < knobs.length; i++) knobs[i].rotation.y = t * (1.6 + i * 0.35);
     if (fader) fader.position.x = 19.0 + Math.sin(t * 1.3) * 0.16;
