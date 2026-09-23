@@ -4671,6 +4671,37 @@ function drunkTypeChar(ch) {
   return neighborKey(ch);
 }
 
+function followInputCaret(box) {
+  if (!box) return;
+  const end = box.selectionEnd ?? box.value.length;
+  const atEnd = end >= box.value.length;
+  const reveal = () => {
+    if (atEnd) {
+      box.scrollLeft = box.scrollWidth;
+      return;
+    }
+    const cs = getComputedStyle(box);
+    const probe = followInputCaret.probe || (followInputCaret.probe = document.createElement("span"));
+    probe.textContent = box.value.slice(0, end) || " ";
+    Object.assign(probe.style, {
+      position: "absolute",
+      left: "-9999px",
+      top: "0",
+      visibility: "hidden",
+      whiteSpace: "pre",
+      font: cs.font,
+      letterSpacing: cs.letterSpacing,
+    });
+    if (!probe.parentNode) document.body.appendChild(probe);
+    const caretX = probe.getBoundingClientRect().width + (parseFloat(cs.paddingLeft) || 0);
+    const view = box.clientWidth;
+    if (caretX < box.scrollLeft + 8) box.scrollLeft = Math.max(0, caretX - 8);
+    else if (caretX > box.scrollLeft + view - 12) box.scrollLeft = caretX - view + 12;
+  };
+  reveal();
+  requestAnimationFrame(reveal);
+}
+
 function insertChatChar(ch) {
   const box = $("chatQ");
   if (!box) return;
@@ -4680,6 +4711,7 @@ function insertChatChar(ch) {
   box.value = next;
   const caret = Math.min(120, start + ch.length);
   box.setSelectionRange(caret, caret);
+  followInputCaret(box);
 }
 
 function paintChat() {
@@ -7584,12 +7616,22 @@ function bind() {
     keys[e.code] = false;
     if (e.code === "KeyC") zoomHold = false;
   });
+  const keepCaretVisible = (e) => followInputCaret(e.target);
+  for (const id of ["chatQ", "q", "playerName", "barCode"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.addEventListener("input", keepCaretVisible);
+    el.addEventListener("keyup", keepCaretVisible);
+    el.addEventListener("click", keepCaretVisible);
+    el.addEventListener("focus", keepCaretVisible);
+  }
   $("q").addEventListener("input", () => {
     if (summonOpenedBy && $("q").value.toLowerCase() === summonOpenedBy) {
       $("q").value = "";
       return;
     }
     renderResults($("q").value);
+    followInputCaret($("q"));
   });
   $("q").addEventListener("keydown", (e) => {
     if (summonOpenedBy && e.key.toLowerCase() === summonOpenedBy) e.preventDefault();
