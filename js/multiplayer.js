@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { connectNet, sanitizeName, defaultName } from "./net.js?v=32";
+import { connectNet, sanitizeName, defaultName } from "./net.js?v=37";
 
 const SHIRTS = [0x3d6ea8, 0xc44b3c, 0x2e8b57, 0xb8860b, 0x7b4b9a, 0xd46aa0, 0x2c6e49, 0xe07a3d];
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
@@ -42,11 +42,15 @@ let poseAcc = 0;
 let hbAcc = 0;
 let lastPose = "";
 let forcePose = false;
+let poseSeq = 0;
+let lastHit = null;
 let heldFn = () => "";
 let pouringFn = () => false;
 let drunkFn = () => 0;
 let poseFn = null;
 let gameHandler = null;
+let carFn = null;
+let copFn = null;
 let collideFn = (x, z) => [x, z];
 let bot = null;
 let botAI = null;
@@ -77,12 +81,29 @@ export function humanPeers() {
   return [...remotes.values()].map((p) => ({ id: p.id, name: p.name }));
 }
 
+export function remotePeers() {
+  return [...remotes.values()];
+}
+
 export function publishEvent(obj) {
   net?.sendEvent(obj);
 }
 
 export function setGameHandler(fn) {
   gameHandler = fn;
+}
+
+export function setCarHandler(fn) {
+  carFn = typeof fn === "function" ? fn : null;
+}
+
+export function setCopHandler(fn) {
+  copFn = typeof fn === "function" ? fn : null;
+}
+
+export function pokePose() {
+  lastPose = "";
+  forcePose = true;
 }
 
 export function setWorldCollide(fn) {
@@ -540,7 +561,15 @@ function spawnPeer(id, state) {
     phase: phaseOf(id),
     lx: state.x || 0,
     lz: state.z || 0,
-    sit: !!state.s,
+    sit: !!state.s || !!state.v,
+    drive: !!state.v,
+    si: state.si == null ? (state.v ? 0 : -1) : (Number(state.si) | 0),
+    ci: state.ci != null ? String(state.ci) : "",
+    cx: state.cx,
+    cz: state.cz,
+    cy: state.cy,
+    wanted: !!state.w,
+    copCar: !!state.cp,
     pee: !!state.u,
     hurtT: 0,
     stunT: 0,
@@ -561,6 +590,18 @@ function spawnPeer(id, state) {
 function dropPeer(id, silent) {
   const peer = remotes.get(id);
   if (!peer) return;
+  if (peer.drive && peer.ci && (peer.si == null || peer.si === 0)) {
+    try {
+      carFn?.({ t: "car", a: "park", from: id, ci: peer.ci, x: peer.cx, z: peer.cz, yaw: peer.cy });
+    } catch (err) {
+      console.warn("car park", err);
+    }
+  }
+  try {
+    copFn?.({ t: "cops", a: "clear", from: id });
+  } catch (err) {
+    console.warn("cops clear", err);
+  }
   disposePeeFx(peer.rig?.userData);
   scene.remove(peer.rig);
   remotes.delete(id);
@@ -569,16 +610,21 @@ function dropPeer(id, silent) {
 
 function applyState(id, state) {
   if (!state || typeof state !== "object") return;
-  const seq = Number(state.t);
+  const hasSeq = Number.isFinite(Number(state.seq));
+  const seq = hasSeq ? Number(state.seq) : Number(state.t);
+  const incomingT = Number(state.t);
   let peer = remotes.get(id);
-  if (peer && Number.isFinite(seq) && Number.isFinite(peer.seq) && seq + 1 < peer.seq) return;
-  if (peer && peer.pendingLeave && Number.isFinite(seq) && seq <= (peer.seq || 0)) return;
+  if (peer && Number.isFinite(incomingT) && Number.isFinite(peer.seenT) && incomingT + 1500 < peer.seenT) {
+    return;
+  }
   if (!peer) {
     if (remotes.size >= 20) return;
     peer = spawnPeer(id, state);
   }
-  if (Number.isFinite(seq)) peer.seq = Math.max(peer.seq || 0, seq);
+  if (Number.isFinite(seq)) peer.seq = seq;
+  if (Number.isFinite(incomingT)) peer.seenT = incomingT;
   peer.pendingLeave = 0;
+  peer.goneLeave = false;
   if (peer.rig) {
     peer.rig.visible = true;
     peer.rig.frustumCulled = false;
@@ -597,7 +643,49 @@ function applyState(id, state) {
   if (state.gf != null) peer.gf = clamp(state.gf, 0, 1);
   if (state.gc != null) peer.gc = Number(state.gc) || 0;
   peer.pouring = !!state.p;
-  peer.sit = !!state.s;
+  const wasDrive = !!peer.drive;
+  const wasSi = peer.si == null ? 0 : peer.si | 0;
+  peer.drive = !!state.v;
+  peer.si = state.si == null ? (peer.drive ? 0 : -1) : (Number(state.si) | 0);
+  peer.sit = !!state.s || peer.drive;
+  if (state.ci != null) peer.ci = String(state.ci);
+  if (state.cx != null) peer.cx = state.cx;
+  if (state.cz != null) peer.cz = state.cz;
+  if (state.cy != null) peer.cy = state.cy;
+  peer.wanted = !!state.w;
+  peer.copCar = !!state.cp;
+  const isDriver = peer.drive && peer.si === 0;
+  if (isDriver) {
+    peer.bodyLock = state.cy != null ? state.cy + Math.PI : peer.tyaw;
+    try {
+      carFn?.({
+        t: "car",
+        a: "drive",
+        from: id,
+        ci: peer.ci,
+        cx: state.cx,
+        cz: state.cz,
+        cy: state.cy,
+        cs: state.cs,
+        cf: state.cf,
+        cp: state.cp,
+        si: 0,
+      });
+    } catch (err) {
+      console.warn("car drive", err);
+    }
+  } else if (wasDrive && wasSi === 0 && !peer.drive) {
+    peer.bodyLock = null;
+    try {
+      carFn?.({ t: "car", a: "park", from: id, ci: peer.ci, x: peer.cx, z: peer.cz, yaw: peer.cy, si: 0 });
+    } catch (err) {
+      console.warn("car park", err);
+    }
+  } else if (peer.drive) {
+    peer.bodyLock = peer.cy != null ? peer.cy + Math.PI : peer.tyaw;
+  } else {
+    peer.bodyLock = null;
+  }
   peer.pee = !!state.u;
   if (state.ax != null && state.ay != null && state.az != null) peer.peeAim = { x: state.ax, y: state.ay, z: state.az };
   else peer.peeAim = null;
@@ -616,6 +704,17 @@ function applyState(id, state) {
       rig.frustumCulled = false;
     }
     peer.gender = nextG;
+  }
+  if (state.k) peer.punchT = Math.max(peer.punchT || 0, 0.28);
+  if (state.hid && state.hto && net?.id && state.hto === net.id) {
+    handleHitEvent({
+      id: state.hid,
+      to: state.hto,
+      from: id,
+      nx: state.hnx,
+      nz: state.hnz,
+      n: state.n || peer.name,
+    });
   }
   peer.last = performance.now();
 }
@@ -666,6 +765,7 @@ export function bootMultiplayer(opts) {
   for (const id of [...remotes.keys()]) dropPeer(id, true);
   killBot(true);
   status = "connecting";
+  poseSeq = 0;
   net = connectNet({
     name: local.name,
     room: local.room,
@@ -675,6 +775,7 @@ export function bootMultiplayer(opts) {
     onReady() {
       lastPose = "";
       forcePose = true;
+      sendPose();
     },
     onPeer(id, state) {
       try {
@@ -683,10 +784,14 @@ export function bootMultiplayer(opts) {
         console.warn("peer", err);
       }
     },
-    onPeerLeave(id) {
+    onPeerLeave(id, reason) {
+      if (reason === "empty") return;
       const peer = remotes.get(id);
       if (!peer) return;
-      peer.pendingLeave = performance.now();
+      const quiet = performance.now() - (peer.last || 0);
+      if (quiet < 5000) return;
+      peer.pendingLeave = peer.pendingLeave || performance.now();
+      peer.goneLeave = reason === "gone";
     },
     onEvent(msg) {
       if (msg.t === "restock") {
@@ -699,6 +804,22 @@ export function bootMultiplayer(opts) {
         handleHitEvent(msg);
         return;
       }
+      if (msg.t === "car") {
+        try {
+          carFn?.(msg);
+        } catch (err) {
+          console.warn("car", err);
+        }
+        return;
+      }
+      if (msg.t === "cops") {
+        try {
+          copFn?.(msg);
+        } catch (err) {
+          console.warn("cops", err);
+        }
+        return;
+      }
       try {
         gameHandler?.(msg);
       } catch (err) {
@@ -706,6 +827,44 @@ export function bootMultiplayer(opts) {
       }
     },
   });
+  bindTabNet();
+}
+
+function tabHidden() {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function bindTabNet() {
+  if (window.__ipourTabNet) return;
+  window.__ipourTabNet = true;
+  const die = () => {
+    if (!net) return;
+    try {
+      net.leave();
+    } catch {
+      /* ignore */
+    }
+    status = "offline";
+  };
+  const wake = () => {
+    if (!net) return;
+    lastPose = "";
+    forcePose = true;
+    try {
+      net.reconnect();
+    } catch {
+      /* ignore */
+    }
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") wake();
+  });
+  window.addEventListener("pageshow", wake);
+  window.addEventListener("pagehide", (e) => {
+    if (e.persisted) return;
+    die();
+  });
+  window.addEventListener("beforeunload", die);
 }
 
 export function setPoseSources(getHeld, getPouring, getDrunk, getPose) {
@@ -728,7 +887,7 @@ function lookPitch() {
 }
 
 function sendPose() {
-  if (!net || !camera) return;
+  if (!net || !camera || !net.ready()) return;
   const extra = poseFn?.() || {};
   const pose = {
     n: local.name,
@@ -746,13 +905,35 @@ function sendPose() {
     gf: extra.gf != null ? round(clamp(extra.gf, 0, 1), 2) : 0,
     gc: extra.gc ? (Number(extra.gc) || 0) : 0,
     t: Date.now(),
+    seq: ++poseSeq,
   };
   if (extra.ax != null && extra.ay != null && extra.az != null) {
     pose.ax = round(extra.ax, 2);
     pose.ay = round(extra.ay, 2);
     pose.az = round(extra.az, 2);
   }
-  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.gf}|${pose.gc}|${pose.ax}|${pose.ay}|${pose.az}`;
+  if (extra.k) pose.k = 1;
+  if (extra.w) pose.w = 1;
+  if (extra.v) {
+    pose.v = 1;
+    pose.ci = String(extra.ci ?? "");
+    pose.si = extra.si == null ? 0 : extra.si | 0;
+    if (pose.si === 0) {
+      pose.cx = round(extra.cx ?? extra.x ?? 0, 2);
+      pose.cz = round(extra.cz ?? extra.z ?? 0, 2);
+      pose.cy = round(extra.cy ?? 0, 3);
+      pose.cs = round(extra.cs || 0, 2);
+      pose.cf = round(extra.cf || 0, 2);
+    }
+    if (extra.cp) pose.cp = 1;
+  }
+  if (lastHit && performance.now() < lastHit.until) {
+    pose.hid = lastHit.hid;
+    pose.hto = lastHit.to;
+    pose.hnx = lastHit.nx;
+    pose.hnz = lastHit.nz;
+  }
+  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.gf}|${pose.gc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -772,6 +953,16 @@ function poseSit(peer) {
   u.legR.rotation.set(-1.52, -0.1, -0.18);
   u.armL.rotation.set(-0.72, 0, -0.22);
   u.armR.rotation.set(peer.pouring ? -1.1 : -0.72, 0, 0.22);
+}
+
+function poseDrive(peer) {
+  const u = peer.rig.userData;
+  u.body.position.y = -0.16;
+  u.body.rotation.set(0.1, 0, 0);
+  u.legL.rotation.set(-1.28, 0.12, 0.08);
+  u.legR.rotation.set(-1.28, -0.08, -0.06);
+  u.armL.rotation.set(-0.98, 0.18, -0.42);
+  u.armR.rotation.set(peer.pouring ? -1.1 : -0.98, -0.16, 0.4);
 }
 
 function poseRightPunch(u, punchT) {
@@ -1044,6 +1235,10 @@ function findPeer(id) {
 
 function applyHurt(peer, nx, nz) {
   if (!peer || (peer.hurtT || 0) > 0.16) return false;
+  if (peer.drive) {
+    peer.hurtT = 0.42;
+    return true;
+  }
   const len = Math.hypot(nx, nz) || 1;
   const kx = (nx / len) * 1.2;
   const kz = (nz / len) * 1.2;
@@ -1149,15 +1344,15 @@ function animatePeer(peer, dt, t) {
   const dx = peer.tx - rig.position.x;
   const dz = peer.tz - rig.position.z;
   const dist = Math.hypot(dx, dz);
-  if (!peer.local && dist > 8) {
+  if (!peer.local && dist > (peer.drive ? 3.5 : 8)) {
     rig.position.x = peer.tx;
     rig.position.z = peer.tz;
   } else {
-    const k = peer.local ? 1 : Math.min(1, dt * (air ? 14 : dist > 2.2 ? 10 : 7));
+    const k = peer.local ? 1 : Math.min(1, dt * (peer.drive ? 16 : air ? 14 : dist > 2.2 ? 10 : 7));
     rig.position.x += dx * k;
     rig.position.z += dz * k;
   }
-  const targetY = peer.sit ? 0.22 : air ? off : 0;
+  const targetY = peer.drive ? 0.12 : peer.sit ? 0.22 : air ? off : 0;
   rig.position.y += (targetY - rig.position.y) * (peer.local ? 1 : Math.min(1, dt * 16));
 
   if (peer.hyaw == null) peer.hyaw = peer.tyaw || 0;
@@ -1175,7 +1370,7 @@ function animatePeer(peer, dt, t) {
   peer.lx = rig.position.x;
   peer.lz = rig.position.z;
   const vel = Math.hypot(vx, vz);
-  const moving = !air && !peer.sit && !peer.pee && vel > 0.18;
+  const moving = !air && !peer.sit && !peer.pee && !peer.drive && vel > 0.18;
   faceBody(peer, moving, vx, vz, dt);
   rig.rotation.y = peer.byaw;
 
@@ -1190,7 +1385,9 @@ function animatePeer(peer, dt, t) {
   const rightSwing = Math.sin(warped + Math.PI) * amp * (1 + limp * 0.28);
   const hitch = moving ? Math.max(0, -Math.sin(warped)) * limp * 0.07 : Math.sin(t * 1.3 + phase) * drunk * 0.03;
 
-  if (peer.sit) {
+  if (peer.drive) {
+    poseDrive(peer);
+  } else if (peer.sit) {
     poseSit(peer);
   } else if (air) {
     const loft = Math.min(1, rig.position.y / 0.45);
@@ -1304,7 +1501,7 @@ function animatePeer(peer, dt, t) {
     const base = u.tag.userData.baseScale;
     if (base && camera) {
       const d = camera.position.distanceTo(rig.position);
-      const s = THREE.MathUtils.clamp(0.92 + d * 0.028, 0.92, 1.85);
+      const s = THREE.MathUtils.clamp(0.92 + d * 0.034, 0.92, 3.4);
       u.tag.scale.set(base.x * s, base.y * s, 1);
     }
   }
@@ -1459,8 +1656,9 @@ export function tickMultiplayer(dt) {
   const t = now * 0.001;
   for (const [id, peer] of remotes) {
     const quiet = now - (peer.last || 0);
-    const leaving = peer.pendingLeave && now - peer.pendingLeave > 4000 && quiet > 4000;
-    if (leaving || quiet > 60000) {
+    const wait = peer.goneLeave ? 8000 : 30000;
+    const leaving = peer.pendingLeave && now - peer.pendingLeave > wait && quiet > wait;
+    if (leaving || quiet > 90000) {
       dropPeer(id);
       continue;
     }
@@ -1477,13 +1675,17 @@ export function tickMultiplayer(dt) {
 
   poseAcc += dt;
   hbAcc += dt;
-  if (hbAcc >= 0.75) {
+  const hidden = tabHidden();
+  if (hbAcc >= (hidden ? 2.0 : 1.6)) {
     hbAcc = 0;
     forcePose = true;
   }
-  const y = poseFn?.()?.y ?? camera.position.y;
+  const extra = poseFn?.() || {};
+  const y = extra.y ?? camera.position.y;
   const air = y > eyeHeight(local.gender) + 0.06;
-  if (forcePose || poseAcc >= (air ? 0.05 : 0.08)) {
+  const drive = !!extra.v;
+  const interval = hidden ? 2.0 : drive ? 0.08 : air ? 0.1 : 0.16;
+  if (net?.ready() && (forcePose || poseAcc >= interval)) {
     poseAcc = 0;
     sendPose();
   }
