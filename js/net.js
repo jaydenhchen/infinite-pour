@@ -248,22 +248,25 @@ export function connectNet(opts) {
       const payload = JSON.stringify({ ...obj, from: id, eid: `${id}-${++evSeq}` });
       publishAll(evTopic, payload, false, 0);
     },
-    leave() {
+    leave(how) {
       alive = false;
       clearInterval(pingTimer);
       pingTimer = 0;
       clearTimeout(fallbackTimer);
       lastState = "";
+      const gone = JSON.stringify({ gone: 1, t: Date.now() });
+      const bye = JSON.stringify({ t: "leave", from: id, eid: `${id}-leave-${Date.now()}` });
       for (const s of sockets) {
         clearTimeout(s.retryTimer);
         try {
           if (s.ws && s.ws.readyState === 1) {
-            publishOn(s, stTopic, JSON.stringify({ gone: 1, t: Date.now() }), true, 0);
-            s.ws.send(packet(0xe0, new Uint8Array(0)));
+            publishOn(s, stTopic, gone, true, 0);
+            publishOn(s, evTopic, bye, false, 0);
           }
         } catch {
           /* ignore */
         }
+        if (how === "unload") continue;
         try {
           s.ws?.close();
         } catch {
@@ -441,7 +444,7 @@ export function connectNet(opts) {
       clearTimeout(timeout);
       s.buf = new Uint8Array(0);
       const flags = 0x26;
-      const keep = 30;
+      const keep = 15;
       const mqttId = `ip${id}${s.tag}`;
       const vh = concat([mqttStr("MQTT"), Uint8Array.of(4, flags, keep >> 8, keep & 255)]);
       const pl = concat([mqttStr(mqttId.slice(0, 23)), mqttStr(stTopic), mqttStr(willMsg)]);

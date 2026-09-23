@@ -1,9 +1,15 @@
 import * as THREE from "three";
-import { connectNet, sanitizeName, defaultName } from "./net.js?v=37";
+import { connectNet, sanitizeName, defaultName, makeClientId } from "./net.js?v=38";
 
 const SHIRTS = [0x3d6ea8, 0xc44b3c, 0x2e8b57, 0xb8860b, 0x7b4b9a, 0xd46aa0, 0x2c6e49, 0xe07a3d];
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const DRUNK_NET = 6.75;
+const PUNCH_T = 0.32;
+const HURT_T = 0.55;
+const STUN_T = 0.48;
+const KNOCK_VEL = 3.2;
+const KNOCK_POP = 0.42;
+const KNOCK_DRAG = 8;
 const peeDropGeo = new THREE.SphereGeometry(0.012, 7, 6);
 const peePuddleGeo = new THREE.CircleGeometry(0.15, 14);
 const _peeOrigin = new THREE.Vector3();
@@ -37,6 +43,7 @@ let net = null;
 let status = "offline";
 let local = { name: defaultName(), room: "main", gender: "m" };
 const remotes = new Map();
+const leftAt = new Map();
 const seenRestock = new Set();
 let poseAcc = 0;
 let hbAcc = 0;
@@ -168,16 +175,16 @@ function dropHitsCup(pos, cup) {
   const dx = pos.x - cup.x;
   const dy = pos.y - cup.y;
   const dz = pos.z - cup.z;
-  const r = cup.r || 0.12;
-  const h = cup.h || 0.16;
-  return dx * dx + dz * dz <= r * r && dy > -h && dy < 0.12;
+  const r = cup.r || 0.18;
+  const h = cup.h || 0.28;
+  return dx * dx + dz * dz <= r * r && dy > -h && dy < 0.55;
 }
 
 function catchPeeDrop(drop, cups) {
   if (!cups || !cups.length) return false;
   for (const cup of cups) {
     if (!dropHitsCup(drop.position, cup)) continue;
-    if (cup.local) peeFillFn && peeFillFn(0.01);
+    if (cup.local) peeFillFn && peeFillFn(0.035);
     return true;
   }
   return false;
@@ -194,8 +201,39 @@ export function roster() {
   return rows;
 }
 
+export function hitImpulse(nx, nz) {
+  const len = Math.hypot(nx || 0, nz || 0) || 1;
+  const dx = (nx || 0) / len;
+  const dz = (nz || 0) / len;
+  return { dx, dz, vx: dx * KNOCK_VEL, vz: dz * KNOCK_VEL, px: dx * KNOCK_POP, pz: dz * KNOCK_POP };
+}
+
+export function stepKnock(x, z, vx, vz, dt, collide, radius = 0.28) {
+  const fn = collide || collideFn;
+  const kept = fn(x + vx * dt, z + vz * dt, radius);
+  let nvx = vx * Math.max(0, 1 - KNOCK_DRAG * dt);
+  let nvz = vz * Math.max(0, 1 - KNOCK_DRAG * dt);
+  if (Math.hypot(nvx, nvz) < 0.04) {
+    nvx = 0;
+    nvz = 0;
+  }
+  return [kept[0], kept[1], nvx, nvz];
+}
+
+export function shirtKey() {
+  return String(localId() || makeClientId() || local.name || "you").toLowerCase();
+}
+
 export function shirtColor(id) {
-  return colorOf(id || "you");
+  return colorOf(id || shirtKey());
+}
+
+function paintShirt(rig, hex) {
+  const mat = rig?.userData?.shirt;
+  if (!mat || hex == null) return;
+  const n = Number(hex);
+  if (!Number.isFinite(n)) return;
+  mat.color.setHex(n >>> 0);
 }
 
 function colorOf(id) {
@@ -577,6 +615,7 @@ function spawnPeer(id, state) {
     kvx: 0,
     kvz: 0,
   };
+  paintShirt(rig, state.sc != null ? state.sc : colorOf(id));
   remotes.set(id, peer);
   if (remotes.size >= 1) killBot(false);
   peer.seq = Number.isFinite(Number(state.t)) ? Number(state.t) : 0;
@@ -585,6 +624,10 @@ function spawnPeer(id, state) {
   peer.rig.frustumCulled = false;
   toast?.(`${name} walked in`);
   return peer;
+}
+
+function markLeft(id, t) {
+  leftAt.set(id, Number.isFinite(Number(t)) ? Number(t) : Date.now());
 }
 
 function dropPeer(id, silent) {
@@ -613,6 +656,11 @@ function applyState(id, state) {
   const hasSeq = Number.isFinite(Number(state.seq));
   const seq = hasSeq ? Number(state.seq) : Number(state.t);
   const incomingT = Number(state.t);
+  const left = leftAt.get(id);
+  if (left != null) {
+    if (!Number.isFinite(incomingT) || incomingT <= left + 250) return;
+    leftAt.delete(id);
+  }
   let peer = remotes.get(id);
   if (peer && Number.isFinite(incomingT) && Number.isFinite(peer.seenT) && incomingT + 1500 < peer.seenT) {
     return;
@@ -632,7 +680,7 @@ function applyState(id, state) {
   peer.name = sanitizeName(state.n || peer.name);
   setNametag(peer, peer.name);
   peer.ty = state.y ?? peer.ty;
-  if ((peer.stunT || 0) <= 0) {
+  if ((peer.stunT || 0) <= 0 && (peer.hurtT || 0) <= 0.12) {
     peer.tx = state.x ?? peer.tx;
     peer.tz = state.z ?? peer.tz;
   }
@@ -654,6 +702,7 @@ function applyState(id, state) {
   if (state.cy != null) peer.cy = state.cy;
   peer.wanted = !!state.w;
   peer.copCar = !!state.cp;
+  if (state.sc != null) paintShirt(peer.rig, state.sc);
   const isDriver = peer.drive && peer.si === 0;
   if (isDriver) {
     peer.bodyLock = state.cy != null ? state.cy + Math.PI : peer.tyaw;
@@ -695,6 +744,7 @@ function applyState(id, state) {
       const old = peer.rig;
       old.userData.disposeFx?.();
       const rig = makeBartender(id, peer.name, nextG);
+      paintShirt(rig, state.sc != null ? state.sc : colorOf(id));
       rig.position.copy(old.position);
       rig.rotation.copy(old.rotation);
       scene.add(rig);
@@ -705,7 +755,12 @@ function applyState(id, state) {
     }
     peer.gender = nextG;
   }
-  if (state.k) peer.punchT = Math.max(peer.punchT || 0, 0.28);
+  if (state.k) peer.punchT = Math.max(peer.punchT || 0, PUNCH_T);
+  if (state.hurt && (peer.hurtT || 0) <= 0.12 && (state.rdx || state.rdz)) {
+    applyHurt(peer, state.rdx, state.rdz);
+  } else if (state.hurt) {
+    peer.hurtT = Math.max(peer.hurtT || 0, 0.28);
+  }
   if (state.hid && state.hto && net?.id && state.hto === net.id) {
     handleHitEvent({
       id: state.hid,
@@ -784,16 +839,23 @@ export function bootMultiplayer(opts) {
         console.warn("peer", err);
       }
     },
-    onPeerLeave(id, reason) {
+    onPeerLeave(id, reason, state) {
       if (reason === "empty") return;
+      if (reason === "gone") {
+        markLeft(id, Number(state?.t) || Date.now());
+        dropPeer(id);
+        return;
+      }
       const peer = remotes.get(id);
       if (!peer) return;
-      const quiet = performance.now() - (peer.last || 0);
-      if (quiet < 5000) return;
       peer.pendingLeave = peer.pendingLeave || performance.now();
-      peer.goneLeave = reason === "gone";
     },
     onEvent(msg) {
+      if (msg.t === "leave" && msg.from) {
+        markLeft(msg.from, Date.now());
+        dropPeer(msg.from);
+        return;
+      }
       if (msg.t === "restock") {
         if (seenRestock.has(msg.id)) return;
         seenRestock.add(msg.id);
@@ -840,7 +902,7 @@ function bindTabNet() {
   const die = () => {
     if (!net) return;
     try {
-      net.leave();
+      net.leave("unload");
     } catch {
       /* ignore */
     }
@@ -904,9 +966,15 @@ function sendPose() {
     g: extra.g === "f" || local.gender === "f" ? "f" : "m",
     gf: extra.gf != null ? round(clamp(extra.gf, 0, 1), 2) : 0,
     gc: extra.gc ? (Number(extra.gc) || 0) : 0,
+    sc: shirtColor(),
     t: Date.now(),
     seq: ++poseSeq,
   };
+  if (extra.hurt) {
+    pose.hurt = 1;
+    if (extra.rdx != null) pose.rdx = round(extra.rdx, 3);
+    if (extra.rdz != null) pose.rdz = round(extra.rdz, 3);
+  }
   if (extra.ax != null && extra.ay != null && extra.az != null) {
     pose.ax = round(extra.ax, 2);
     pose.ay = round(extra.ay, 2);
@@ -933,7 +1001,7 @@ function sendPose() {
     pose.hnx = lastHit.nx;
     pose.hnz = lastHit.nz;
   }
-  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.gf}|${pose.gc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}`;
+  const key = `${pose.x}|${pose.y}|${pose.z}|${pose.yaw}|${pose.pit}|${pose.b}|${pose.h}|${pose.p}|${pose.s}|${pose.u}|${pose.g}|${pose.gf}|${pose.gc}|${pose.sc}|${pose.ax}|${pose.ay}|${pose.az}|${pose.v || 0}|${pose.ci || ""}|${pose.si ?? ""}|${pose.cx}|${pose.cz}|${pose.cy}|${pose.k || 0}|${pose.w || 0}|${pose.cp || 0}|${pose.hurt || 0}`;
   if (!forcePose && key === lastPose) return;
   lastPose = key;
   forcePose = false;
@@ -965,9 +1033,30 @@ function poseDrive(peer) {
   u.armR.rotation.set(peer.pouring ? -1.1 : -0.98, -0.16, 0.4);
 }
 
+function poseHurt(u, hurtT) {
+  if (!u || hurtT <= 0) return false;
+  const p = 1 - Math.min(HURT_T, hurtT) / HURT_T;
+  const rec = p < 0.28 ? p / 0.28 : 1 - (p - 0.28) / 0.72;
+  const hit = Math.sin(Math.min(1, Math.max(0, rec)) * Math.PI);
+  if (u.body) {
+    u.body.rotation.x = -0.5 * hit;
+    u.body.rotation.z = 0.2 * hit;
+    u.body.position.y = (u.body.position.y || 0) - 0.045 * hit;
+  }
+  if (u.armL) u.armL.rotation.set(-1.08 * hit, 0.14 * hit, 0.76 * hit);
+  if (u.armR) u.armR.rotation.set(-0.58 * hit, -0.12 * hit, -0.66 * hit);
+  if (u.legL) u.legL.rotation.set(-0.3 * hit, 0, 0.2 * hit);
+  if (u.legR) u.legR.rotation.set(0.24 * hit, 0, -0.14 * hit);
+  if (u.head) {
+    u.head.rotation.x += 0.4 * hit;
+    u.head.rotation.z -= 0.18 * hit;
+  }
+  return true;
+}
+
 function poseRightPunch(u, punchT) {
   if (!u?.armR || punchT <= 0) return false;
-  const dur = 0.32;
+  const dur = PUNCH_T;
   const uPunch = 1 - Math.min(dur, punchT) / dur;
   const swing = uPunch < 0.38 ? uPunch / 0.38 : 1 - (uPunch - 0.38) / 0.62;
   u.armR.rotation.set(-1.75 * swing, -0.28 * swing, 0.48 * swing);
@@ -1235,33 +1324,30 @@ function findPeer(id) {
 
 function applyHurt(peer, nx, nz) {
   if (!peer || (peer.hurtT || 0) > 0.16) return false;
-  if (peer.drive) {
-    peer.hurtT = 0.42;
-    return true;
-  }
-  const len = Math.hypot(nx, nz) || 1;
-  const kx = (nx / len) * 1.2;
-  const kz = (nz / len) * 1.2;
-  peer.hurtT = 0.42;
-  peer.stunT = 0.32;
-  peer.kvx = (peer.kvx || 0) + kx * 2.8;
-  peer.kvz = (peer.kvz || 0) + kz * 2.8;
+  const imp = hitImpulse(nx, nz);
+  peer.hurtT = HURT_T;
+  peer.stunT = STUN_T;
+  peer.rdx = imp.dx;
+  peer.rdz = imp.dz;
+  if (peer.drive) return true;
+  peer.kvx = (peer.kvx || 0) + imp.vx;
+  peer.kvz = (peer.kvz || 0) + imp.vz;
   if (!peer.local) {
-    peer.tx += kx;
-    peer.tz += kz;
+    peer.tx += imp.px;
+    peer.tz += imp.pz;
     const kept = collideFn(peer.tx, peer.tz, 0.36);
     peer.tx = kept[0];
     peer.tz = kept[1];
     if (peer.rig) {
-      peer.rig.position.x += kx * 0.55;
-      peer.rig.position.z += kz * 0.55;
+      peer.rig.position.x += imp.px;
+      peer.rig.position.z += imp.pz;
     }
   }
   return true;
 }
 
 function swingPunch(peer) {
-  if (peer) peer.punchT = 0.28;
+  if (peer) peer.punchT = PUNCH_T;
 }
 
 function handleHitEvent(msg) {
@@ -1277,7 +1363,8 @@ function handleHitEvent(msg) {
   const nz = Number(msg.nz) || 0;
   swingPunch(findPeer(msg.from));
   if (msg.to && me && msg.to === me) {
-    localHitFn?.(nx, nz);
+    const by = msg.n || findPeer(msg.from)?.name || "";
+    localHitFn?.(nx, nz, by);
     return;
   }
   applyHurt(findPeer(msg.to), nx, nz);
@@ -1288,9 +1375,16 @@ export function tryPunch() {
   const extra = poseFn?.() || {};
   const x = extra.x ?? camera.position.x;
   const z = extra.z ?? camera.position.z;
-  const yaw = extra.yaw ?? lookYaw();
-  const fx = Math.sin(yaw);
-  const fz = Math.cos(yaw);
+  let fx = extra.aimx;
+  let fz = extra.aimz;
+  if (!Number.isFinite(fx) || !Number.isFinite(fz)) {
+    const yaw = extra.yaw ?? lookYaw();
+    fx = Math.sin(yaw);
+    fz = Math.cos(yaw);
+  }
+  const aimLen = Math.hypot(fx, fz) || 1;
+  fx /= aimLen;
+  fz /= aimLen;
   let best = null;
   let bestDist = 2.15;
   for (const peer of targets()) {
@@ -1309,7 +1403,8 @@ export function tryPunch() {
   applyHurt(best, nx, nz);
   const hid = Math.random().toString(36).slice(2, 10);
   seenHits.add(hid);
-  publishEvent({ t: "hit", id: hid, to: best.id, nx: round(nx, 3), nz: round(nz, 3) });
+  lastHit = { hid, to: best.id, nx, nz, until: performance.now() + 1800 };
+  publishEvent({ t: "hit", id: hid, to: best.id, nx: round(nx, 3), nz: round(nz, 3), n: local.name });
   return { id: best.id, name: best.name, nx, nz };
 }
 
@@ -1326,15 +1421,11 @@ function animatePeer(peer, dt, t) {
   if (peer.hurtT > 0) peer.hurtT = Math.max(0, peer.hurtT - dt);
   if (peer.punchT > 0) peer.punchT = Math.max(0, peer.punchT - dt);
   if (!peer.local && (peer.kvx || peer.kvz)) {
-    const [kx, kz] = collideFn(peer.tx + peer.kvx * dt, peer.tz + peer.kvz * dt, 0.32);
+    const [kx, kz, nvx, nvz] = stepKnock(peer.tx, peer.tz, peer.kvx, peer.kvz, dt, collideFn, 0.32);
     peer.tx = kx;
     peer.tz = kz;
-    peer.kvx *= Math.max(0, 1 - dt * 8);
-    peer.kvz *= Math.max(0, 1 - dt * 8);
-    if (Math.hypot(peer.kvx, peer.kvz) < 0.04) {
-      peer.kvx = 0;
-      peer.kvz = 0;
-    }
+    peer.kvx = nvx;
+    peer.kvz = nvz;
   }
 
   if (!peer.local) {
@@ -1474,7 +1565,8 @@ function animatePeer(peer, dt, t) {
     u.pecker.visible = drop > 0.32;
   }
 
-  if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);
+  if ((peer.hurtT || 0) > 0) poseHurt(u, peer.hurtT);
+  else if ((peer.punchT || 0) > 0 && !peer.pee) poseRightPunch(u, peer.punchT);
 
   if (!peer.freezeHead) {
     u.head.rotation.order = "YXZ";
@@ -1656,9 +1748,9 @@ export function tickMultiplayer(dt) {
   const t = now * 0.001;
   for (const [id, peer] of remotes) {
     const quiet = now - (peer.last || 0);
-    const wait = peer.goneLeave ? 8000 : 30000;
-    const leaving = peer.pendingLeave && now - peer.pendingLeave > wait && quiet > wait;
-    if (leaving || quiet > 90000) {
+    const leaving = peer.pendingLeave && now - peer.pendingLeave > 4000 && quiet > 4000;
+    if (leaving || quiet > 12000) {
+      markLeft(id, Date.now());
       dropPeer(id);
       continue;
     }
