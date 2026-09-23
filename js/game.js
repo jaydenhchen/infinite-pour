@@ -42,7 +42,7 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=119";
+} from "./multiplayer.js?v=120";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -513,18 +513,31 @@ function glassProfile(type) {
   }
 }
 
+function glassWallMat() {
+  const mat = mats.glass.clone();
+  mat.transparent = true;
+  mat.opacity = 0.28;
+  mat.depthWrite = false;
+  mat.side = THREE.DoubleSide;
+  return mat;
+}
+
+function addGlassWall(parent, mat, rt, rb, h, y) {
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, 12, 1, true), mat);
+  wall.position.y = y;
+  parent.add(wall);
+  const bot = new THREE.Mesh(new THREE.CircleGeometry(rb * 0.98, 12), mat);
+  bot.rotation.x = -Math.PI / 2;
+  bot.position.y = y - h / 2 + 0.001;
+  parent.add(bot);
+}
+
 function makeGlassMesh(type) {
   const g = new THREE.Group();
-  const glassMat = mats.glass;
+  const glassMat = glassWallMat();
   if (type === "wine" || type === "coupe") {
-    const bowl = new THREE.Mesh(
-      type === "coupe"
-        ? new THREE.CylinderGeometry(0.09, 0.02, 0.07, 10)
-        : new THREE.CylinderGeometry(0.055, 0.03, 0.1, 10),
-      glassMat
-    );
-    bowl.position.y = type === "coupe" ? 0.16 : 0.18;
-    g.add(bowl);
+    if (type === "coupe") addGlassWall(g, glassMat, 0.09, 0.02, 0.07, 0.16);
+    else addGlassWall(g, glassMat, 0.055, 0.03, 0.1, 0.18);
     const stem = new THREE.Mesh(unitCyl, glassMat);
     stem.scale.set(0.012, 0.12, 0.012);
     stem.position.y = 0.08;
@@ -534,30 +547,34 @@ function makeGlassMesh(type) {
     base.position.y = 0.01;
     g.add(base);
   } else if (type === "shot") {
-    const c = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.024, 0.07, 8), glassMat);
-    c.position.y = 0.035;
-    g.add(c);
+    addGlassWall(g, glassMat, 0.028, 0.024, 0.07, 0.035);
   } else if (type === "rocks") {
-    const c = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.09, 8), glassMat);
-    c.position.y = 0.045;
-    g.add(c);
+    addGlassWall(g, glassMat, 0.06, 0.05, 0.09, 0.045);
   } else if (type === "highball") {
-    const c = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.042, 0.16, 8), glassMat);
-    c.position.y = 0.08;
-    g.add(c);
+    addGlassWall(g, glassMat, 0.045, 0.042, 0.16, 0.08);
   } else {
-    const c = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.04, 0.16, 8), glassMat);
-    c.position.y = 0.08;
-    g.add(c);
+    addGlassWall(g, glassMat, 0.055, 0.04, 0.16, 0.08);
   }
-  const liq = new THREE.Mesh(
-    unitCyl,
-    lambert(0xe8c547, { transparent: true, opacity: 0.86, emissive: 0xe8c547, emissiveIntensity: 0.2 })
-  );
+  const liqMat = lambert(0xe8c547, {
+    transparent: true,
+    opacity: 0.94,
+    emissive: 0xe8c547,
+    emissiveIntensity: 0.32,
+    depthWrite: false,
+  });
+  const liq = new THREE.Mesh(unitCyl, liqMat);
   liq.name = "liquid";
+  liq.renderOrder = 2;
   g.add(liq);
+  const meniscus = new THREE.Mesh(new THREE.CircleGeometry(1, 14), liqMat.clone());
+  meniscus.name = "meniscus";
+  meniscus.rotation.x = -Math.PI / 2;
+  meniscus.renderOrder = 3;
+  meniscus.visible = false;
+  g.add(meniscus);
   g.userData.kind = "glass";
   g.userData.liq = liq;
+  g.userData.meniscus = meniscus;
   const rimR = { shot: 0.029, rocks: 0.061, wine: 0.056, coupe: 0.091, highball: 0.046, pint: 0.056 }[type] || 0.056;
   const rimY = { shot: 0.07, rocks: 0.09, wine: 0.23, coupe: 0.195, highball: 0.16, pint: 0.16 }[type] || 0.16;
   const rim = new THREE.Mesh(
@@ -3473,26 +3490,38 @@ function sitHeight() {
 function lookDoorOpen(obj) {
   return Math.abs(obj?.userData.ang || 0) > 0.45;
 }
+function paintLiquid(mesh, col) {
+  if (!mesh?.material) return;
+  mesh.material.color.setHex(col);
+  if (mesh.material.emissive) mesh.material.emissive.setHex(col);
+}
+
 function updateGlassVisual() {
   if (!glassMesh) return;
   const liq = glassMesh.userData.liq;
   if (!liq) return;
-  const fill = glassState.fill;
-  liq.visible = fill > 0.015;
+  const fill = THREE.MathUtils.clamp(glassState.fill, 0, 1);
+  const meniscus = glassMesh.userData.meniscus;
+  liq.visible = fill > 0.012;
+  if (meniscus) meniscus.visible = liq.visible;
   if (!liq.visible) return;
   const spec = glassProfile(glassState.type);
-  const f = THREE.MathUtils.clamp(fill, 0.02, 1);
-  const h = Math.max(0.004, spec.h * f);
+  const f = Math.max(0.03, fill);
+  const h = Math.max(0.006, spec.h * f);
   const rTop = spec.rb + (spec.rt - spec.rb) * f;
   if (liq.userData.dynGeo) liq.userData.dynGeo.dispose();
-  const geo = new THREE.CylinderGeometry(rTop, spec.rb, h, 12);
+  const geo = new THREE.CylinderGeometry(rTop, spec.rb, h, 14);
   liq.geometry = geo;
   liq.userData.dynGeo = geo;
   liq.scale.set(1, 1, 1);
   liq.position.set(0, spec.y + h / 2, 0);
   const col = mixColor(glassState.parts);
-  liq.material.color.setHex(col);
-  if (liq.material.emissive) liq.material.emissive.setHex(col);
+  paintLiquid(liq, col);
+  if (meniscus) {
+    meniscus.scale.set(rTop, rTop, 1);
+    meniscus.position.set(0, spec.y + h * 0.99, 0);
+    paintLiquid(meniscus, col);
+  }
 }
 
 function setGlassType(type) {
@@ -3658,25 +3687,28 @@ function hud() {
   $("bacFill").style.width = `${THREE.MathUtils.clamp(bac / PASS_OUT, 0, 1) * 100}%`;
   const fillEl = $("glassFill");
   const fillAmt = THREE.MathUtils.clamp(glassState.fill, 0, 1);
-  fillEl.style.width = `${fillAmt * 100}%`;
-  if (fillAmt > 0.015) {
+  const fillPct = Math.round(fillAmt * 100);
+  fillEl.style.width = `${fillPct}%`;
+  if (fillAmt > 0.012) {
     const hex = mixColor(glassState.parts).toString(16).padStart(6, "0");
     const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
+    const gcol = parseInt(hex.slice(2, 4), 16);
     const b = parseInt(hex.slice(4, 6), 16);
-    const dhex = [r, g, b].map((v) => Math.max(0, (v * 0.72) | 0).toString(16).padStart(2, "0")).join("");
+    const dhex = [r, gcol, b].map((v) => Math.max(0, (v * 0.72) | 0).toString(16).padStart(2, "0")).join("");
     fillEl.style.background = `repeating-linear-gradient(90deg, #${hex} 0 8px, #${dhex} 8px 10px)`;
+  } else {
+    fillEl.style.background = "";
   }
   if (glassState.fill < 0.02) $("glassName").textContent = `empty ${glassState.type}`;
   else {
     const n = nameMix(glassState.parts);
     const a = mixAbv(glassState.parts).toFixed(1);
-    $("glassName").textContent = `${n} · ${a}%`;
+    $("glassName").textContent = `${n} · ${a}% · ${fillPct}% full`;
   }
   if (held && held.userData.kind === "glass") {
     const n = glassState.fill > 0.02 ? nameMix(glassState.parts) : `empty ${glassState.type}`;
     $("heldName").textContent = n;
-    $("heldMeta").textContent = `cup in hand · ${glassState.type} · Q set down`;
+    $("heldMeta").textContent = `cup in hand · ${glassState.type} · ${fillPct}% · Q set down`;
   } else if (held && held.userData.drink) {
     $("heldName").textContent = held.userData.drink.name;
     $("heldMeta").textContent = `${held.userData.drink.type} · ${held.userData.drink.abv}% ABV · ${Math.round(held.userData.volume * 100)}% left`;
@@ -3984,6 +4016,9 @@ function attachHeld(obj) {
     glassMesh = obj;
     setRightGrip(true);
     poseHands();
+    updateGlassVisual();
+    hud();
+    pokePose();
     audio.clink();
     return;
   }
@@ -4077,6 +4112,7 @@ function pourIntoGlass(drink, amount) {
   addPart(drink, add);
   updateGlassVisual();
   hud();
+  pokePose();
   return add;
 }
 
@@ -4364,6 +4400,12 @@ function startShift() {
     })
   );
   setGameHandler((msg) => {
+    if (msg?.t === "cupfill") {
+      const to = String(msg.to || "");
+      if (to && to !== String(localId() || "")) return;
+      catchPeeInCup(Number(msg.a) || 0.03);
+      return;
+    }
     if (msg?.t === "cops") {
       applyRemoteCops(msg);
       return;
@@ -6353,6 +6395,16 @@ function tick() {
     audio.peeStop();
     if (flush) audio.flush();
   }
+  if (peeing && glassState.fill < 1) {
+    const aim = peeTargetOf();
+    const cups = glassCatchVolumes();
+    const aimed = !!(aim && cups.some((c) => {
+      const dx = (aim.x || 0) - c.x;
+      const dz = (aim.z || 0) - c.z;
+      return dx * dx + dz * dz <= (c.r + 0.24) ** 2;
+    }));
+    if (held === glassMesh || aimed) catchPeeInCup(dt * 0.45);
+  }
   if (localGender === "f" && peeing && sitting?.kind !== "toilet") {
     peeing = false;
     peeUntil = 0;
@@ -6646,6 +6698,8 @@ function bind() {
       glassState.fill = 0;
       glassState.parts = [];
       updateGlassVisual();
+      hud();
+      pokePose();
       audio.splash();
     }
     if (e.code === "KeyF") {

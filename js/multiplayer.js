@@ -169,8 +169,8 @@ function cupWorldOf(peer) {
     x: _cupWorld.x,
     y: _cupWorld.y + 0.055,
     z: _cupWorld.z,
-    r: 0.12,
-    h: 0.16,
+    r: 0.22,
+    h: 0.28,
   };
 }
 
@@ -206,7 +206,7 @@ function catchPeeDrop(drop, cups) {
   if (!cups || !cups.length) return false;
   for (const cup of cups) {
     if (!dropHitsCup(drop.position, cup)) continue;
-    if (cup.local) peeFillFn && peeFillFn(0.035);
+    if (cup.local) peeFillFn && peeFillFn(0.04);
     return true;
   }
   return false;
@@ -1139,22 +1139,28 @@ function poseRightPunch(u, punchT) {
 
 function makePeerCup() {
   const g = new THREE.Group();
-  const glass = lambert(0xc8e6f4, { transparent: true, opacity: 0.42 });
-  const wall = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.03, 0.11, 8, 1, true), glass);
-  wall.position.y = 0.055;
+  const glass = lambert(0xc8e6f4, { transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide });
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.032, 0.112, 10, 1, true), glass);
+  wall.position.y = 0.056;
   g.add(wall);
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.012, 8), glass);
-  base.position.y = 0.006;
+  const base = new THREE.Mesh(new THREE.CircleGeometry(0.031, 10), glass);
+  base.rotation.x = -Math.PI / 2;
+  base.position.y = 0.002;
   g.add(base);
-  const liq = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.03, 0.024, 1, 8),
-    lambert(0xd6c044, { transparent: true, opacity: 0.88, emissive: 0x3a3008, emissiveIntensity: 0.22 })
-  );
+  const liqMat = lambert(0xd6c044, { transparent: true, opacity: 0.94, emissive: 0xd6c044, emissiveIntensity: 0.3, depthWrite: false });
+  const liq = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.028, 1, 10), liqMat);
   liq.position.y = 0.02;
   liq.scale.y = 0.01;
   liq.visible = false;
+  liq.renderOrder = 2;
   g.add(liq);
+  const surf = new THREE.Mesh(new THREE.CircleGeometry(0.034, 12), liqMat.clone());
+  surf.rotation.x = -Math.PI / 2;
+  surf.visible = false;
+  surf.renderOrder = 3;
+  g.add(surf);
   g.userData.liq = liq;
+  g.userData.surf = surf;
   g.position.set(0.012, -0.5, 0.05);
   g.rotation.set(0.18, 0, 0.08);
   g.visible = false;
@@ -1171,15 +1177,24 @@ function poseHeld(peer) {
   if (!cupOn) return;
   const fill = clamp(peer.gf || 0, 0, 1);
   const liq = u.cup.userData.liq;
+  const surf = u.cup.userData.surf;
   if (!liq) return;
-  liq.visible = fill > 0.02;
+  liq.visible = fill > 0.015;
+  if (surf) surf.visible = liq.visible;
   if (!liq.visible) return;
-  const h = Math.max(0.012, 0.086 * fill);
+  const h = Math.max(0.01, 0.1 * fill);
   liq.scale.y = h;
-  liq.position.y = 0.012 + h / 2;
+  liq.position.y = 0.008 + h / 2;
   const col = Number(peer.gc) || 0xd6c044;
   liq.material.color.setHex(col);
   if (liq.material.emissive) liq.material.emissive.setHex(col);
+  if (surf) {
+    surf.position.y = 0.008 + h * 0.99;
+    const r = 0.028 + 0.006 * fill;
+    surf.scale.set(r / 0.034, r / 0.034, 1);
+    surf.material.color.setHex(col);
+    if (surf.material.emissive) surf.material.emissive.setHex(col);
+  }
 }
 
 function makePeeKit() {
