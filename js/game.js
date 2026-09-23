@@ -42,7 +42,7 @@ import {
   stepKnock,
   applyKnock,
   setWorldBlock,
-} from "./multiplayer.js?v=122";
+} from "./multiplayer.js?v=123";
 import { createGames } from "./games.js?v=106";
 
 const $ = (id) => document.getElementById(id);
@@ -1751,15 +1751,6 @@ function poseHands() {
     rightHand.rotation.set(0.15 + swing * 1.25, 0.2, 0.45 + swing * 0.55);
     leftHand.position.set(-0.24, -0.34 + bob, -0.46);
     leftHand.rotation.set(0.24, -0.14, -0.2);
-    return;
-  }
-  if (stunT > 0 || Math.hypot(knockVx, knockVz) > 0.2) {
-    const rec = Math.min(1, Math.max(stunT / 0.55, Math.hypot(knockVx, knockVz) / 3.2));
-    const hit = Math.sin(rec * Math.PI);
-    rightHand.position.set(0.3 + hit * 0.08, -0.28 - hit * 0.1, -0.4 + hit * 0.08);
-    rightHand.rotation.set(0.7 + hit * 0.5, 0.2, 0.55 + hit * 0.4);
-    leftHand.position.set(-0.3 - hit * 0.08, -0.28 - hit * 0.1, -0.4 + hit * 0.08);
-    leftHand.rotation.set(0.7 + hit * 0.5, -0.2, -0.55 - hit * 0.4);
     return;
   }
   if (pouring && held && held.userData.kind === "bottle") {
@@ -3641,8 +3632,7 @@ function toast(msg) {
 function takeHit(nx, nz, by) {
   const knock = applyKnock(camera.position.x, camera.position.z, nx, nz, collide, 0.28);
   lastKnock = { x: knock.dx, z: knock.dz };
-  stunT = Math.max(stunT, 0.55);
-  hurtFlash = 1;
+  hurtFlash = 0.7;
   audio.hit();
   toast(by ? `${by} punched you` : "you got punched");
   if (sitting) standUp();
@@ -3650,18 +3640,14 @@ function takeHit(nx, nz, by) {
     inCar.speed *= 0.32;
     inCar.drift += (Math.random() - 0.5) * 0.35;
   } else {
-    camera.position.x = knock.x;
-    camera.position.z = knock.z;
-    bodyPos.set(knock.x, camera.position.y, knock.z);
     knockVx += knock.vx;
     knockVz += knock.vz;
+    if (onGround) {
+      vy = Math.max(vy, 2.1);
+      onGround = false;
+    }
   }
-  if (localPeer) {
-    localPeer.hurtT = 0.55;
-    localPeer.stunT = 0.48;
-    localPeer.kvx = (localPeer.kvx || 0) + knock.vx;
-    localPeer.kvz = (localPeer.kvz || 0) + knock.vz;
-  }
+  if (localPeer) localPeer.hurtT = 0.28;
 }
 
 function flash(text, kind = "win") {
@@ -4593,9 +4579,6 @@ function startShift() {
       gf: glassState.fill,
       gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
       k: punchT > 0.02 ? 1 : 0,
-      hurt: (localPeer?.hurtT || 0) > 0.02 || stunT > 0.05 ? 1 : 0,
-      rdx: lastKnock.x,
-      rdz: lastKnock.z,
       aimx: punchAim().fx,
       aimz: punchAim().fz,
       ...(inCar
@@ -6528,7 +6511,7 @@ function updatePlayer(dt) {
     bodyPos.x = kx;
     bodyPos.z = kz;
   }
-  applyDrunkCam(dt, (stunT > 0 ? 0.2 : 0) + Math.min(0.18, Math.hypot(knockVx, knockVz) * 0.035));
+  applyDrunkCam(dt, stunT > 0 ? 0.2 : 0);
   if (camera.position.z > 16 && tryPads()) return;
 }
 
