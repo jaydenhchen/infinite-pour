@@ -726,7 +726,7 @@ export function mixAbv(parts) {
   let alcohol = 0, vol = 0;
   for (const p of parts) {
     const a = p.amount || 1;
-    alcohol += (p.abv / 100) * a;
+    alcohol += ((Number(p.abv) || 0) / 100) * a;
     vol += a;
   }
   return vol ? (alcohol / vol) * 100 : 0;
