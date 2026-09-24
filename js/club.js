@@ -25,7 +25,7 @@ const SPEAKERS = [
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
 const CLUB_MIST_OPACITY = 0.18;
-const CLUB_FOG_COLOR = 0x73797d;
+const CLUB_FOG_COLOR = 0x858b90;
 const OUTDOOR_FOG_COLOR = 0x12080c;
 const CLUB_FOG_DENSITY = 0.075;
 const OUTDOOR_FOG_DENSITY = 0.006;
@@ -1995,6 +1995,10 @@ export function createClub(api) {
         fogClubMode = inHere;
       }
       for (const mist of mistMeshes) {
+        if (mist.userData.fogVolume) {
+          mist.material.opacity = CLUB_MIST_OPACITY;
+          continue;
+        }
         const distance = Math.hypot(pos.x - mist.position.x, pos.z - mist.position.z);
         const density = inHere ? THREE.MathUtils.clamp(0.9 + distance / 8, 0.9, 2.4) : 1;
         mist.material.opacity = CLUB_MIST_OPACITY * density;
@@ -2294,15 +2298,26 @@ export function createClub(api) {
   function buildMist() {
     const fogMat = () =>
       new THREE.MeshBasicMaterial({
-        color: 0x7b8082,
+        color: 0x858b90,
         transparent: true,
         opacity: CLUB_MIST_OPACITY,
         depthWrite: false,
         side: THREE.DoubleSide,
+        toneMapped: false,
       });
     const y0 = 0.28;
     const y1 = CLUB_H - 0.08;
     const cloudGeo = new THREE.SphereGeometry(1, 14, 8);
+    const fogCube = new THREE.Mesh(
+      new THREE.BoxGeometry(CX1 - CX0 - 0.24, CLUB_H - 0.18, CZ1 - CZ0 - 0.24),
+      fogMat()
+    );
+    fogCube.position.set((CX0 + CX1) * 0.5, (CLUB_H - 0.18) * 0.5, (CZ0 + CZ1) * 0.5);
+    fogCube.renderOrder = 3;
+    fogCube.userData.laserIgnore = true;
+    fogCube.userData.fogVolume = true;
+    scene.add(fogCube);
+    mistMeshes.push(fogCube);
     for (let i = 0; i < 28; i++) {
       const mist = new THREE.Mesh(cloudGeo, fogMat());
       mist.scale.set(
@@ -2340,22 +2355,6 @@ export function createClub(api) {
       scene.add(mist);
       mistMeshes.push(mist);
       smokeClouds.push(mist);
-    }
-    const sheets = [
-      { x: 19.0, z: -0.35, w: 16.5, yaw: 0 },
-      { x: 19.0, z: -0.35, w: 10.3, yaw: Math.PI / 2 },
-      { x: 15.2, z: -0.35, w: 10.1, yaw: Math.PI / 2 },
-      { x: 22.8, z: -0.35, w: 10.1, yaw: Math.PI / 2 },
-    ];
-    const h = y1 - y0;
-    for (const sh of sheets) {
-      const mist = new THREE.Mesh(new THREE.PlaneGeometry(sh.w, h), fogMat());
-      mist.position.set(sh.x, (y0 + y1) * 0.5, sh.z);
-      mist.rotation.y = sh.yaw;
-      mist.renderOrder = 4;
-      mist.userData.laserIgnore = true;
-      scene.add(mist);
-      mistMeshes.push(mist);
     }
   }
 
