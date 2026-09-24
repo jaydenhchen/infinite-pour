@@ -499,19 +499,6 @@ canvas.webgl {
   text-shadow: 0 0 12px var(--cyan), 3px 3px 0 #000;
 }
 
-#lookHint {
-  position: absolute;
-  top: 14%;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: "Press Start 2P", monospace;
-  font-size: 9px;
-  color: var(--gold);
-  text-shadow: 2px 2px 0 #000;
-  display: none;
-  letter-spacing: 1px;
-}
-#lookHint.show { display: block; }
 
 #hurt {
   pointer-events: none;
@@ -554,7 +541,9 @@ canvas.webgl {
   background: rgba(20, 10, 6, 0.82);
   font-size: 22px;
   pointer-events: none;
+  display: none;
 }
+#online.show { display: block; }
 #online .tag {
   font-family: "Press Start 2P", monospace;
   font-size: 9px;
