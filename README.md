@@ -6,4 +6,4 @@ Pixel-art 3D self-serve bar. Beer, wine, vodka, whiskey, Twisted Tea, Cutwater â
 
 Open `index.html` over http (not `file://`) or use the Pages site after it goes live.
 
-The club plays the local tracks in `audio/club` in shuffled order. Look at the DJ and press `E` to skip to the next track.
+The club plays the local tracks in `audio/club` in shuffled order. Look at the DJ and press `E` to skip to the next track. Music is quietest away from the speakers, gets louder and rougher nearby, and the DJ screen shows the live equalizer.

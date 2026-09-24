@@ -9,8 +9,12 @@ const CLUB_H = 5.42;
 const BALC_Y = 2.68;
 const MAX_WALKING_PEOPLE = 3;
 const MAX_STAIR_TRAVELERS = 1;
-const BALCONY_SEAT_LIMIT = 10;
+const BALCONY_SEAT_RATIO = 0.5;
 const BALCONY_WALKER_LIMIT = 3;
+const SPEAKERS = [
+  [15.55, -5.4],
+  [22.45, -5.4],
+];
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 10);
 
@@ -67,9 +71,11 @@ export function createClub(api) {
   const chairs = [];
   const strobes = [];
   const spots = [];
+  const lasers = [];
   const platters = [];
   const knobs = [];
   const ledWalls = [];
+  let equalizer = null;
   let fader = null;
   let built = false;
   let wantUp = 0;
@@ -446,6 +452,9 @@ export function createClub(api) {
 
   function placePerson(kind, x, z, y, yaw, drunk, seed, mode, extra = {}) {
     const rig = makeGoer(kind, seed);
+    const hasDrink = !!rig.userData.held;
+    const requestedDrunk = Number(drunk) || 0;
+    const effectiveDrunk = hasDrink ? Math.max(requestedDrunk, 0.38) : requestedDrunk;
     rig.position.set(x, y, z);
     rig.rotation.y = yaw;
     scene.add(rig);
@@ -465,11 +474,12 @@ export function createClub(api) {
       homeLevel: y > 1.2 ? "up" : "down",
       tx: x,
       tz: z,
-      drunk,
+      drunk: effectiveDrunk,
+      holdingDrink: hasDrink,
       dizzyAt: 0.82 + hash01(seed, 26) * 0.28,
       dizzyRate: 1.3 + hash01(seed, 27) * 1.4,
       gender: kind === "f" || kind === "djf" ? "f" : "m",
-      r: kind === "guard" ? 0.48 : kind.startsWith("dj") ? 0.42 : 0.44,
+      r: kind === "guard" ? 0.56 : kind.startsWith("dj") ? 0.48 : 0.5,
       phase: hash01(seed, 21) * Math.PI * 2,
       style: (hash01(seed, 22) * 4) | 0,
       mode,
@@ -566,7 +576,7 @@ export function createClub(api) {
     fader = addMesh(scene, unitBox, cyan, 19.0, 0.94, -5.05, 0.18, 0.04, 0.06);
     addMesh(scene, unitBox, lambert(0x1a1a22), 19.0, 0.94, -5.48, 0.66, 0.08, 0.4);
     addMesh(scene, unitBox, lambert(0x3dfff2, { emissive: 0x2244aa, emissiveIntensity: 0.45 }), 19.0, 0.99, -5.48, 0.52, 0.01, 0.3);
-    addLedScreen(6.0, 1.8, 19.0, 2.22, -6.18);
+    addEqualizerScreen(6.0, 1.8, 19.0, 2.22, -6.18);
     addLedScreen(2.2, 1.35, 14.8, 2.18, -6.18);
     addLedScreen(2.2, 1.35, 23.2, 2.18, -6.18);
     addLedScreen(0.5, 0.34, 15.55, 1.74, -5.08);
@@ -627,6 +637,64 @@ export function createClub(api) {
     scene.add(m);
     ledWalls.push(m);
     return m;
+  }
+  function addEqualizerScreen(w, h, x, y, z, yaw = 0) {
+    const mesh = addLedScreen(w, h, x, y, z, yaw);
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 96;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const oldMaterial = mesh.material;
+    mesh.material = new THREE.MeshBasicMaterial({ map: texture });
+    oldMaterial.dispose();
+    equalizer = {
+      mesh,
+      canvas,
+      ctx: canvas.getContext("2d"),
+      texture,
+      levels: new Float32Array(24),
+      last: -1,
+    };
+    return mesh;
+  }
+
+  function updateEqualizer(t) {
+    if (!equalizer || !equalizer.ctx || t - equalizer.last < 0.04) return;
+    equalizer.last = t;
+    const { ctx, canvas, levels, texture } = equalizer;
+    const spectrum = audio?.clubSpectrum?.();
+    const bins = spectrum?.length || 0;
+    ctx.fillStyle = "#05070d";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "rgba(255, 40, 64, 0.18)";
+    ctx.lineWidth = 1;
+    for (let y = 18; y < canvas.height; y += 18) {
+      ctx.beginPath();
+      ctx.moveTo(0, y + 0.5);
+      ctx.lineTo(canvas.width, y + 0.5);
+      ctx.stroke();
+    }
+    for (let i = 0; i < levels.length; i++) {
+      let target = 0.08 + Math.abs(Math.sin(t * 4.3 + i * 0.7)) * 0.05;
+      if (bins) {
+        const start = Math.floor((i / levels.length) * bins);
+        const end = Math.max(start + 1, Math.floor(((i + 1) / levels.length) * bins));
+        let peak = 0;
+        for (let j = start; j < Math.min(end, bins); j++) peak = Math.max(peak, spectrum[j] / 255);
+        target = peak;
+      }
+      levels[i] += (target - levels[i]) * 0.32;
+      const barH = Math.max(3, levels[i] * 76);
+      const x = 4 + i * 10.35;
+      const grad = ctx.createLinearGradient(0, canvas.height - barH, 0, canvas.height);
+      grad.addColorStop(0, "#ff2038");
+      grad.addColorStop(0.55, "#ff456b");
+      grad.addColorStop(1, "#551225");
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, canvas.height - barH - 4, 7, barH);
+    }
+    texture.needsUpdate = true;
   }
 
   function makeChair(x, z, yaw = faceCenter(x, z)) {
@@ -732,6 +800,33 @@ export function createClub(api) {
     scene.add(beam);
     spots.push({ light: sl, hex, phase, ax: x, az: z, beam, cone, kind, coneH });
   }
+  function addLaser(x, z, phase) {
+    const light = new THREE.SpotLight(0xff1028, 7.5, 30, 0.045, 0.24, 1.0);
+    light.position.set(x, 5.02, z);
+    light.target.position.set(19, 0.75, 0.25);
+    scene.add(light);
+    scene.add(light.target);
+    const coneH = 7.2;
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.12, coneH, 8, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xff1028,
+        transparent: true,
+        opacity: 0.2,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    cone.rotation.x = -Math.PI / 2;
+    cone.position.z = coneH * 0.5;
+    const beam = new THREE.Group();
+    beam.add(cone);
+    beam.position.copy(light.position);
+    scene.add(beam);
+    lasers.push({ light, phase, beam, cone });
+  }
+
 
   function buildLights() {
     const wash = new THREE.PointLight(0x4a1840, 1.05, 16);
@@ -770,6 +865,12 @@ export function createClub(api) {
       [19.0, -3.4],
     ];
     strobePos.forEach((pt, i) => addSkySpot(pt[0], pt[1], i * 1.15 + 0.4, SKY[(i + 2) % SKY.length], "strobe"));
+    [
+      [13.1, -3.25, 0.2],
+      [24.9, -3.25, 1.7],
+      [15.55, -5.05, 3.1],
+      [22.45, -5.05, 4.6],
+    ].forEach((pt) => addLaser(pt[0], pt[1], pt[2]));
     for (let i = 0; i < 4; i++) {
       const pl = new THREE.PointLight(SKY[i % SKY.length], 0.4, 8);
       pl.position.set(14.2 + (i % 2) * 8.4, 4.85, -1.4 + Math.floor(i / 2) * 3.6);
@@ -809,18 +910,6 @@ export function createClub(api) {
         scene.add(bot);
         registerPick(bot);
       }
-    }
-    for (let i = 0; i < 38; i++) {
-      const x = 11.0 + hash01(i, 20) * 13.3;
-      const z = -3.2 + hash01(i, 21) * 8.7;
-      if (blockedFloor(x, z)) continue;
-      const puddle = new THREE.Mesh(
-        new THREE.CircleGeometry(0.08 + hash01(i, 22) * 0.14, 10),
-        lambert(0x16141a, { transparent: true, opacity: 0.22 })
-      );
-      puddle.rotation.x = -Math.PI / 2;
-      puddle.position.set(x, 0.012, z);
-      scene.add(puddle);
     }
   }
 
@@ -987,6 +1076,31 @@ export function createClub(api) {
     }
   }
 
+  function refillBalconySeats() {
+    const target = Math.max(1, Math.round(chairs.length * BALCONY_SEAT_RATIO));
+    let seated = chairs.reduce((n, c) => n + (c.userData.sitter ? 1 : 0), 0);
+    if (seated >= target) return;
+    const candidates = crowd.filter(
+      (p) =>
+        countable(p) &&
+        p.mode === "mingle" &&
+        !p.route &&
+        !p.walking &&
+        !p.partner &&
+        p.hurtT <= 0 &&
+        p.wait <= 0 &&
+        isUpstairs(p)
+    );
+    for (const chair of chairs) {
+      if (seated >= target) break;
+      if (chair.userData.sitter) continue;
+      const p = candidates.shift();
+      if (!p) break;
+      seatPerson(p, chair);
+      seated++;
+    }
+  }
+
   function rebalanceCrowd() {
     if (!wantDown && !wantUp) return;
     if (levelCounts().down < wantDown) {
@@ -994,7 +1108,6 @@ export function createClub(api) {
       extras.sort((a, b) => Number(a.homeLevel !== "down") - Number(b.homeLevel !== "down"));
       for (const p of extras) {
         if (stairCount() >= MAX_STAIR_TRAVELERS) break;
-        if (p.mode === "sit" && p.chair) kickChair(p.chair);
         if (p.mode === "sit" || p.mode === "dance") continue;
         p.route = "down";
         p.stairTrip = "";
@@ -1167,9 +1280,10 @@ export function createClub(api) {
     addKiss(13.8, 1.15, 0.9, 126);
     placePerson(hash01(90, 1) > 0.45 ? "djf" : "dj", 19.0, -5.38, 0.4, 0, 0.28, 90, "dj");
     const chairOrder = chairs.map((_, i) => i).sort((a, b) => hash01(a, 70) - hash01(b, 71));
+    const seatLimit = Math.max(1, Math.round(chairs.length * BALCONY_SEAT_RATIO));
     let seated = 0;
     for (const i of chairOrder) {
-      if (seated >= BALCONY_SEAT_LIMIT) break;
+      if (seated >= seatLimit) break;
       const ch = chairs[i];
       if (!ch || ch.userData.sitter) continue;
       const girl = hash01(i, 70) > 0.32;
@@ -1351,10 +1465,10 @@ export function createClub(api) {
     const hop = Math.abs(Math.sin(beat * Math.PI)) * 0.04;
     u.body.position.set(slide * 0.07, hop, 0.08);
     u.body.rotation.set(-0.26, slide * 0.14, 0);
-    u.armL.position.set(0.2, 0.82, 0.26);
-    u.armL.rotation.set(-1.12 + Math.sin(t * 1.6) * 0.12, 0.22, 0.48);
-    u.armR.position.set(-0.22, 0.8, 0.22);
-    u.armR.rotation.set(-1.08 + scratch * 0.28, -0.42, -0.38);
+    u.armL.position.set(0.22, 1.04, -0.08);
+    u.armL.rotation.set(-0.62 + Math.sin(t * 1.6) * 0.08, 0.16, 0.5);
+    u.armR.position.set(-0.22, 1.03, -0.08);
+    u.armR.rotation.set(-0.58 + scratch * 0.16, -0.3, -0.46);
     u.legL.rotation.set(0.08, 0, 0.04);
     u.legR.rotation.set(-0.06, 0, -0.03);
     u.head.rotation.set(-0.18 + Math.sin(t * 2.1) * 0.12, Math.sin(t * 0.7) * 0.28, 0);
@@ -1559,6 +1673,21 @@ export function createClub(api) {
     if (u.stars) u.stars.visible = p.drunk > 1.05;
   }
 
+  function crowdStepBlocked(p, x, z) {
+    if (!p) return true;
+    for (const q of crowd) {
+      if (q === p || q.dead || q.gone || q.partner === p || p.partner === q) continue;
+      if (Math.abs((p.y || 0) - (q.y || 0)) > 1.1) continue;
+      const need = p.r + q.r + 0.08;
+      const dx = x - q.x;
+      const dz = z - q.z;
+      if (dx * dx + dz * dz >= need * need) continue;
+      if (planted(q) || !q.walking) return true;
+      if ((q.phase || 0) < (p.phase || 0)) return true;
+    }
+    return false;
+  }
+
   function stepMingle(p, dt) {
     if (p.wait > 0) {
       p.wait -= dt;
@@ -1610,6 +1739,12 @@ export function createClub(api) {
         return false;
       }
     }
+    if (crowdStepBlocked(p, nx, nz)) {
+      p.walking = false;
+      p.wait = 0.1;
+      pickTarget(p);
+      return false;
+    }
     p.x = nx;
     p.z = nz;
     setLevel(p);
@@ -1639,7 +1774,7 @@ export function createClub(api) {
     const feet = Math.max(0, (pos.y || 0) - 1.5);
     for (let i = 0; i < crowd.length; i++) {
       const a = crowd[i];
-      if (a.dead || a.gone || a.mode === "guard" || planted(a)) continue;
+      if (a.dead || a.gone || a.mode === "guard" || a.mode === "dj") continue;
       for (let j = i + 1; j < crowd.length; j++) {
         const b = crowd[j];
         if (b.dead || b.mode === "guard" || a.partner === b || b.partner === a) continue;
@@ -1781,7 +1916,12 @@ export function createClub(api) {
     if (!built) return;
     const pos = playerPos();
     const inHere = inside(pos.x, pos.z);
-    audio.clubTick?.(dt, inHere ? 1 : 0);
+    const speakerDistance = Math.min(
+      Math.hypot(pos.x - SPEAKERS[0][0], pos.z - SPEAKERS[0][1]),
+      Math.hypot(pos.x - SPEAKERS[1][0], pos.z - SPEAKERS[1][1])
+    );
+    const musicProximity = inHere ? THREE.MathUtils.clamp(1 - speakerDistance / 4.8, 0, 1) : -1;
+    audio.clubTick?.(dt, musicProximity);
 
     const beat = (t * 2.15) % 1;
     const flash = beat < 0.08 || (beat > 0.5 && beat < 0.58) || (beat > 0.75 && beat < 0.8);
@@ -1822,9 +1962,24 @@ export function createClub(api) {
         s.beam.visible = s.light.intensity > 0.2;
       }
     }
-    for (let i = 0; i < ledWalls.length; i++) {
-      ledWalls[i].material.color.setHSL((t * 0.28 + i * 0.08) % 1, 0.92, 0.5);
+    for (const laser of lasers) {
+      const ang = t * 0.52 + laser.phase;
+      const tx = 19.0 + Math.cos(ang) * 5.4;
+      const tz = 0.35 + Math.sin(ang * 1.23) * 4.15;
+      const ty = 0.35 + (Math.sin(ang * 0.71) * 0.5 + 0.5) * 2.8;
+      laser.light.target.position.set(tx, ty, tz);
+      laser.light.target.updateMatrixWorld?.();
+      laser.light.intensity = 5.0 + (Math.sin(t * 3.2 + laser.phase) * 0.5 + 0.5) * 4.0;
+      laser.cone.material.opacity = 0.14 + (Math.sin(t * 2.4 + laser.phase) * 0.5 + 0.5) * 0.12;
+      laser.beam.position.copy(laser.light.position);
+      laser.beam.lookAt(tx, ty, tz);
     }
+    for (let i = 0; i < ledWalls.length; i++) {
+      if (ledWalls[i] !== equalizer?.mesh) {
+        ledWalls[i].material.color.setHSL((t * 0.28 + i * 0.08) % 1, 0.92, 0.5);
+      }
+    }
+    updateEqualizer(t);
     for (const p of platters) p.rotation.y = t * 4.8;
     for (let i = 0; i < knobs.length; i++) knobs[i].rotation.y = t * (1.6 + i * 0.35);
     if (fader) fader.position.x = 19.0 + Math.sin(t * 1.3) * 0.16;
@@ -1833,6 +1988,7 @@ export function createClub(api) {
     if (rebalanceT > 1.2) {
       rebalanceT = 0;
       rebalanceCrowd();
+      refillBalconySeats();
     }
     for (const p of crowd) {
       if (p.gone) continue;
@@ -1845,7 +2001,7 @@ export function createClub(api) {
           continue;
         }
         poseDead(p, t);
-      } else if (p.hurtT > 0) poseHurt(p, t);
+      } else if (p.hurtT > 0 && p.mode !== "dj") poseHurt(p, t);
       else if (p.mode === "mingle") {
         const walking = stepMingle(p, dt);
         if (walking) poseWalk(p, t);
@@ -1859,8 +2015,7 @@ export function createClub(api) {
         }
         poseDance(p, t);
       } else if (p.mode === "sit") {
-        if (p.hurtT <= 0 && hash01(p.phase, Math.floor(t * 0.11), p.x) > 0.8 && p.chair) kickChair(p.chair);
-        else poseSit(p, t);
+        poseSit(p, t);
       }
       else if (p.mode === "dj") poseDj(p, t);
       else if (p.mode === "kiss") poseKiss(p, t);
@@ -1962,6 +2117,7 @@ export function createClub(api) {
     fx /= aimLen;
     fz /= aimLen;
     const wasGuard = best.mode === "guard";
+    const wasDj = best.mode === "dj";
     if (wasGuard) {
       if (!best.angry) {
         best.angry = true;
@@ -1969,6 +2125,12 @@ export function createClub(api) {
         audio?.baton?.();
       }
       showBaton(best);
+    }
+    if (wasDj) {
+      best.hurtT = 0.28;
+      best.walking = false;
+      audio?.baton?.();
+      return "djhit";
     }
     best.hp = Math.max(0, (best.hp ?? 10) - (aim.dmg || 1));
     best.hurtT = 0.28;
@@ -1980,6 +2142,10 @@ export function createClub(api) {
     if (best.chair) {
       best.chair.userData.sitter = null;
       best.chair = null;
+      best.mode = "mingle";
+      best.route = "";
+      best.wait = 0.2;
+      pickTarget(best);
     }
     if (best.partner) {
       const other = best.partner;
@@ -2012,26 +2178,40 @@ export function createClub(api) {
   }
 
   function buildMist() {
-    const fogMat = (opacity) =>
+    const MIST_OPACITY = 0.064;
+    const fogMat = () =>
       new THREE.MeshBasicMaterial({
-        color: 0x59616b,
+        color: 0x68737c,
         transparent: true,
-        opacity,
+        opacity: MIST_OPACITY,
         depthWrite: false,
         side: THREE.DoubleSide,
       });
-    const y0 = 0.34;
-    const y1 = CLUB_H - 0.12;
-    const n = 18;
-    for (let i = 0; i < n; i++) {
-      const u = n <= 1 ? 0.5 : i / (n - 1);
-      const y = y0 + (y1 - y0) * u;
-      const o = 0.025 + Math.sin(u * Math.PI) * 0.045;
-      const w = 16.7 - Math.abs(u - 0.5) * 0.7;
-      const d = 10.5 - Math.abs(u - 0.5) * 0.5;
-      const mist = new THREE.Mesh(new THREE.PlaneGeometry(w, d), fogMat(o));
+    const y0 = 0.28;
+    const y1 = CLUB_H - 0.08;
+    const layerGeo = new THREE.PlaneGeometry(17.0, 10.8);
+    const layerCount = 20;
+    for (let i = 0; i < layerCount; i++) {
+      const u = layerCount <= 1 ? 0.5 : i / (layerCount - 1);
+      const mist = new THREE.Mesh(layerGeo, fogMat());
       mist.rotation.x = -Math.PI / 2;
-      mist.position.set(19.0, y, -0.35);
+      mist.position.set(19.0, y0 + (y1 - y0) * u, -0.35);
+      mist.renderOrder = 4;
+      scene.add(mist);
+    }
+    const cloudGeo = new THREE.SphereGeometry(1, 14, 8);
+    for (let i = 0; i < 28; i++) {
+      const mist = new THREE.Mesh(cloudGeo, fogMat());
+      mist.scale.set(
+        1.3 + hash01(i, 91) * 2.3,
+        0.18 + hash01(i, 92) * 0.28,
+        0.72 + hash01(i, 93) * 1.5
+      );
+      mist.position.set(
+        11.0 + hash01(i, 94) * 16.0,
+        0.45 + hash01(i, 95) * 4.45,
+        -5.35 + hash01(i, 96) * 10.0
+      );
       mist.renderOrder = 4;
       scene.add(mist);
     }
@@ -2043,7 +2223,7 @@ export function createClub(api) {
     ];
     const h = y1 - y0;
     for (const sh of sheets) {
-      const mist = new THREE.Mesh(new THREE.PlaneGeometry(sh.w, h), fogMat(0.05));
+      const mist = new THREE.Mesh(new THREE.PlaneGeometry(sh.w, h), fogMat());
       mist.position.set(sh.x, (y0 + y1) * 0.5, sh.z);
       mist.rotation.y = sh.yaw;
       mist.renderOrder = 4;

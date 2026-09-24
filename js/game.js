@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=29";
+import { createClub } from "./club.js?v=31";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -452,7 +452,7 @@ const CLUB_PLAYLIST = [
   { src: "audio/club/02-cochise-tell-em.mp3", title: "Cochise — Tell Em" },
   { src: "audio/club/03-don-toliver-bandit.mp3", title: "Don Toliver — BANDIT" },
   { src: "audio/club/04-dua-lipa-levitating.mp3", title: "Dua Lipa — Levitating" },
-  { src: "audio/club/05-flashing-lights-ascend.mp3", title: "Flashing Lights — but you will ascend" },
+  { src: "audio/club/05-flashing-lights-kanye.mp3", title: "Kanye West — Flashing Lights" },
   { src: "audio/club/06-far-east-movement-like-a-g6.mp3", title: "Far East Movement — Like a G6" },
   { src: "audio/club/07-future-metro-boomin-like-that.mp3", title: "Future, Metro Boomin & Kendrick Lamar — Like That" },
   { src: "audio/club/08-kanye-west-i-dont-like.mp3", title: "Kanye West — I Don't Like" },
@@ -950,6 +950,12 @@ const audio = {
   clubCursor: 0,
   clubTrack: null,
   clubVol: 0,
+  clubSource: null,
+  clubAnalyser: null,
+  clubFreq: null,
+  clubGain: null,
+  clubDistort: null,
+  clubDrive: -1,
   boot() {
     if (this.ctx) {
       if (this.ctx.state === "suspended") this.ctx.resume();
@@ -983,13 +989,52 @@ const audio = {
     if (this.clubAudio || !CLUB_PLAYLIST.length) return;
     const player = new Audio();
     player.preload = "auto";
-    player.volume = 0;
+    player.volume = 1;
     player.addEventListener("ended", () => this.nextClubTrack());
     player.addEventListener("error", () => this.nextClubTrack());
     this.clubAudio = player;
+    this.connectClubAudio();
     this.shuffleClub();
     this.nextClubTrack();
   },
+  connectClubAudio() {
+    if (!this.ctx || !this.clubAudio || this.clubSource) return;
+    this.clubSource = this.ctx.createMediaElementSource(this.clubAudio);
+    this.clubAnalyser = this.ctx.createAnalyser();
+    this.clubAnalyser.fftSize = 64;
+    this.clubAnalyser.smoothingTimeConstant = 0.78;
+    this.clubFreq = new Uint8Array(this.clubAnalyser.frequencyBinCount);
+    this.clubGain = this.ctx.createGain();
+    this.clubGain.gain.value = 0;
+    this.clubDistort = this.ctx.createWaveShaper();
+    this.clubDistort.oversample = "2x";
+    this.clubDistort.curve = null;
+    this.clubSource.connect(this.clubAnalyser);
+    this.clubAnalyser.connect(this.clubDistort);
+    this.clubDistort.connect(this.clubGain);
+    this.clubGain.connect(this.ctx.destination);
+  },
+
+  clubCurve(drive) {
+    const size = 2048;
+    const curve = new Float32Array(size);
+    const amount = 1 + drive * 6;
+    const norm = Math.tanh(amount);
+    for (let i = 0; i < size; i++) {
+      const x = (i / (size - 1)) * 2 - 1;
+      curve[i] = Math.tanh(amount * x) / norm;
+    }
+    return curve;
+  },
+
+  setClubDrive(drive) {
+    if (!this.clubDistort) return;
+    const level = Math.round(THREE.MathUtils.clamp(drive, 0, 1) * 20) / 20;
+    if (Math.abs(level - this.clubDrive) < 0.05) return;
+    this.clubDrive = level;
+    this.clubDistort.curve = level < 0.05 ? null : this.clubCurve(level);
+  },
+
   shuffleClub() {
     this.clubOrder = CLUB_PLAYLIST.map((_, i) => i);
     for (let i = this.clubOrder.length - 1; i > 0; i--) {
@@ -1309,15 +1354,27 @@ const audio = {
     try { this.siren.o.stop(); } catch (err) { /* already stopped */ }
     this.siren = null;
   },
-  clubTick(dt, vol) {
+  clubTick(dt, proximity) {
     if (!this.clubAudio) return;
-    const target = vol >= 0.02 ? THREE.MathUtils.clamp(vol, 0, 1) * 0.46 : 0;
+    const inside = Number.isFinite(proximity) && proximity >= 0;
+    const near = inside ? THREE.MathUtils.clamp(proximity, 0, 1) : 0;
+    const target = inside ? 0.08 + near * 0.68 : 0;
     this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
-    this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
-    if (target > 0.02 && this.clubAudio.paused) {
+    if (this.clubGain && this.ctx) {
+      this.clubGain.gain.setTargetAtTime(this.clubVol, this.ctx.currentTime, 0.045);
+    } else {
+      this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
+    }
+    this.setClubDrive(inside ? 0.12 + near * 0.88 : 0);
+    if (inside && this.clubAudio.paused) {
       const play = this.clubAudio.play();
       play?.catch?.(() => {});
     }
+  },
+  clubSpectrum() {
+    if (!this.clubAnalyser || !this.clubFreq) return null;
+    this.clubAnalyser.getByteFrequencyData(this.clubFreq);
+    return this.clubFreq;
   },
   pourStart() {
     if (!this.ctx || this.pourOsc) return;
@@ -4342,6 +4399,7 @@ function buildBathrooms() {
   scene.add(stain3);
 
   setPeeDrainFn((x, y, z) => {
+    if (houseClub?.inside?.(x, z)) return true;
     for (const toilet of toilets) {
       const b = toilet.userData.bowlWorld;
       if (!b) continue;
@@ -4872,6 +4930,29 @@ function drunkWord(d) {
   return "gone";
 }
 
+function drunkVignetteRgb(d) {
+  let r;
+  let g;
+  let b;
+  if (d < 0.75) {
+    const t = d / 0.75;
+    r = 16 + t * 8;
+    g = 16 + t * 70;
+    b = 18 + t * 22;
+  } else if (d < 1.8) {
+    const t = (d - 0.75) / 1.05;
+    r = 24 + t * 18;
+    g = 86 - t * 38;
+    b = 40 + t * 120;
+  } else {
+    const t = Math.min(1, (d - 1.8) / 1.8);
+    r = 42 + t * 148;
+    g = 48 - t * 32;
+    b = 160 - t * 125;
+  }
+  return `${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}`;
+}
+
 function hud() {
   $("score").textContent = String(score);
   $("pours").textContent = String(pours);
@@ -4934,8 +5015,9 @@ function hud() {
     $("heldMeta").textContent = "E grab a cup from the right stacks · Y summon · T chat";
   }
   const d = drunkLevel();
-  $("vignette").style.filter = `hue-rotate(${Math.min(50, d * 10)}deg) saturate(${1 + Math.min(1.6, d * 0.32)})`;
-  $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(20, 50 - d * 6)}%, rgba(${Math.min(180, 40 + d * 22)}, 8, 20, ${Math.min(0.64, 0.32 + d * 0.05)}) 100%)`;
+  const vignetteRgb = drunkVignetteRgb(d);
+  $("vignette").style.filter = `saturate(${1 + Math.min(2.1, d * 0.42)})`;
+  $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(20, 50 - d * 6)}%, rgba(${vignetteRgb}, ${Math.min(0.7, 0.3 + d * 0.065)}) 100%)`;
   $("lookHint").classList.toggle("show", started && !controls.isLocked && !summonOpen && !chatOpen && !passedOut);
   const list = $("onlineList");
   if (list) {
@@ -7098,7 +7180,8 @@ function meleePunch() {
   if (kind === "cop") return hitOfficer(best, fx, fz, dmg);
   if (kind === "club") {
     const result = houseClub.applyPunch(best, { fx, fz, dmg });
-    if (result === "guardhit") toast("the bouncer is pissed");
+    if (result === "djhit") toast("DJ flashed red · still mixing");
+    else if (result === "guardhit") toast("the bouncer is pissed");
     else if (result === "guardkill") {
       toast("bouncer down · cops incoming");
       spawnPolice(bodyPos.x, bodyPos.z);
