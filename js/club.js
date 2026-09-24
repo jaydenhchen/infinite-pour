@@ -24,17 +24,18 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
-const CLUB_MIST_OPACITY = 0.14;
+const CLUB_MIST_OPACITY = 0.18;
 const CLUB_FOG_COLOR = 0x73797d;
 const OUTDOOR_FOG_COLOR = 0x12080c;
-const CLUB_FOG_NEAR = 1.6;
-const CLUB_FOG_FAR = 18;
+const CLUB_FOG_DENSITY = 0.075;
+const OUTDOOR_FOG_DENSITY = 0.006;
 const CLOUD_DRIFT_X = 0.66;
 const CLOUD_DRIFT_Z = 0.46;
 const CLOUD_EDGE_PAD = 0.1;
 const laserGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, false);
 const laserAxis = new THREE.Vector3(0, 1, 0);
 const laserRaycaster = new THREE.Raycaster();
+const punchRaycaster = new THREE.Raycaster();
 const laserOrigin = new THREE.Vector3();
 const laserDirection = new THREE.Vector3();
 const laserEnd = new THREE.Vector3();
@@ -530,6 +531,7 @@ export function createClub(api) {
       deadT: 0,
       gone: false,
     };
+    rig.userData.clubPerson = person;
     crowd.push(person);
     return person;
   }
@@ -957,15 +959,6 @@ export function createClub(api) {
         scene.add(cup);
         registerPick(cup);
         trackLooseGlass?.(cup);
-      } else if (makeBottle) {
-        const bot = makeBottle(drink);
-        bot.scale.multiplyScalar(0.72);
-        bot.position.set(x, 0.04, z);
-        bot.rotation.set(Math.PI / 2, hash01(i, 12) * 4, 0.15);
-        bot.userData.stock = false;
-        bot.userData.volume = 0.14 + hash01(i, 16) * 0.22;
-        scene.add(bot);
-        registerPick(bot);
       }
     }
   }
@@ -1998,8 +1991,7 @@ export function createClub(api) {
     if (scene.fog) {
       if (fogClubMode !== inHere) {
         scene.fog.color.setHex(inHere ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
-        scene.fog.near = inHere ? CLUB_FOG_NEAR : 28;
-        scene.fog.far = inHere ? CLUB_FOG_FAR : 170;
+        scene.fog.density = inHere ? CLUB_FOG_DENSITY : OUTDOOR_FOG_DENSITY;
         fogClubMode = inHere;
       }
       for (const mist of mistMeshes) {
@@ -2197,6 +2189,23 @@ export function createClub(api) {
     if (!aimLen) return null;
     fx /= aimLen;
     fz /= aimLen;
+    if (aim.origin && aim.direction) {
+      const targets = [];
+      for (const p of crowd) {
+        if (!p.dead && !p.gone && p.rig) targets.push(p.rig);
+      }
+      punchRaycaster.set(aim.origin, aim.direction);
+      punchRaycaster.near = 0;
+      punchRaycaster.far = 2.35;
+      for (const hit of punchRaycaster.intersectObjects(targets, true)) {
+        let node = hit.object;
+        while (node && node !== scene && !node.userData?.clubPerson) node = node.parent;
+        const person = node?.userData?.clubPerson;
+        if (!person || person.dead || person.gone) continue;
+        if (Math.abs((person.y || 0) - feet) > 1.25) continue;
+        return { person, dist: hit.distance };
+      }
+    }
     let best = null;
     let bestDist = 2.25;
     for (const p of crowd) {
@@ -2298,13 +2307,13 @@ export function createClub(api) {
       const mist = new THREE.Mesh(cloudGeo, fogMat());
       mist.scale.set(
         1.3 + hash01(i, 91) * 2.3,
-        0.18 + hash01(i, 92) * 0.28,
+        0.34 + hash01(i, 92) * 0.56,
         0.72 + hash01(i, 93) * 1.5
       );
       mist.userData.smokeExtentX = mist.scale.x;
       mist.userData.smokeExtentZ = mist.scale.z;
-      mist.userData.smokeMinY = 0.75 + mist.scale.y;
-      mist.userData.smokeMaxY = CLUB_H - 0.2 - mist.scale.y;
+      mist.userData.smokeMinY = 0.7 + mist.scale.y;
+      mist.userData.smokeMaxY = CLUB_H - 0.35 - mist.scale.y;
       mist.position.set(
         THREE.MathUtils.clamp(
           11.0 + hash01(i, 94) * 16.0,
@@ -2312,7 +2321,7 @@ export function createClub(api) {
           CX1 - mist.userData.smokeExtentX - CLOUD_DRIFT_X - CLOUD_EDGE_PAD
         ),
         THREE.MathUtils.clamp(
-          1.0 + hash01(i, 95) * 3.5,
+          0.85 + hash01(i, 95) * 3.25,
           mist.userData.smokeMinY,
           mist.userData.smokeMaxY
         ),
