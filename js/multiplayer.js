@@ -1215,12 +1215,14 @@ function poseSit(peer) {
 
 function poseDrive(peer) {
   const u = peer.rig.userData;
-  u.body.position.y = -0.16;
-  u.body.rotation.set(0.1, 0, 0);
+  u.body.position.y = -0.4;
+  u.body.rotation.set(0.16, 0, 0);
   u.legL.rotation.set(-1.28, 0.12, 0.08);
   u.legR.rotation.set(-1.28, -0.08, -0.06);
   u.armL.rotation.set(-0.98, 0.18, -0.42);
   u.armR.rotation.set(peer.pouring ? -1.1 : -0.98, -0.16, 0.4);
+  if (u.stars) u.stars.visible = false;
+  if (u.tag) u.tag.visible = false;
 }
 
 export function poseHurt(u, hurtT) {
@@ -1887,7 +1889,7 @@ function animatePeer(peer, dt, t) {
   if (punching) poseRightPunch(u, peer.punchT);
 
   if (!peer.freezeHead) {
-    const sway = drunkSway(drunk, t, phase, moving, u.walk);
+    const sway = peer.drive ? { yaw: 0, pit: 0, roll: 0 } : drunkSway(drunk, t, phase, moving, u.walk);
     u.head.rotation.order = "YXZ";
     u.head.rotation.set(-peer.pit + sway.pit, headYawOffset(peer) + sway.yaw, sway.roll * 0.65);
   }
@@ -1908,7 +1910,7 @@ function animatePeer(peer, dt, t) {
 
   if (u.tag && !u.tag.userData.locked) {
     if (u.tag.userData.label !== nameLabel(peer.name)) paintNametag(u.tag, peer.name);
-    if (!peer.local) u.tag.visible = true;
+    if (!peer.local) u.tag.visible = !peer.drive;
     const tall = u.tall || 1;
     u.tag.position.set(0, 1.78 * tall + (u.stars.visible ? 0.12 : 0.04), 0);
     const base = u.tag.userData.baseScale;
@@ -1919,7 +1921,7 @@ function animatePeer(peer, dt, t) {
     }
   }
 
-  const showStars = drunk > 0.3;
+  const showStars = drunk > 0.3 && !peer.drive && !peer.sit;
   u.stars.visible = showStars && u.head.visible;
   if (showStars) {
     u.stars.rotation.y += dt * (1.6 + drunk * 4.8);

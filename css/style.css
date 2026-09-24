@@ -201,6 +201,25 @@ canvas.webgl {
   background: repeating-linear-gradient(90deg, #ff3dac 0 8px, #c41e6a 8px 10px);
 }
 
+.bar.hp > i {
+  background: repeating-linear-gradient(90deg, #3dff8a 0 8px, #1e9a4a 8px 10px);
+}
+
+#drinkHudTitle {
+  margin-top: 4px;
+}
+
+#glassName {
+  margin: -4px 0 8px;
+  font-size: 18px;
+  color: #c9b48a;
+  line-height: 1.15;
+}
+
+.bar.drink > i {
+  background: repeating-linear-gradient(90deg, #8ad4e8 0 8px, #4e8ea4 8px 10px);
+}
+
 #dare {
   position: absolute;
   left: 18px;
@@ -513,6 +532,15 @@ canvas.webgl {
 #passout.arrest h1 {
   color: #7aa2ff;
   text-shadow: 4px 4px 0 #000, 0 0 18px rgba(70, 120, 255, 0.55);
+}
+#passout.down {
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(180, 20, 40, 0.28), transparent 50%),
+    rgba(16, 4, 8, 0.8);
+}
+#passout.down h1 {
+  color: #ff4466;
+  text-shadow: 4px 4px 0 #000, 0 0 18px rgba(255, 50, 80, 0.5);
 }
 
 .hidden { display: none !important; }
