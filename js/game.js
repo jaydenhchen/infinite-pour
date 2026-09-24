@@ -8310,7 +8310,7 @@ function updatePlayer(dt) {
   }
   const drunk = drunkLevel();
   const stunned = stunT > 0;
-  const speed = (keys.ShiftLeft || keys.ShiftRight ? 4.2 : 2.6) * (1 - Math.min(0.7, drunk * 0.42)) * (peeing ? 0.45 : 1) * (stunned ? 0.12 : 1);
+  const speed = (keys.ShiftLeft || keys.ShiftRight ? 4.2 : 2.6) * 1.5 * (1 - Math.min(0.7, drunk * 0.42)) * (peeing ? 0.45 : 1) * (stunned ? 0.12 : 1);
   const fwd = Number(!!keys.KeyW) - Number(!!keys.KeyS);
   const side = Number(!!keys.KeyD) - Number(!!keys.KeyA);
   const len = Math.hypot(fwd, side);
