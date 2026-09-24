@@ -63,6 +63,10 @@ export function createClub(api) {
   const ledWalls = [];
   let fader = null;
   let built = false;
+  let wantUp = 0;
+  let wantDown = 0;
+  let wantDance = 0;
+  let rebalanceT = 0;
 
   function playerPos() {
     return api.playerPos?.() || { x: 0, y: 0, z: 0 };
@@ -119,11 +123,26 @@ export function createClub(api) {
     return u * BALC_Y;
   }
 
+  function usingStairs(p) {
+    return !!(p && (p.route === "up" || p.route === "down"));
+  }
+
+  function stairCount() {
+    return crowd.reduce((n, p) => n + (!p.dead && !p.gone && usingStairs(p) ? 1 : 0), 0);
+  }
+
   function setLevel(p) {
     if (!p || p.dead || p.mode === "dj" || p.mode === "guard") return;
-    if (onStairs(p.x, p.z)) p.y = stairHeight(p.z);
-    else if (onBalcony(p.x, p.z)) p.y = BALC_Y;
-    else p.y = 0;
+    if (usingStairs(p)) {
+      if (onStairs(p.x, p.z)) p.y = stairHeight(p.z);
+      return;
+    }
+    if (p.y > 1.15) {
+      if (onBalcony(p.x, p.z)) p.y = BALC_Y;
+      else if (onStairs(p.x, p.z)) p.y = stairHeight(p.z);
+      return;
+    }
+    p.y = 0;
   }
 
   function wall(x, z, sx, sy, sz, mat) {
@@ -392,6 +411,7 @@ export function createClub(api) {
       yaw,
       homeX: x,
       homeZ: z,
+      homeLevel: y > 1.2 ? "up" : "down",
       tx: x,
       tz: z,
       drunk,
@@ -406,6 +426,7 @@ export function createClub(api) {
       partner: extra.partner || null,
       chair: extra.chair || null,
       route: "",
+      stairCool: 8 + hash01(seed, 26) * 12,
       kissSide: extra.kissSide || 0,
       hp: 10,
       hurtT: 0,
@@ -786,43 +807,151 @@ export function createClub(api) {
     p.tz = t[1];
   }
 
+  function countable(p) {
+    return !!(p && !p.dead && !p.gone && p.mode !== "dj" && p.mode !== "guard");
+  }
+
+  function isUpstairs(p) {
+    if (!p) return false;
+    if (p.route === "up") return true;
+    if (p.route === "down") return false;
+    return p.y > 1.35 || (p.y > 1.15 && onBalcony(p.x, p.z));
+  }
+
+  function levelCounts() {
+    let up = 0;
+    let down = 0;
+    for (const p of crowd) {
+      if (!countable(p)) continue;
+      if (isUpstairs(p)) up++;
+      else down++;
+    }
+    return { up, down };
+  }
+
+  function lockCrowdRatio() {
+    const c = levelCounts();
+    wantUp = c.up;
+    wantDown = c.down;
+    wantDance = 0;
+    for (const p of crowd) {
+      if (countable(p) && p.mode === "dance") wantDance++;
+    }
+  }
+
+  function floorShort() {
+    return wantDown > 0 && levelCounts().down < wantDown;
+  }
+
+  function deckShort() {
+    return wantUp > 0 && levelCounts().up < wantUp;
+  }
+
+  function danceCount() {
+    let n = 0;
+    for (const p of crowd) {
+      if (countable(p) && p.mode === "dance" && !isUpstairs(p)) n++;
+    }
+    return n;
+  }
+
+  function sendHomeOrFill(p, upstairs) {
+    if (!p || p.backDance || p.mode === "kiss" || p.mode === "dance") return false;
+    if ((p.stairCool || 0) > 0 || stairCount() >= 2) return false;
+    if (upstairs) {
+      if (p.homeLevel === "down" || floorShort()) {
+        p.route = "down";
+        return true;
+      }
+      return false;
+    }
+    if (p.homeLevel === "up" && deckShort() && !floorShort()) {
+      p.route = "up";
+      return true;
+    }
+    return false;
+  }
+
+  function putBackOnFloor(p) {
+    if (!p || p.dead || p.gone) return;
+    p.mode = "dance";
+    p.backDance = false;
+    p.route = "";
+    p.wait = 0;
+    p.tx = p.homeX;
+    p.tz = p.homeZ;
+    if (p.y < 1.2) p.y = 0;
+  }
+
+  function refillDance() {
+    if (!wantDance || danceCount() >= wantDance) return;
+    const extras = crowd.filter(
+      (p) => countable(p) && !p.route && !isUpstairs(p) && p.mode === "mingle" && p.homeLevel === "down"
+    );
+    extras.sort((a, b) => Math.hypot(a.x - a.homeX, a.z - a.homeZ) - Math.hypot(b.x - b.homeX, b.z - b.homeZ));
+    for (const p of extras) {
+      putBackOnFloor(p);
+      if (danceCount() >= wantDance) break;
+    }
+  }
+
+  function rebalanceCrowd() {
+    if (!wantDown && !wantUp) return;
+    if (levelCounts().down < wantDown) {
+      const extras = crowd.filter((p) => countable(p) && !p.route && isUpstairs(p) && p.mode !== "kiss");
+      extras.sort((a, b) => Number(a.homeLevel !== "down") - Number(b.homeLevel !== "down"));
+      for (const p of extras) {
+        if (p.mode === "sit" && p.chair) kickChair(p.chair);
+        if (p.mode === "sit" || p.mode === "dance") continue;
+        p.route = "down";
+        p.wait = 0;
+        p.stairCool = 0;
+        pickTarget(p);
+        if (!floorShort()) break;
+      }
+    }
+    refillDance();
+  }
+
   function pickTarget(p) {
     if (!p || p.dead) return;
-    const upstairs = p.y > 1.35;
+    const upstairs = p.y > 1.35 || (p.y > 1.15 && onBalcony(p.x, p.z));
+    const lane = p.route === "down" ? -0.34 : 0.34;
     if (p.route === "up") {
       if (onStairs(p.x, p.z) && p.y < BALC_Y - 0.16) {
-        p.tx = STAIR_X;
-        p.tz = STAIR_Z1;
+        p.tx = STAIR_X + lane;
+        p.tz = STAIR_Z1 + 0.06;
         return;
       }
-      if (p.y >= BALC_Y - 0.2 || onBalcony(p.x, p.z)) {
+      if (p.y >= BALC_Y - 0.2 || (onBalcony(p.x, p.z) && p.z < STAIR_Z1 + 0.12)) {
         p.route = "";
+        p.stairCool = 14 + hash01(p.phase, p.x) * 10;
         p.y = BALC_Y;
         pickFloorTarget(p, true);
         return;
       }
-      p.tx = STAIR_X;
+      p.tx = STAIR_X + lane;
       p.tz = STAIR_Z0;
       return;
     }
     if (p.route === "down") {
       if (onStairs(p.x, p.z) && p.y > 0.2) {
-        p.tx = STAIR_X;
+        p.tx = STAIR_X + lane;
         p.tz = STAIR_Z0;
         return;
       }
       if (p.y < 0.28 && !onBalcony(p.x, p.z)) {
         p.route = "";
+        p.stairCool = 14 + hash01(p.phase, p.x) * 10;
         p.y = 0;
         pickFloorTarget(p, false);
         return;
       }
-      p.tx = STAIR_X;
+      p.tx = STAIR_X + lane;
       p.tz = STAIR_Z1;
       return;
     }
-    if (p.mode !== "kiss" && hash01(p.x, p.z, p.wait + 3, p.phase) > 0.74) {
-      p.route = upstairs ? "down" : "up";
+    if (sendHomeOrFill(p, upstairs)) {
       pickTarget(p);
       return;
     }
@@ -960,6 +1089,16 @@ export function createClub(api) {
       pickTarget(p);
     });
     placePerson("guard", 20.92, 7.32, 0, 0, 0, 200, "guard");
+    lockCrowdRatio();
+    let routed = 0;
+    for (const p of crowd) {
+      if (!p.route) continue;
+      if (routed >= 1) {
+        p.route = "";
+        p.stairCool = 10;
+        pickFloorTarget(p, p.y > 1.2);
+      } else routed++;
+    }
     const gold = lambert(0xc9a227, { emissive: 0x6a4a10, emissiveIntensity: 0.18 });
     const rope = lambert(0x6b1020);
     addMesh(scene, unitCyl, gold, 21.75, 0.48, 7.55, 0.04, 0.96, 0.04);
@@ -1226,18 +1365,16 @@ export function createClub(api) {
       }
       p.wait = 0.16 + hash01(p.x, p.z, p.phase) * 0.7;
       if (p.y > 1.4 && hash01(p.x, p.wait, p.phase) > 0.42 && trySeatNearby(p)) return false;
-      if (p.backDance && p.y < 0.4 && hash01(p.x, p.wait, p.phase) > 0.45) {
-        p.mode = "dance";
-        p.backDance = false;
-        p.tx = p.homeX;
-        p.tz = p.homeZ;
+      if (p.backDance && p.y < 0.4) {
+        putBackOnFloor(p);
+        return false;
       }
       return false;
     }
     const step = Math.min(dist, (p.route ? p.speed * 1.08 : p.speed) * dt);
     const nx = p.x + (dx / dist) * step;
     const nz = p.z + (dz / dist) * step;
-    const stairing = p.route || onStairs(p.x, p.z) || onStairs(nx, nz) || inStairwell(nx, nz);
+    const stairing = usingStairs(p) && (onStairs(p.x, p.z) || onStairs(nx, nz) || inStairwell(nx, nz));
     if (!stairing) {
       if (p.y < 1 && blockedFloor(nx, nz)) {
         pickTarget(p);
@@ -1333,10 +1470,27 @@ export function createClub(api) {
 
   function pinPerson(p) {
     if (!p || p.dead || p.mode === "dj" || p.mode === "guard") return;
-    if (onStairs(p.x, p.z) || (p.route && inStairwell(p.x, p.z))) {
-      p.x = THREE.MathUtils.clamp(p.x, STAIR_X - 0.92, STAIR_X + 0.92);
-      p.z = THREE.MathUtils.clamp(p.z, STAIR_Z1 - 0.06, STAIR_Z0 + 0.1);
-      p.y = stairHeight(p.z);
+    if (usingStairs(p)) {
+      const lane = p.route === "down" ? STAIR_X - 0.34 : STAIR_X + 0.34;
+      p.x += (lane - p.x) * 0.45;
+      p.x = THREE.MathUtils.clamp(p.x, STAIR_X - 0.82, STAIR_X + 0.82);
+      p.z = THREE.MathUtils.clamp(p.z, STAIR_Z1 - 0.04, STAIR_Z0 + 0.08);
+      if (onStairs(p.x, p.z)) p.y = stairHeight(p.z);
+      else if (p.route === "up" && p.z <= STAIR_Z1 + 0.1) p.y = BALC_Y;
+      else if (p.route === "down" && p.z >= STAIR_Z0 - 0.1) p.y = 0;
+      return;
+    }
+    if (onStairs(p.x, p.z) || inStairwell(p.x, p.z)) {
+      if (p.y > 1.15) {
+        const c = clampToDeck(Math.min(p.x, 25.05), Math.min(p.z, 1.05));
+        p.x = c.x;
+        p.z = c.z;
+        p.y = BALC_Y;
+      } else {
+        p.x = Math.min(p.x, 24.55);
+        p.z = Math.max(p.z, 5.15);
+        p.y = 0;
+      }
       return;
     }
     if (p.y > 1) {
@@ -1444,8 +1598,14 @@ export function createClub(api) {
     for (let i = 0; i < knobs.length; i++) knobs[i].rotation.y = t * (1.6 + i * 0.35);
     if (fader) fader.position.x = 19.0 + Math.sin(t * 1.3) * 0.16;
 
+    rebalanceT += dt;
+    if (rebalanceT > 1.2) {
+      rebalanceT = 0;
+      rebalanceCrowd();
+    }
     for (const p of crowd) {
       if (p.gone) continue;
+      if (p.stairCool > 0) p.stairCool -= dt;
       if (p.hurtT > 0) p.hurtT -= dt;
       if (p.dead) {
         p.deadT = (p.deadT || 0) + dt;
@@ -1460,7 +1620,7 @@ export function createClub(api) {
         if (walking) poseWalk(p, t);
         else poseSway(p, t);
       } else if (p.mode === "dance") {
-        if (hash01(p.phase, Math.floor(t * 0.35), p.x) > 0.84) {
+        if (danceCount() > wantDance + 1 && hash01(p.phase, Math.floor(t * 0.22), p.x) > 0.97) {
           p.mode = "mingle";
           p.backDance = true;
           p.wait = 0;

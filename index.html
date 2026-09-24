@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/style.css?v=107" />
+  <link rel="stylesheet" href="css/style.css?v=109" />
 </head>
 <body>
   <canvas class="webgl" id="gl"></canvas>
@@ -52,10 +52,12 @@
       <div>BAC</div>
       <div class="bar bac"><i id="bacFill"></i></div>
       <div id="glassHud" hidden>
-        <div>GLASS</div>
-        <div class="bar"><i id="glassFill"></i></div>
-        <div id="glassName">empty pint</div>
+        <div id="drinkHudTitle">DRINK</div>
+        <div class="bar drink"><i id="glassFill"></i></div>
+        <div id="glassName">empty</div>
       </div>
+      <div>HP</div>
+      <div class="bar hp"><i id="hpFill"></i></div>
       <button type="button" id="restock">RESTOCK BAR</button>
       <button type="button" id="warp">CAB BACK TO BAR</button>
     </div>
@@ -106,6 +108,6 @@
     }
   }
   </script>
-  <script type="module" src="js/game.js?v=185"></script>
+  <script type="module" src="js/game.js?v=192"></script>
 </body>
 </html>
