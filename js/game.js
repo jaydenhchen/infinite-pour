@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=26";
+import { createClub } from "./club.js?v=28";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -66,6 +66,7 @@ const DRUNK_MAX = 6.25;
 const HEART_START = 0.7;
 const BAC_HOLD = 30;
 const BAC_FADE = 60;
+const RECOVERY_TAU = 15;
 const PEE_SECS = 8;
 const ONE_DRINK_BAC = (40 / 40) * (1.5 / 1.2) * 0.028;
 const CUP_STACK_MAX = 5;
@@ -445,6 +446,7 @@ const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 8);
 const unitCyl12 = new THREE.CylinderGeometry(1, 1, 1, 12);
 const unitCyl6 = new THREE.CylinderGeometry(1, 1, 1, 6);
 const smokeGeo = new THREE.SphereGeometry(0.2, 6, 5);
+const DRIFT_SMOKE_COLOR = 0x4d535c;
 
 function makeBottle(drink) {
   const g = new THREE.Group();
@@ -661,6 +663,11 @@ function purgeBac(drinks) {
   bac = Math.max(0, bac - cut);
   if (bacDecayFrom > 0) bacDecayFrom = Math.max(bac, bacDecayFrom - cut);
   return cut;
+}
+
+function recoveryProgress(elapsed) {
+  const t = THREE.MathUtils.clamp(Number(elapsed) || 0, 0, BAC_FADE);
+  return (Math.exp(t / RECOVERY_TAU) - 1) / (Math.exp(BAC_FADE / RECOVERY_TAU) - 1);
 }
 
 function rememberGlass(mesh) {
@@ -1441,6 +1448,8 @@ const WANTED_GIVE_UP = 60;
 const COP_ARRIVE_MIN = 12;
 const COP_ARRIVE_MAX = 18;
 const COP_HP = 10;
+const COP_BODY_RADIUS = 0.28;
+const COP_STUCK_TIMEOUT = 0.55;
 const PLAYER_HP = 10;
 const PUNCH_DMG = 1;
 const BATON_DMG = 3;
@@ -1748,6 +1757,79 @@ function collideWorld(px, pz, r = 0.28, feet = 0, airborne = false, opts = null)
 function collideWorldForCop(px, pz, r = 0.28, feet = 0, airborne = false) {
   return collideWorld(px, pz, r, feet, airborne, { cop: true });
 }
+function collideCopCars(px, pz, r = COP_BODY_RADIUS, skip = null) {
+  for (const car of cars) {
+    if (car === skip) continue;
+    const dx = px - car.x;
+    const dz = pz - car.z;
+    const cr = r + 2.15;
+    const dist2 = dx * dx + dz * dz;
+    if (dist2 >= cr * cr) continue;
+    const dist = Math.sqrt(dist2) || 0.0001;
+    const need = cr - dist;
+    px += (dx / dist) * need;
+    pz += (dz / dist) * need;
+  }
+  return [px, pz];
+}
+
+function collideCopPosition(px, pz, r = COP_BODY_RADIUS, skipCar = null, feet = 0, airborne = false) {
+  [px, pz] = collideWorldForCop(px, pz, r, feet, airborne);
+  [px, pz] = collideStreetProps(px, pz, r);
+  [px, pz] = collideCopCars(px, pz, r, skipCar);
+  px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
+  pz = THREE.MathUtils.clamp(pz, WORLD_Z_MIN, WORLD_Z_MAX);
+  return [px, pz];
+}
+
+function moveCopToward(off, tx, tz, dt, speed, skipCar = null) {
+  const dx = tx - off.x;
+  const dz = tz - off.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 0.001) return 0;
+  const step = Math.min(dist, speed * dt);
+  const ux = dx / dist;
+  const uz = dz / dist;
+  const side = off.pathSide || (off.seat < 0 ? 1 : -1);
+  const px = -uz;
+  const pz = ux;
+  const candidates = [
+    [off.x + ux * step, off.z + uz * step],
+    [off.x + px * step * 1.18 * side, off.z + pz * step * 1.18 * side],
+    [off.x - px * step * 1.18 * side, off.z - pz * step * 1.18 * side],
+  ];
+  let bestX = off.x;
+  let bestZ = off.z;
+  let bestRemain = dist;
+  let bestMoved = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    let [nx, nz] = collideCopPosition(candidates[i][0], candidates[i][1], COP_BODY_RADIUS, skipCar);
+    const moved = Math.hypot(nx - off.x, nz - off.z);
+    const remain = Math.hypot(tx - nx, tz - nz);
+    const sideBias = (off.stuckT || 0) > 0.3 && i === 1 ? -0.34 : 0;
+    const score = remain + sideBias + (moved < step * 0.12 ? 0.8 : 0);
+    const bestScore = bestRemain + (bestMoved < step * 0.12 ? 0.8 : 0);
+    if (score < bestScore) {
+      bestX = nx;
+      bestZ = nz;
+      bestRemain = remain;
+      bestMoved = moved;
+    }
+  }
+  if (bestMoved < step * 0.18) {
+    off.stuckT = (off.stuckT || 0) + dt;
+    if (off.stuckT >= COP_STUCK_TIMEOUT) {
+      off.pathSide = -side;
+      off.stuckT = 0;
+    }
+  } else {
+    off.stuckT = Math.max(0, (off.stuckT || 0) - dt * 1.5);
+  }
+  off.x = bestX;
+  off.z = bestZ;
+  return bestMoved;
+}
+
 
 function collideWorldForCar(px, pz, r = 0.48) {
   for (const s of worldSolids) {
@@ -3675,6 +3757,7 @@ function doorIsOpen(s) {
 }
 
 const AUTO_CLOSE_KINDS = new Set(["clubDoor", "restroomDoor", "stallDoor"]);
+const COP_OPENABLE_DOOR_KINDS = new Set(["clubDoor"]);
 const frontDoorPlane = { x: -0.78, z: D / 2 + 0.02, nx: 0, nz: 1, tx: 1, tz: 0, w: 1.52, dir: 1 };
 const frontDoorAuto = { prevSide: null, closeT: 0, awayT: 0 };
 
@@ -4309,7 +4392,7 @@ function copsOpenClubDoors() {
   const folks = officers.concat(guards);
   if (!folks.length) return;
   for (const door of swingDoors) {
-    if (door.userData.kind !== "clubDoor" || door.userData.open || !door.userData.plane) continue;
+    if (!COP_OPENABLE_DOOR_KINDS.has(door.userData.kind) || door.userData.open || !door.userData.plane) continue;
     if (folks.some((off) => nearDoorLane(door.userData.plane, off.x, off.z, 2.8, 0.42))) {
       setSwingDoor(door, true);
     }
@@ -6535,7 +6618,7 @@ function spawnDriftPuff(car) {
   const rx = Math.cos(car.yaw);
   const rz = -Math.sin(car.yaw);
   for (const side of [-1, 1]) {
-    const m = new THREE.Mesh(smokeGeo, lambert(0xd4ccc0, { transparent: true, opacity: 0.3 }));
+    const m = new THREE.Mesh(smokeGeo, lambert(DRIFT_SMOKE_COLOR, { transparent: true, opacity: 0.62 }));
     m.position.set(car.x - fx * 1.72 + rx * side * 0.92, 0.1, car.z - fz * 1.72 + rz * side * 0.92);
     m.userData.life = 0.42 + Math.random() * 0.22;
     m.userData.max = m.userData.life;
@@ -6840,7 +6923,7 @@ function hijackCopCar(car) {
       const lz = -Math.sin(car.yaw);
       off.x = car.x + lx * side * 2.55;
       off.z = car.z + lz * side * 2.55;
-      [off.x, off.z] = collideWorldForCop(off.x, off.z, 0.28);
+      [off.x, off.z] = collideCopPosition(off.x, off.z, COP_BODY_RADIUS, car);
       off.state = "stagger";
       off.staggerT = 1.05;
       off.swingT = 0;
@@ -6889,13 +6972,13 @@ function hitOfficer(off, fx, fz, dmg) {
       const lz = -Math.sin(car.yaw);
       off.x = car.x + lx * side * 2.2;
       off.z = car.z + lz * side * 2.2;
-      [off.x, off.z] = collideWorldForCop(off.x, off.z, 0.28);
+      [off.x, off.z] = collideCopPosition(off.x, off.z, COP_BODY_RADIUS, car);
     }
     off.state = "chase";
     off.outT = 1;
   }
   off.swingT = 0;
-  const knock = applyKnock(off.x, off.z, fx, fz, collideWorldForCop, 0.28);
+  const knock = applyKnock(off.x, off.z, fx, fz, collideCopPosition, COP_BODY_RADIUS);
   off.kvx = (off.kvx || 0) + knock.vx;
   off.kvz = (off.kvz || 0) + knock.vz;
   off.hopY = Math.max(off.hopY || 0, 0.14);
@@ -7075,6 +7158,8 @@ function addCopPack(x, z) {
       kvz: 0,
       hopY: 0,
       droppedBaton: false,
+      stuckT: 0,
+      pathSide: i === 0 ? 1 : -1,
     });
   }
   cops.push(pack);
@@ -7094,7 +7179,7 @@ function addFootCop(x, z) {
   for (const r of roads) if (Math.abs(r - z) < Math.abs(rz - z)) rz = r;
   const side = x >= 0 ? 1 : -1;
   let sx = THREE.MathUtils.clamp(x + side * (16 + (copWave % 3) * 4), -WORLD_X + 8, WORLD_X - 8);
-  [sx, rz] = collideWorld(sx, rz, 0.28);
+  [sx, rz] = collideCopPosition(sx, rz, COP_BODY_RADIUS);
   const pack = {
     car: null,
     officers: [],
@@ -7124,6 +7209,8 @@ function addFootCop(x, z) {
     kvz: 0,
     hopY: 0,
     droppedBaton: false,
+    stuckT: 0,
+    pathSide: 1,
   });
   cops.push(pack);
 }
@@ -7579,7 +7666,7 @@ function tickPolice(dt) {
       }
       if (off.hurtT > 0) off.hurtT = Math.max(0, off.hurtT - dt);
       if (off.kvx || off.kvz) {
-        const [kx, kz, nvx, nvz] = stepKnock(off.x, off.z, off.kvx || 0, off.kvz || 0, dt, collideWorldForCop, 0.28);
+        const [kx, kz, nvx, nvz] = stepKnock(off.x, off.z, off.kvx || 0, off.kvz || 0, dt, collideCopPosition, COP_BODY_RADIUS);
         off.x = kx;
         off.z = kz;
         off.kvx = nvx;
@@ -7601,7 +7688,7 @@ function tickPolice(dt) {
         if (bdist > 0.32 && (off.hurtT || 0) <= 0.08) {
           let nx = off.x + (bdx / (bdist || 1)) * 3.7 * dt;
           let nz = off.z + (bdz / (bdist || 1)) * 3.7 * dt;
-          [nx, nz] = collideWorldForCop(nx, nz, 0.28);
+          [nx, nz] = collideCopPosition(nx, nz, COP_BODY_RADIUS, car);
           off.x = nx;
           off.z = nz;
         }
@@ -7642,6 +7729,7 @@ function tickPolice(dt) {
         const destZ = car.z + lz * side * 2.35;
         off.x += (destX - off.x) * Math.min(1, dt * 5);
         off.z += (destZ - off.z) * Math.min(1, dt * 5);
+        [off.x, off.z] = collideCopPosition(off.x, off.z, COP_BODY_RADIUS, car);
         off.yaw = Math.atan2(px - off.x, pz - off.z);
         if (off.outT > 0.42) off.state = "chase";
         off.rig.position.set(off.x, off.hopY || 0, off.z);
@@ -7656,7 +7744,7 @@ function tickPolice(dt) {
         const sdist = Math.hypot(sdx, sdz) || 1;
         let nx = off.x + (sdx / sdist) * 1.55 * dt;
         let nz = off.z + (sdz / sdist) * 1.55 * dt;
-        [nx, nz] = collideWorldForCop(nx, nz, 0.28);
+        [nx, nz] = collideCopPosition(nx, nz, COP_BODY_RADIUS, car);
         off.x = nx;
         off.z = nz;
         off.yaw = Math.atan2(px - off.x, pz - off.z);
@@ -7675,11 +7763,7 @@ function tickPolice(dt) {
       const reach = inCar ? 1.72 : 1.08;
       if (off.state === "chase") {
         if (dist > 0.8 && (off.hurtT || 0) <= 0.08) {
-          let nx = off.x + (dx / (dist || 1)) * 3.28 * dt;
-          let nz = off.z + (dz / (dist || 1)) * 3.28 * dt;
-          [nx, nz] = collideWorldForCop(nx, nz, 0.28);
-          off.x = nx;
-          off.z = nz;
+          moveCopToward(off, px, pz, dt, 3.28, car);
         }
         if (dist < reach && stunT <= 0 && !tooFast) {
           off.state = "swing";
@@ -8213,8 +8297,7 @@ function tick() {
         bacDecayFrom = bac;
       }
       bacSoberT = tWorld - bacDecayStart;
-      const tau = 15;
-      const u = (Math.exp(bacSoberT / tau) - 1) / (Math.exp(BAC_FADE / tau) - 1);
+      const u = recoveryProgress(bacSoberT);
       bac = Math.max(0, bacDecayFrom * (1 - Math.min(1, u)));
       if (bacSoberT >= BAC_FADE || bac <= 0.00005) {
         bac = 0;
@@ -8245,8 +8328,7 @@ function tick() {
         hpRegenFrom = playerHp;
       }
       hpRegenT = tWorld - hpRegenStart;
-      const tau = 15;
-      const u = (Math.exp(hpRegenT / tau) - 1) / (Math.exp(BAC_FADE / tau) - 1);
+      const u = recoveryProgress(hpRegenT);
       const missing = PLAYER_HP - hpRegenFrom;
       playerHp = Math.min(PLAYER_HP, hpRegenFrom + missing * Math.min(1, u));
       if (hpRegenT >= BAC_FADE || playerHp >= PLAYER_HP - 0.00005) {

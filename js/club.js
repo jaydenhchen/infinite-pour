@@ -7,9 +7,14 @@ const CZ0 = -6.42;
 const CZ1 = 6.28;
 const CLUB_H = 5.42;
 const BALC_Y = 2.68;
+const MAX_WALKING_PEOPLE = 3;
+const MAX_STAIR_TRAVELERS = 1;
+const BALCONY_SEAT_LIMIT = 10;
+const BALCONY_WALKER_LIMIT = 3;
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 10);
 
+const dizzyGeo = new THREE.OctahedronGeometry(0.075, 0);
 const SKINS = [0xe8b48a, 0xd4a07a, 0xc48a62, 0xf0c4a0, 0x8a5a3a, 0xb88858];
 const HAIRS = [0x1a100c, 0x3a1a12, 0xc9a227, 0x8a2018, 0x0c0c12, 0x4a2040, 0x2a140c, 0x5a3018, 0xc47820];
 const TOPS = [0x120814, 0xff3dac, 0xc41e3a, 0xf4ead0, 0x3dfff2, 0x6b1c9a, 0xe8c547, 0x1a1a28, 0x2e6bff, 0x8a1028];
@@ -93,13 +98,18 @@ export function createClub(api) {
     return DECKS.some((d) => x >= d.minx - pad && x <= d.maxx + pad && z >= d.minz - pad && z <= d.maxz + pad);
   }
 
-  function clampToDeck(x, z) {
+  function clampToDeck(x, z, pad = 0) {
+    const inset = Math.max(0, Number(pad) || 0);
     let bestX = x;
     let bestZ = z;
     let best = 1e9;
     for (const d of DECKS) {
-      const cx = THREE.MathUtils.clamp(x, d.minx, d.maxx);
-      const cz = THREE.MathUtils.clamp(z, d.minz, d.maxz);
+      const minx = Math.min(d.maxx, d.minx + inset);
+      const maxx = Math.max(d.minx, d.maxx - inset);
+      const minz = Math.min(d.maxz, d.minz + inset);
+      const maxz = Math.max(d.minz, d.maxz - inset);
+      const cx = THREE.MathUtils.clamp(x, minx, maxx);
+      const cz = THREE.MathUtils.clamp(z, minz, maxz);
       const dist = Math.hypot(x - cx, z - cz);
       if (dist < best) {
         best = dist;
@@ -125,6 +135,14 @@ export function createClub(api) {
   function stairHeight(z) {
     const u = THREE.MathUtils.clamp((STAIR_Z0 - z) / (STAIR_Z0 - STAIR_Z1), 0, 1);
     return u * BALC_Y;
+  }
+
+  function walkingCount() {
+    return crowd.reduce((n, p) => n + (p.walking && !p.dead && !p.gone ? 1 : 0), 0);
+  }
+
+  function balconyWalkingCount() {
+    return crowd.reduce((n, p) => n + (p.walking && !p.dead && !p.gone && (p.y > 1.15 || onBalcony(p.x, p.z) || usingStairs(p)) ? 1 : 0), 0);
   }
 
   function usingStairs(p) {
@@ -393,6 +411,23 @@ export function createClub(api) {
     else if (guard) body.scale.set(1.04, 1.02, 1.04);
     else body.scale.setScalar(0.95);
     const stars = new THREE.Group();
+    if (!guard) {
+      const starMats = [
+        lambert(0xffe066, { emissive: 0xffa000, emissiveIntensity: 0.72 }),
+        lambert(0xffc928, { emissive: 0xff8a00, emissiveIntensity: 0.62 }),
+      ];
+      for (let i = 0; i < 3; i++) {
+        const star = new THREE.Mesh(dizzyGeo, starMats[i % starMats.length]);
+        const a = (i / 3) * Math.PI * 2 + hash01(seed, 30) * 0.4;
+        const radius = 0.2 + hash01(seed, 31 + i) * 0.05;
+        star.position.set(Math.cos(a) * radius, 0.02 + hash01(seed, 34 + i) * 0.07, Math.sin(a) * radius);
+        star.scale.setScalar(0.72 + hash01(seed, 38 + i) * 0.42);
+        star.rotation.set(hash01(seed, 42 + i) * 0.8, a, hash01(seed, 46 + i) * 0.8);
+        star.castShadow = false;
+        stars.add(star);
+      }
+    }
+    stars.position.set(0, 0.34, 0);
     stars.visible = false;
     head.add(stars);
 
@@ -426,6 +461,8 @@ export function createClub(api) {
       tx: x,
       tz: z,
       drunk,
+      dizzyAt: 0.82 + hash01(seed, 26) * 0.28,
+      dizzyRate: 1.3 + hash01(seed, 27) * 1.4,
       gender: kind === "f" || kind === "djf" ? "f" : "m",
       r: kind === "guard" ? 0.48 : kind.startsWith("dj") ? 0.42 : 0.44,
       phase: hash01(seed, 21) * Math.PI * 2,
@@ -437,7 +474,7 @@ export function createClub(api) {
       partner: extra.partner || null,
       chair: extra.chair || null,
       route: "",
-      stairCool: 8 + hash01(seed, 26) * 12,
+      stairTrip: "",
       kissSide: extra.kissSide || 0,
       hp: kind === "guard" ? 12 : 10,
       hurtT: 0,
@@ -897,16 +934,25 @@ export function createClub(api) {
 
   function sendHomeOrFill(p, upstairs) {
     if (!p || p.backDance || p.mode === "kiss" || p.mode === "dance") return false;
-    if ((p.stairCool || 0) > 0 || stairCount() >= 2) return false;
+    if ((p.stairCool || 0) > 0 || stairCount() >= MAX_STAIR_TRAVELERS) return false;
     if (upstairs) {
-      if (p.homeLevel === "down" || floorShort()) {
+      if (p.homeLevel === "down" || floorShort() || p.homeLevel === "up") {
         p.route = "down";
+        p.stairTrip = p.homeLevel === "up" || floorShort() ? "up" : "";
+        p.walking = false;
         return true;
       }
       return false;
     }
+    if (p.stairTrip === "up") {
+      p.route = "up";
+      p.stairTrip = "";
+      p.walking = false;
+      return true;
+    }
     if (p.homeLevel === "up" && deckShort() && !floorShort()) {
       p.route = "up";
+      p.walking = false;
       return true;
     }
     return false;
@@ -917,6 +963,7 @@ export function createClub(api) {
     p.mode = "dance";
     p.backDance = false;
     p.route = "";
+    p.walking = false;
     p.wait = 0;
     p.tx = p.homeX;
     p.tz = p.homeZ;
@@ -941,9 +988,12 @@ export function createClub(api) {
       const extras = crowd.filter((p) => countable(p) && !p.route && isUpstairs(p) && p.mode !== "kiss");
       extras.sort((a, b) => Number(a.homeLevel !== "down") - Number(b.homeLevel !== "down"));
       for (const p of extras) {
+        if (stairCount() >= MAX_STAIR_TRAVELERS) break;
         if (p.mode === "sit" && p.chair) kickChair(p.chair);
         if (p.mode === "sit" || p.mode === "dance") continue;
         p.route = "down";
+        p.stairTrip = "";
+        p.walking = false;
         p.wait = 0;
         p.stairCool = 0;
         pickTarget(p);
@@ -1022,6 +1072,7 @@ export function createClub(api) {
   function seatPerson(p, chair) {
     p.mode = "sit";
     p.route = "";
+    p.walking = false;
     p.chair = chair;
     p.x = chair.userData.sit.x;
     p.z = chair.userData.sit.z;
@@ -1038,6 +1089,7 @@ export function createClub(api) {
     p.chair = null;
     p.mode = "mingle";
     p.route = "";
+    p.walking = false;
     p.y = BALC_Y;
     p.x = chair.userData.sit.standX;
     p.z = chair.userData.sit.standZ;
@@ -1112,8 +1164,7 @@ export function createClub(api) {
     const chairOrder = chairs.map((_, i) => i).sort((a, b) => hash01(a, 70) - hash01(b, 71));
     let seated = 0;
     for (const i of chairOrder) {
-      if (seated >= 15) break;
-      if (hash01(i, 72) < 0.1 && seated >= 13) continue;
+      if (seated >= BALCONY_SEAT_LIMIT) break;
       const ch = chairs[i];
       if (!ch || ch.userData.sitter) continue;
       const girl = hash01(i, 70) > 0.32;
@@ -1123,7 +1174,7 @@ export function createClub(api) {
       seatPerson(p, ch);
       seated++;
     }
-    balconyTargets().slice(0, 7).forEach((s, i) => {
+    balconyTargets().slice(0, BALCONY_WALKER_LIMIT).forEach((s, i) => {
       const girl = hash01(i, 75) > 0.42;
       const p = placePerson(girl ? "f" : "m", s[0], s[1], BALC_Y, hash01(i, 76) * 6, 0.2 + hash01(i, 77) * 0.7, i + 180, "mingle");
       pickTarget(p);
@@ -1331,6 +1382,23 @@ export function createClub(api) {
     u.legR.rotation.set(Math.sin(gait + Math.PI) * 0.62, 0, 0);
     u.head.rotation.set(0.05, 0, 0);
   }
+  function poseDizzy(p, t) {
+    const stars = p.rig.userData.stars;
+    if (!stars) return;
+    const visible = !p.dead && p.mode !== "guard" && p.drunk >= p.dizzyAt;
+    stars.visible = visible;
+    if (!visible) return;
+    const spin = t * p.dizzyRate + p.phase;
+    stars.rotation.set(0, spin, Math.sin(spin * 0.7) * 0.16);
+    stars.position.y = 0.31 + Math.sin(spin * 1.7) * 0.035;
+    for (let i = 0; i < stars.children.length; i++) {
+      const star = stars.children[i];
+      const wobble = Math.sin(spin * (1.2 + i * 0.23) + i) * 0.12;
+      star.rotation.x = wobble * 0.02;
+      star.rotation.z = 0.04 + wobble;
+    }
+  }
+
 
   function planted(p) {
     return !!(p && (p.mode === "dj" || p.mode === "sit" || (p.mode === "guard" && !p.angry)));
@@ -1506,6 +1574,7 @@ export function createClub(api) {
     const dz = aimZ - p.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 0.16) {
+      p.walking = false;
       if (p.route) {
         pickTarget(p);
         return false;
@@ -1518,16 +1587,21 @@ export function createClub(api) {
       }
       return false;
     }
+    const upper = p.y > 1.15 || onBalcony(p.x, p.z) || usingStairs(p);
+    if (!p.walking && (walkingCount() >= MAX_WALKING_PEOPLE || (upper && balconyWalkingCount() >= BALCONY_WALKER_LIMIT))) return false;
+    p.walking = true;
     const step = Math.min(dist, (p.route ? p.speed * 1.08 : p.speed) * dt);
     const nx = p.x + (dx / dist) * step;
     const nz = p.z + (dz / dist) * step;
     const stairing = usingStairs(p) && (onStairs(p.x, p.z) || onStairs(nx, nz) || inStairwell(nx, nz));
     if (!stairing) {
       if (p.y < 1 && blockedFloor(nx, nz)) {
+        p.walking = false;
         pickTarget(p);
         return false;
       }
       if (p.y > 1 && !onBalcony(nx, nz)) {
+        p.walking = false;
         pickTarget(p);
         return false;
       }
@@ -1561,10 +1635,10 @@ export function createClub(api) {
     const feet = Math.max(0, (pos.y || 0) - 1.5);
     for (let i = 0; i < crowd.length; i++) {
       const a = crowd[i];
-      if (a.dead || a.gone || planted(a)) continue;
+      if (a.dead || a.gone || a.mode === "guard" || planted(a)) continue;
       for (let j = i + 1; j < crowd.length; j++) {
         const b = crowd[j];
-        if (b.dead || a.partner === b || b.partner === a) continue;
+        if (b.dead || b.mode === "guard" || a.partner === b || b.partner === a) continue;
         if (Math.abs(a.y - b.y) > 1.1) continue;
         const dx = a.x - b.x;
         const dz = a.z - b.z;
@@ -1574,7 +1648,7 @@ export function createClub(api) {
         const push = (need - dist) * 0.95;
         const ux = dx / dist;
         const uz = dz / dist;
-        if (a.mode !== "kiss") {
+        if (a.mode !== "kiss" && a.mode !== "sit" && a.mode !== "dj") {
           a.x += ux * push;
           a.z += uz * push;
         }
@@ -1631,7 +1705,7 @@ export function createClub(api) {
     }
     if (onStairs(p.x, p.z) || inStairwell(p.x, p.z)) {
       if (p.y > 1.15) {
-        const c = clampToDeck(Math.min(p.x, 25.05), Math.min(p.z, 1.05));
+        const c = clampToDeck(Math.min(p.x, 25.05), Math.min(p.z, 1.05), (p.r || 0.44) + 0.08);
         p.x = c.x;
         p.z = c.z;
         p.y = BALC_Y;
@@ -1643,11 +1717,14 @@ export function createClub(api) {
       return;
     }
     if (p.y > 1) {
-      const c = clampToDeck(p.x, p.z);
+      const c = clampToDeck(p.x, p.z, (p.r || 0.44) + 0.08);
       p.x = c.x;
       p.z = c.z;
       p.y = BALC_Y;
       keepBehindChairs(p);
+      const safe = clampToDeck(p.x, p.z, (p.r || 0.44) + 0.08);
+      p.x = safe.x;
+      p.z = safe.z;
     } else if (blockedFloor(p.x, p.z)) {
       p.x = THREE.MathUtils.clamp(p.x, CX0 + 0.72, 24.65);
       p.z = THREE.MathUtils.clamp(p.z, CZ0 + 0.72, CZ1 - 0.72);
@@ -1785,6 +1862,7 @@ export function createClub(api) {
       else if (p.mode === "kiss") poseKiss(p, t);
       else if (p.mode === "guard") stepGuard(p, dt, t);
       else poseSway(p, t);
+      poseDizzy(p, t);
       flushSkin(p);
     }
     separate(dt);
@@ -1880,16 +1958,21 @@ export function createClub(api) {
     fx /= aimLen;
     fz /= aimLen;
     const wasGuard = best.mode === "guard";
-    if (wasGuard && !best.angry) {
-      best.angry = true;
-      best.drawT = 0.32;
+    if (wasGuard) {
+      if (!best.angry) {
+        best.angry = true;
+        best.drawT = 0.32;
+        audio?.baton?.();
+      }
       showBaton(best);
-      audio?.baton?.();
     }
     best.hp = Math.max(0, (best.hp ?? 10) - (aim.dmg || 1));
     best.hurtT = 0.28;
-    best.x += fx * 0.22;
-    best.z += fz * 0.22;
+    best.walking = false;
+    if (!wasGuard) {
+      best.x += fx * 0.22;
+      best.z += fz * 0.22;
+    }
     if (best.chair) {
       best.chair.userData.sitter = null;
       best.chair = null;
@@ -1904,9 +1987,8 @@ export function createClub(api) {
         pickTarget(other);
       }
     }
-    if (best.mode === "kiss" || best.mode === "sit") best.mode = "mingle";
     if (best.y > 1) {
-      const c = clampToDeck(best.x, best.z);
+      const c = clampToDeck(best.x, best.z, (best.r || 0.44) + 0.08);
       best.x = c.x;
       best.z = c.z;
     }
@@ -1928,19 +2010,19 @@ export function createClub(api) {
   function buildMist() {
     const fogMat = (opacity) =>
       new THREE.MeshBasicMaterial({
-        color: 0x9aa6b4,
+        color: 0x59616b,
         transparent: true,
         opacity,
         depthWrite: false,
         side: THREE.DoubleSide,
       });
-    const y0 = 0.08;
+    const y0 = 0.34;
     const y1 = CLUB_H - 0.12;
     const n = 18;
     for (let i = 0; i < n; i++) {
       const u = n <= 1 ? 0.5 : i / (n - 1);
       const y = y0 + (y1 - y0) * u;
-      const o = 0.016 + Math.sin(u * Math.PI) * 0.03;
+      const o = 0.025 + Math.sin(u * Math.PI) * 0.045;
       const w = 16.7 - Math.abs(u - 0.5) * 0.7;
       const d = 10.5 - Math.abs(u - 0.5) * 0.5;
       const mist = new THREE.Mesh(new THREE.PlaneGeometry(w, d), fogMat(o));
@@ -1957,7 +2039,7 @@ export function createClub(api) {
     ];
     const h = y1 - y0;
     for (const sh of sheets) {
-      const mist = new THREE.Mesh(new THREE.PlaneGeometry(sh.w, h), fogMat(0.03));
+      const mist = new THREE.Mesh(new THREE.PlaneGeometry(sh.w, h), fogMat(0.05));
       mist.position.set(sh.x, (y0 + y1) * 0.5, sh.z);
       mist.rotation.y = sh.yaw;
       mist.renderOrder = 4;
