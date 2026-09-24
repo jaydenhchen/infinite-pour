@@ -71,6 +71,8 @@ const PEE_SECS = 8;
 const ONE_DRINK_BAC = (40 / 40) * (1.5 / 1.2) * 0.028;
 const CUP_STACK_MAX = 5;
 const CUP_NEST = 0.028;
+const CLUB_FAR_GAIN = 0.54;
+const CLUB_NEAR_GAIN = 0.74;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -1358,7 +1360,7 @@ const audio = {
     if (!this.clubAudio) return;
     const inside = Number.isFinite(proximity) && proximity >= 0;
     const near = inside ? THREE.MathUtils.clamp(proximity, 0, 1) : 0;
-    const target = inside ? 0.08 + near * 0.68 : 0;
+    const target = inside ? CLUB_FAR_GAIN + near * (CLUB_NEAR_GAIN - CLUB_FAR_GAIN) : 0;
     this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
     if (this.clubGain && this.ctx) {
       this.clubGain.gain.setTargetAtTime(this.clubVol, this.ctx.currentTime, 0.045);
