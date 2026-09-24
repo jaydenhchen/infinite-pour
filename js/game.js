@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=40";
+import { createClub } from "./club.js?v=41";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -71,9 +71,11 @@ const PEE_SECS = 8;
 const ONE_DRINK_BAC = (40 / 40) * (1.5 / 1.2) * 0.028;
 const CUP_STACK_MAX = 5;
 const CUP_NEST = 0.028;
-const CLUB_OUTSIDE_GAIN = 0.08;
-const CLUB_FAR_GAIN = 0.54;
-const CLUB_NEAR_GAIN = 0.74;
+const CLUB_OUTSIDE_GAIN = 0;
+const CLUB_FAR_GAIN = 0.68;
+const CLUB_NEAR_GAIN = 0.92;
+const CLUB_FAR_DRIVE = 0.42;
+const CLUB_NEAR_DRIVE = 0.92;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -953,6 +955,7 @@ const audio = {
   clubCursor: 0,
   clubTrack: null,
   clubVol: CLUB_OUTSIDE_GAIN,
+  clubInside: false,
   clubSource: null,
   clubAnalyser: null,
   clubFreq: null,
@@ -1185,7 +1188,7 @@ const audio = {
       this.clubAudio = this.clubDecks[0];
       this.clubTrack = track;
       this.clubDeckGains[0]?.gain.setValueAtTime(1, this.ctx?.currentTime || 0);
-      this.startClubDeck(0);
+      if (this.clubInside) this.startClubDeck(0);
       this.prepareClubNext();
       return;
     }
@@ -1517,6 +1520,7 @@ const audio = {
     const now = this.ctx?.currentTime || 0;
     if (this.clubFade && now >= this.clubFade.end) this.finishClubFade();
     const inside = Number.isFinite(proximity) && proximity >= 0;
+    this.clubInside = inside;
     const near = inside ? THREE.MathUtils.clamp(proximity, 0, 1) : 0;
     const target = inside ? CLUB_FAR_GAIN + near * (CLUB_NEAR_GAIN - CLUB_FAR_GAIN) : CLUB_OUTSIDE_GAIN;
     this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
@@ -1528,11 +1532,22 @@ const audio = {
     } else {
       this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
     }
-    this.setClubDrive(inside ? 0.12 + near * 0.88 : 0);
+    this.setClubDrive(inside ? CLUB_FAR_DRIVE + near * (CLUB_NEAR_DRIVE - CLUB_FAR_DRIVE) : 0);
     const duration = this.clubAudio.duration;
-    if (!this.clubFade && Number.isFinite(duration) && duration > 3.2 && this.clubAudio.currentTime >= duration - 3) {
+    if (
+      inside &&
+      !this.clubFade &&
+      Number.isFinite(duration) &&
+      duration > 3.2 &&
+      this.clubAudio.currentTime >= duration - 3
+    ) {
       this.prepareClubNext();
       this.beginClubFade(3);
+    }
+    if (!inside && this.clubVol < 0.004) {
+      for (const player of this.clubDecks) {
+        if (!player.paused) player.pause();
+      }
     }
     if (inside && this.clubAudio.paused) this.startClubDeck(this.clubActiveDeck);
   },
@@ -1595,7 +1610,7 @@ const audio = {
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x12080c);
-scene.fog = new THREE.Fog(0x12080c, 28, 170);
+scene.fog = new THREE.FogExp2(0x12080c, 0.006);
 
 const camera = new THREE.PerspectiveCamera(78, 1, 0.08, 280);
 camera.rotation.order = "YXZ";
@@ -7212,6 +7227,7 @@ function meleePunch() {
   const z = bodyPos.z;
   const feet = Math.max(0, (bodyPos.y || 0) - 1.5);
   const dmg = holdingBaton() ? BATON_DMG : PUNCH_DMG;
+  const clubAim = viewMode === 1 ? { fx, fz, origin: camera.position, direction: _camDir } : { fx, fz };
   let best = null;
   let bestDist = 2.25;
   let kind = "";
@@ -7231,7 +7247,7 @@ function meleePunch() {
     }
   }
 
-  const club = houseClub?.punchPick?.({ fx, fz });
+  const club = houseClub?.punchPick?.(clubAim);
   if (club && !punchBlocked(x, z, club.person.x, club.person.z)) {
     consider(club.dist, "club", club.person);
   }
