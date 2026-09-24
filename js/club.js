@@ -24,6 +24,9 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
+const CLUB_MIST_OPACITY = 0.082;
+const CLUB_FOG_NEAR = 2.4;
+const CLUB_FOG_FAR = 22;
 const laserGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, false);
 const laserAxis = new THREE.Vector3(0, 1, 0);
 const laserRaycaster = new THREE.Raycaster();
@@ -88,6 +91,7 @@ export function createClub(api) {
   const spots = [];
   const lasers = [];
   const laserSurfaces = [];
+  const mistMeshes = [];
   const platters = [];
   const knobs = [];
   const ledWalls = [];
@@ -98,6 +102,7 @@ export function createClub(api) {
   let wantDown = 0;
   let wantDance = 0;
   let rebalanceT = 0;
+  let fogClubMode = null;
 
   function playerPos() {
     return api.playerPos?.() || { x: 0, y: 0, z: 0 };
@@ -701,14 +706,21 @@ export function createClub(api) {
         target = peak;
       }
       levels[i] += (target - levels[i]) * 0.32;
-      const barH = Math.max(3, levels[i] * 76);
+      const energy = THREE.MathUtils.clamp(levels[i], 0, 1);
+      const barH = Math.max(3, energy * 76);
       const x = 4 + i * 10.35;
+      const hue = (0.68 - energy * 0.68 + t * 0.035 + i * 0.009 + 1) % 1;
       const grad = ctx.createLinearGradient(0, canvas.height - barH, 0, canvas.height);
-      grad.addColorStop(0, "#ff2038");
-      grad.addColorStop(0.55, "#ff456b");
-      grad.addColorStop(1, "#551225");
+      grad.addColorStop(0, `hsl(${hue * 360}, 100%, ${58 + energy * 24}%)`);
+      grad.addColorStop(0.55, `hsl(${((hue + 0.08) % 1) * 360}, 100%, ${46 + energy * 18}%)`);
+      grad.addColorStop(1, `hsl(${((hue + 0.96) % 1) * 360}, 85%, 18%)`);
+      ctx.shadowColor = `hsl(${hue * 360}, 100%, 62%)`;
+      ctx.shadowBlur = 4 + energy * 8;
       ctx.fillStyle = grad;
       ctx.fillRect(x, canvas.height - barH - 4, 7, barH);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = `hsla(${hue * 360}, 100%, 86%, ${0.35 + energy * 0.65})`;
+      ctx.fillRect(x, canvas.height - barH - 7, 7, 2);
     }
     texture.needsUpdate = true;
   }
@@ -1953,6 +1965,18 @@ export function createClub(api) {
     if (!built) return;
     const pos = playerPos();
     const inHere = inside(pos.x, pos.z);
+    if (scene.fog) {
+      if (fogClubMode !== inHere) {
+        scene.fog.near = inHere ? CLUB_FOG_NEAR : 28;
+        scene.fog.far = inHere ? CLUB_FOG_FAR : 170;
+        fogClubMode = inHere;
+      }
+      for (const mist of mistMeshes) {
+        const distance = Math.hypot(pos.x - mist.position.x, pos.z - mist.position.z);
+        const density = inHere ? THREE.MathUtils.clamp(0.72 + distance / 13, 0.72, 1.7) : 1;
+        mist.material.opacity = CLUB_MIST_OPACITY * density;
+      }
+    }
     let speakerDistance = Infinity;
     for (const speaker of SPEAKERS) {
       speakerDistance = Math.min(speakerDistance, Math.hypot(pos.x - speaker[0], pos.z - speaker[1]));
@@ -2224,12 +2248,11 @@ export function createClub(api) {
   }
 
   function buildMist() {
-    const MIST_OPACITY = 0.064;
     const fogMat = () =>
       new THREE.MeshBasicMaterial({
         color: 0x68737c,
         transparent: true,
-        opacity: MIST_OPACITY,
+        opacity: CLUB_MIST_OPACITY,
         depthWrite: false,
         side: THREE.DoubleSide,
       });
@@ -2245,6 +2268,7 @@ export function createClub(api) {
       mist.renderOrder = 4;
       mist.userData.laserIgnore = true;
       scene.add(mist);
+      mistMeshes.push(mist);
     }
     const cloudGeo = new THREE.SphereGeometry(1, 14, 8);
     for (let i = 0; i < 28; i++) {
@@ -2262,6 +2286,7 @@ export function createClub(api) {
       mist.renderOrder = 4;
       mist.userData.laserIgnore = true;
       scene.add(mist);
+      mistMeshes.push(mist);
     }
     const sheets = [
       { x: 19.0, z: -0.35, w: 16.5, yaw: 0 },
@@ -2277,6 +2302,7 @@ export function createClub(api) {
       mist.renderOrder = 4;
       mist.userData.laserIgnore = true;
       scene.add(mist);
+      mistMeshes.push(mist);
     }
   }
 

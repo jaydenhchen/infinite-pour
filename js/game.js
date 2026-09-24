@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=33";
+import { createClub } from "./club.js?v=34";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -461,14 +461,14 @@ const CLUB_PLAYLIST = [
   { src: "audio/club/09-kanye-west-jail.mp3", title: "Kanye West — Jail" },
   { src: "audio/club/10-kanye-west-mercy.mp3", title: "Kanye West — Mercy" },
   { src: "audio/club/11-mac-miller-the-spins.mp3", title: "Mac Miller — The Spins" },
-  { src: "audio/club/12-metro-boomin-superhero.mp3", title: "Metro Boomin & Future — Superhero" },
+  { src: "audio/club/12-metro-boomin-superhero.mp3", title: "Metro Boomin, Future & Chris Brown — Superhero" },
   { src: "audio/club/13-whethan-lock-it-up.mp3", title: "Whethan — LOCK IT UP" },
   { src: "audio/club/14-charkas.mp3", title: "Charkas" },
   { src: "audio/club/15-kanye-west-power.mp3", title: "Kanye West — POWER" },
   { src: "audio/club/16-chief-keef-hate-bein-sober-flip.mp3", title: "Chief Keef — Hate Bein' Sober (Flip)" },
-  { src: "audio/club/17-jay-z-kanye-west-in-paris.mp3", title: "JAY-Z & Kanye West — In Paris" },
-  { src: "audio/club/18-don-toliver-no-pole.mp3", title: "Don Toliver — No Pole (slowed + reverb)" },
-  { src: "audio/club/19-kanye-west-all-of-the-lights.mp3", title: "Kanye West ft. Rihanna & Kid Cudi — All Of The Lights" },
+  { src: "audio/club/17-jay-z-kanye-west-in-paris.mp3", title: "JAY-Z & Kanye West — Niggas in Paris" },
+  { src: "audio/club/18-don-toliver-no-pole.mp3", title: "Don Toliver — No Pole" },
+  { src: "audio/club/19-kanye-west-all-of-the-lights.mp3", title: "Kanye West — All Of The Lights" },
   { src: "audio/club/20-new-body.mp3", title: "New Body" },
   { src: "audio/club/21-kid-cudi-pursuit-of-happiness.mp3", title: "Kid Cudi — Pursuit of Happiness" },
 ];
@@ -1642,6 +1642,7 @@ let frontDoorAng = 0;
 let frontDoorWant = 0;
 let zoomHold = false;
 let started = false;
+let tabHeld = false;
 let dragging = false;
 let rightHand = null;
 let leftHand = null;
@@ -2800,7 +2801,7 @@ function buildWorld() {
     stool.position.set(i * 1.5, 0, 1.35);
     stool.userData.kind = "stool";
     stool.userData.root = stool;
-    stool.userData.sit = { x: i * 1.5, z: 1.35 };
+    stool.userData.sit = { x: i * 1.5, y: SIT_Y, z: 1.35, yaw: 0, kind: "stool", standX: i * 1.5, standZ: 1.9 };
     seat.userData.kind = "stool";
     seat.userData.root = stool;
     registerPick(stool);
@@ -4925,8 +4926,6 @@ function takeHit(nx, nz, by, opts = {}) {
   lastKnock = { x: knock.dx, z: knock.dz };
   hurtFlash = 0.7;
   audio.hit();
-  if (opts.lethal) toast(by ? `${by} hit you` : "you got hit");
-  else toast(by ? `${by} punched you` : "you got punched");
   if (sitting) standUp();
   if (inCar) {
     inCar.speed *= 0.32;
@@ -4997,7 +4996,7 @@ function sitOn(spot) {
     kind: spot.kind || "stool",
     fixture: spot.fixture || null,
     standX: spot.standX ?? spot.x,
-    standZ: spot.standZ ?? spot.z + 0.12,
+    standZ: spot.standZ ?? spot.z + 0.55,
     floor: spot.floor || 0,
   };
   vy = 0;
@@ -5005,13 +5004,13 @@ function sitOn(spot) {
   standY = sitting.floor || 0;
   camera.position.set(sitting.x, sitting.y, sitting.z);
   bodyPos.set(sitting.x, sitting.y, sitting.z);
-  if (sitting.kind === "toilet" && sitting.yaw != null) {
-    const camYaw = sitting.yaw + Math.PI;
+  if (sitting.yaw != null) {
+    const camYaw = sitting.kind === "toilet" ? sitting.yaw + Math.PI : sitting.yaw;
     savedYaw = camYaw;
     view2Yaw = camYaw;
     camera.rotation.order = "YXZ";
     camera.rotation.y = camYaw;
-    pantsStart = tWorld;
+    if (sitting.kind === "toilet") pantsStart = tWorld;
   }
   audio.sit();
   pokePose();
@@ -5149,8 +5148,9 @@ function hud() {
   const vignetteRgb = drunkVignetteRgb(d);
   $("vignette").style.filter = `saturate(${1 + Math.min(2.1, d * 0.42)})`;
   $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(20, 50 - d * 6)}%, rgba(${vignetteRgb}, ${Math.min(0.7, 0.3 + d * 0.065)}) 100%)`;
-  $("lookHint").classList.toggle("show", started && !controls.isLocked && !summonOpen && !chatOpen && !passedOut);
   const list = $("onlineList");
+  const online = $("online");
+  if (online) online.classList.toggle("show", tabHeld);
   if (list) {
     const people = roster();
     const st = netStatus();
@@ -5199,108 +5199,26 @@ function hud() {
 }
 
 function promptFrom(obj) {
-  if (inCar) {
-    if (!driving()) {
-      if (wanted) return "riding along · E get out · lose the cops";
-      return "riding along · mouse look · E get out · F/G drink · 1/2/3 camera";
-    }
-    if (wanted) return "WASD drive · mouse orbit · SHIFT drift · E get out · lose the cops";
-    return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
-  }
-  if (wanted) {
-    if (obj?.userData?.kind === "baton") return "E grab baton · click punch";
-    const near = nearestCar(3.4);
-    const stand = standCarPrompt(near);
-    if (stand) return stand;
-    if (stunT > 0) {
-      if (near?.cop && copsInCar(near)) return "stunned · cops are still in the car · click punch";
-      if (near?.cop) return "stunned · E steal the cop car · click punch to keep them back";
-      if (near) return "stunned · E get in · click punch to keep them back";
-      return "stunned · cops inbound · click punch to keep them back";
-    }
-    if (near?.cop && copsInCar(near)) return "cops are in it · punch them out first · SPACE onto the hood or trunk";
-    if (near?.cop) return "E steal the cop car · SPACE onto the hood or trunk · click punch";
-    if (near) return "E get in · SPACE onto the hood or trunk · click punch";
-    return "cops on you · click punch · RUN · E still gets you in a car";
-  }
   if (sitting) {
-    if (sitting.kind === "toilet") {
-      return "toilet · pants down · E stand · P pee";
-    }
-    return houseGames?.prompt(obj) || (holdingDrink() ? "stool. WASD or E stand · F sip · G chug" : "stool. WASD or E stand");
+    return sitting.kind === "toilet" ? "E stand · P pee" : holdingDrink() ? "E stand · F sip · G chug" : "E stand";
   }
-  if (inCar) return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
-  if (!obj) {
-    const gamePrompt = houseGames?.prompt(null) || "";
-    if (gamePrompt) return gamePrompt;
-    const car = nearestCar(3.4);
-    if (car) {
-      const stand = standCarPrompt(car);
-      if (stand) return stand;
-      return carRideHint(car);
-    }
-    if (held && held.userData.kind === "glass") {
-      return glassState.fill > 0.02 ? "F sip  ·  G chug  ·  Q set down" : "cup in hand  ·  hold it in a stream  ·  Q set down";
-    }
-    if (held && held.userData.kind === "baton") return "baton · click swing · Q set down";
-    if (inBathroom(camera.position.x, camera.position.z)) {
-      return localGender === "f" ? "restrooms · E sit · P pee on the toilet" : "restrooms · E sit or open doors · P pee";
-    }
-    if (houseClub?.inside(camera.position.x, camera.position.z)) return "AFTER HOURS · street door · stairs on the right · walk the balcony · E kick a seat or sit";
-    if (!insideBar(camera.position.x, camera.position.z)) return "H cab back to the bar · club next door down the alley · patio games to the left · restrooms behind the left wall";
-    return started && !controls.isLocked ? "click the bar to capture mouse" : "";
-  }
+  if (!obj) return "";
   const k = obj.userData.kind;
   const drink = obj.userData.drink;
   if (k === "bottle" && drink) {
-    if (held && held.userData.kind === "glass") return `E pour  ${drink.name}  into cup`;
-    return `E grab  ${drink.name}`;
+    return held && held.userData.kind === "glass" ? `E pour ${drink.name} into cup` : `E grab ${drink.name}`;
   }
-  if (k === "baton") {
-    if (held && held.userData.kind === "baton") return "baton in hand · click swing · Q set down";
-    return "E grab baton";
-  }
-  if (k === "cupstack") {
-    const n = cupStacks[obj.userData.stack] || 0;
-    if (!n) return cupStacks.some((c) => c > 0) ? "E grab a cup from the other stack" : "stacks empty · restock the bar";
-    return `E grab a cup · ${n} left in this stack`;
-  }
-  if (k === "glass") {
-    if (held && held.userData.kind === "bottle") return `click pour  ${held.userData.drink.name}  ·  E grab cup`;
-    if (held && held.userData.kind === "glass") {
-      if (glassState.fill > 0.02) return "F sip  ·  G chug  ·  Q stack on this cup";
-      return "cup in hand  ·  Q stack on this cup  ·  4–9 swap";
-    }
-    return glassState.fill > 0.02 ? "E grab cup" : "E grab cup  ·  4–9 glassware";
-  }
-  if (k === "tap") return `E tap  ${drink.name}`;
-  if (k === "toilet") return localGender === "f" ? "E sit · pants come off · then P pee" : "E sit · pants come off";
-  if (k === "urinal") return localGender === "f" ? "girls sit on the toilet" : "P to pee";
-  if (k === "restroomDoor") return lookDoorOpen(obj) ? "E close the restroom door" : "E open the restroom door";
-  if (k === "clubDoor") return houseClub?.prompt(obj) || (lookDoorOpen(obj) ? "E close the club door" : "E open the club");
+  if (k === "tap" && drink) return `E tap ${drink.name}`;
+  if (k === "toilet") return "E sit · P pee";
+  if (k === "urinal") return "P pee";
   if (k === "clubDj") return houseClub?.prompt(obj) || audio.clubPrompt();
-  if (k === "clubChair") return houseClub?.prompt(obj) || (obj.userData.sitter && obj.userData.sitter !== "player" ? "E kick them out of the chair" : "E sit and watch the floor");
-  if (k === "stallDoor") return lookDoorOpen(obj) ? "E close the stall" : "E open the stall";
-  if (k === "register" || k === "hatch") return "E / Y  summon any drink";
-  if (k === "sink") return "E dump glass";
-  if (k === "bathSink") return obj.userData.sink?.userData.running ? "E turn the sink off" : "E turn the sink on";
-  if (k === "juke") return audio.juke ? "E silence the juke" : "E fire up the juke";
-  if (k === "door") return frontDoorOpen ? "E close the front door" : "E open the front door";
-  if (k === "copcar") {
-    const car = obj.userData.car;
-    const stand = standCarPrompt(car);
-    if (stand) return stand;
-    if (copsInCar(car)) return "cops are in it · punch them out first · SPACE onto the hood or trunk";
-    return carOccupants(car).has(0) ? "E hop in · SPACE onto the hood or trunk · click punch" : "E steal the cop car · SPACE onto the hood or trunk · click punch";
+  if (k === "clubChair") {
+    return houseClub?.prompt(obj) || (obj.userData.sitter ? "E kick them out" : "E sit");
   }
-  if (k === "car") {
-    if (inCar) return driving() ? "E get out · SHIFT drift" : "E get out";
-    return standCarPrompt(obj.userData.car) || carRideHint(obj.userData.car);
+  if (k === "stool") return "E sit at the bar";
+  if (k === "restroomDoor" || k === "stallDoor" || k === "clubDoor" || k === "door") {
+    return lookDoorOpen(obj) ? "E close door" : "E open door";
   }
-  if (k === "stool") return sitting ? "E or WASD stand up" : (obj.userData.sit?.floor ? "E sit and watch the floor" : "E sit at the bar");
-  const gamePrompt = houseGames?.prompt(look) || "";
-  if (gamePrompt) return gamePrompt;
-  if (inCar) return "WASD drive · mouse orbit · SHIFT drift · E get out · 1 hood · 2 oncoming · 3 chase · F/G drink · H cab home";
   return "";
 }
 
@@ -8785,6 +8703,10 @@ function bind() {
       if (!e.repeat) keys[e.code] = true;
       else if (e.code !== "KeyF" && e.code !== "KeyG") keys[e.code] = true;
     }
+    if (e.code === "Tab" && !typing) {
+      e.preventDefault();
+      tabHeld = true;
+    }
     if (summonOpenedBy && e.key.toLowerCase() === summonOpenedBy) {
       e.preventDefault();
     }
@@ -8959,6 +8881,10 @@ function bind() {
   window.addEventListener("keyup", (e) => {
     keys[e.code] = false;
     if (e.code === "KeyC") zoomHold = false;
+    if (e.code === "Tab") {
+      tabHeld = false;
+      e.preventDefault();
+    }
   });
   const keepCaretVisible = (e) => followInputCaret(e.target);
   for (const id of ["chatQ", "q", "playerName", "barCode"]) {
