@@ -11,10 +11,25 @@ const MAX_WALKING_PEOPLE = 3;
 const MAX_STAIR_TRAVELERS = 1;
 const BALCONY_SEAT_RATIO = 0.5;
 const BALCONY_WALKER_LIMIT = 3;
+const CEILING_SPEAKERS = [
+  [CX0 + 0.58, CZ0 + 0.58],
+  [CX1 - 0.58, CZ0 + 0.58],
+  [CX0 + 0.58, CZ1 - 0.58],
+  [CX1 - 0.58, CZ1 - 0.58],
+];
 const SPEAKERS = [
   [15.55, -5.4],
   [22.45, -5.4],
+  ...CEILING_SPEAKERS,
 ];
+const LASER_RADIUS = 0.018;
+const LASER_MAX_RANGE = 40;
+const laserGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, false);
+const laserAxis = new THREE.Vector3(0, 1, 0);
+const laserRaycaster = new THREE.Raycaster();
+const laserOrigin = new THREE.Vector3();
+const laserDirection = new THREE.Vector3();
+const laserEnd = new THREE.Vector3();
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 10);
 
@@ -64,7 +79,7 @@ export function createClub(api) {
     makeBatonMesh,
     seatBatonOnArm,
     hitPlayer,
-    collideWorld,
+    drunkLevel,
   } = api;
 
   const crowd = [];
@@ -72,6 +87,7 @@ export function createClub(api) {
   const strobes = [];
   const spots = [];
   const lasers = [];
+  const laserSurfaces = [];
   const platters = [];
   const knobs = [];
   const ledWalls = [];
@@ -795,40 +811,61 @@ export function createClub(api) {
     cone.rotation.x = -Math.PI / 2;
     cone.position.z = coneH * 0.5;
     const beam = new THREE.Group();
+    cone.userData.laserIgnore = true;
     beam.add(cone);
     beam.position.copy(sl.position);
     scene.add(beam);
     spots.push({ light: sl, hex, phase, ax: x, az: z, beam, cone, kind, coneH });
   }
+  function buildCeilingSpeakers() {
+    const cabinet = lambert(0x09090d);
+    const grilleMat = new THREE.MeshBasicMaterial({ color: 0x1c2028, side: THREE.DoubleSide });
+    const yaws = [-Math.PI * 0.75, Math.PI * 0.75, -Math.PI * 0.25, Math.PI * 0.25];
+    CEILING_SPEAKERS.forEach(([x, z], i) => {
+      const root = new THREE.Group();
+      root.position.set(x, CLUB_H - 0.34, z);
+      root.rotation.y = yaws[i];
+      addMesh(root, unitBox, cabinet, 0, 0, 0, 0.58, 0.36, 0.32);
+      const grille = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.22), grilleMat);
+      grille.position.set(0, -0.01, -0.17);
+      root.add(grille);
+      scene.add(root);
+    });
+  }
+  function laserIgnored(obj) {
+    for (let node = obj; node; node = node.parent) {
+      if (node.userData?.laserBeam || node.userData?.laserIgnore) return true;
+    }
+    return false;
+  }
+  function laserLength(origin, direction) {
+    laserRaycaster.set(origin, direction);
+    laserRaycaster.far = LASER_MAX_RANGE;
+    const hits = laserRaycaster.intersectObjects(laserSurfaces, false);
+    for (const hit of hits) {
+      if (hit.distance > 0.06 && !laserIgnored(hit.object)) return hit.distance;
+    }
+    return LASER_MAX_RANGE;
+  }
   function addLaser(x, z, phase) {
-    const light = new THREE.SpotLight(0xff1028, 7.5, 30, 0.045, 0.24, 1.0);
+    const light = new THREE.SpotLight(0xff0000, 0, LASER_MAX_RANGE, 0.01, 0.02, 1.0);
     light.position.set(x, 5.02, z);
     light.target.position.set(19, 0.75, 0.25);
     scene.add(light);
     scene.add(light.target);
-    const coneH = 7.2;
-    const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(0.12, coneH, 8, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: 0xff1028,
-        transparent: true,
-        opacity: 0.2,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        blending: THREE.AdditiveBlending,
-      })
+    const beam = new THREE.Mesh(
+      laserGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xff0000, fog: false, side: THREE.DoubleSide, toneMapped: false })
     );
-    cone.rotation.x = -Math.PI / 2;
-    cone.position.z = coneH * 0.5;
-    const beam = new THREE.Group();
-    beam.add(cone);
-    beam.position.copy(light.position);
+    beam.userData.laserBeam = true;
+    beam.renderOrder = 5;
     scene.add(beam);
-    lasers.push({ light, phase, beam, cone });
+    lasers.push({ light, phase, beam });
   }
 
 
   function buildLights() {
+    buildCeilingSpeakers();
     const wash = new THREE.PointLight(0x4a1840, 1.05, 16);
     wash.position.set(19.0, 3.5, 0.2);
     scene.add(wash);
@@ -1916,12 +1953,12 @@ export function createClub(api) {
     if (!built) return;
     const pos = playerPos();
     const inHere = inside(pos.x, pos.z);
-    const speakerDistance = Math.min(
-      Math.hypot(pos.x - SPEAKERS[0][0], pos.z - SPEAKERS[0][1]),
-      Math.hypot(pos.x - SPEAKERS[1][0], pos.z - SPEAKERS[1][1])
-    );
+    let speakerDistance = Infinity;
+    for (const speaker of SPEAKERS) {
+      speakerDistance = Math.min(speakerDistance, Math.hypot(pos.x - speaker[0], pos.z - speaker[1]));
+    }
     const musicProximity = inHere ? THREE.MathUtils.clamp(1 - speakerDistance / 4.8, 0, 1) : -1;
-    audio.clubTick?.(dt, musicProximity);
+    audio.clubTick?.(dt, musicProximity, drunkLevel?.() || 0);
 
     const beat = (t * 2.15) % 1;
     const flash = beat < 0.08 || (beat > 0.5 && beat < 0.58) || (beat > 0.75 && beat < 0.8);
@@ -1967,12 +2004,21 @@ export function createClub(api) {
       const tx = 19.0 + Math.cos(ang) * 5.4;
       const tz = 0.35 + Math.sin(ang * 1.23) * 4.15;
       const ty = 0.35 + (Math.sin(ang * 0.71) * 0.5 + 0.5) * 2.8;
-      laser.light.target.position.set(tx, ty, tz);
+      laserOrigin.copy(laser.light.position);
+      laserDirection.set(tx - laserOrigin.x, ty - laserOrigin.y, tz - laserOrigin.z).normalize();
+      const length = laserLength(laserOrigin, laserDirection);
+      laserEnd.copy(laserOrigin).addScaledVector(laserDirection, length);
+      laser.light.target.position.copy(laserEnd);
       laser.light.target.updateMatrixWorld?.();
-      laser.light.intensity = 5.0 + (Math.sin(t * 3.2 + laser.phase) * 0.5 + 0.5) * 4.0;
-      laser.cone.material.opacity = 0.14 + (Math.sin(t * 2.4 + laser.phase) * 0.5 + 0.5) * 0.12;
-      laser.beam.position.copy(laser.light.position);
-      laser.beam.lookAt(tx, ty, tz);
+      laser.light.distance = length + 0.2;
+      laser.beam.position.copy(laserOrigin).addScaledVector(laserDirection, length * 0.5);
+      laser.beam.quaternion.setFromUnitVectors(laserAxis, laserDirection);
+      laser.beam.scale.set(LASER_RADIUS, length, LASER_RADIUS);
+      const laserBeat = (t * 2.15 + laser.phase * 0.08) % 1;
+      const on = laserBeat < 0.14 || (laserBeat > 0.5 && laserBeat < 0.64) || (laserBeat > 0.75 && laserBeat < 0.86);
+      laser.beam.visible = on;
+      laser.light.visible = on;
+      laser.light.intensity = on ? 6.4 + Math.sin(t * 5.2 + laser.phase) * 1.6 : 0;
     }
     for (let i = 0; i < ledWalls.length; i++) {
       if (ledWalls[i] !== equalizer?.mesh) {
@@ -2197,6 +2243,7 @@ export function createClub(api) {
       mist.rotation.x = -Math.PI / 2;
       mist.position.set(19.0, y0 + (y1 - y0) * u, -0.35);
       mist.renderOrder = 4;
+      mist.userData.laserIgnore = true;
       scene.add(mist);
     }
     const cloudGeo = new THREE.SphereGeometry(1, 14, 8);
@@ -2213,6 +2260,7 @@ export function createClub(api) {
         -5.35 + hash01(i, 96) * 10.0
       );
       mist.renderOrder = 4;
+      mist.userData.laserIgnore = true;
       scene.add(mist);
     }
     const sheets = [
@@ -2227,6 +2275,7 @@ export function createClub(api) {
       mist.position.set(sh.x, (y0 + y1) * 0.5, sh.z);
       mist.rotation.y = sh.yaw;
       mist.renderOrder = 4;
+      mist.userData.laserIgnore = true;
       scene.add(mist);
     }
   }
@@ -2241,6 +2290,9 @@ export function createClub(api) {
     buildMist();
     scatterTrash();
     buildCrowd();
+    scene.traverse((obj) => {
+      if (obj.isMesh && !laserIgnored(obj)) laserSurfaces.push(obj);
+    });
     built = true;
   }
 

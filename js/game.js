@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=31";
+import { createClub } from "./club.js?v=33";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -958,6 +958,17 @@ const audio = {
   clubGain: null,
   clubDistort: null,
   clubDrive: -1,
+  clubDecks: [],
+  clubDeckSources: [],
+  clubDeckGains: [],
+  clubDeckTracks: [],
+  clubActiveDeck: 0,
+  clubFade: null,
+  clubDelay: null,
+  clubEchoGain: null,
+  clubEchoFeedback: null,
+  master: null,
+  muted: false,
   boot() {
     if (this.ctx) {
       if (this.ctx.state === "suspended") this.ctx.resume();
@@ -966,6 +977,9 @@ const audio = {
     }
     const ctx = new AudioContext();
     this.ctx = ctx;
+    this.master = ctx.createGain();
+    this.master.gain.value = this.muted ? 0 : 1;
+    this.master.connect(ctx.destination);
     const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
     const data = buf.getChannelData(0);
     let last = 0;
@@ -983,25 +997,27 @@ const audio = {
     f.frequency.value = 280;
     src.connect(f);
     f.connect(g);
-    g.connect(ctx.destination);
+    g.connect(this.master);
     src.start();
     this.ensureClubAudio();
   },
   ensureClubAudio() {
-    if (this.clubAudio || !CLUB_PLAYLIST.length) return;
-    const player = new Audio();
-    player.preload = "auto";
-    player.volume = 1;
-    player.addEventListener("ended", () => this.nextClubTrack());
-    player.addEventListener("error", () => this.nextClubTrack());
-    this.clubAudio = player;
+    if (this.clubDecks.length || !CLUB_PLAYLIST.length) return;
+    this.clubDecks = [0, 1].map((index) => {
+      const player = new Audio();
+      player.preload = "auto";
+      player.volume = 1;
+      player.addEventListener("ended", () => this.clubDeckEnded(index));
+      player.addEventListener("error", () => this.clubDeckError(index));
+      return player;
+    });
+    this.clubAudio = this.clubDecks[0];
     this.connectClubAudio();
     this.shuffleClub();
     this.nextClubTrack();
   },
   connectClubAudio() {
-    if (!this.ctx || !this.clubAudio || this.clubSource) return;
-    this.clubSource = this.ctx.createMediaElementSource(this.clubAudio);
+    if (!this.ctx || !this.clubDecks.length || this.clubAnalyser) return;
     this.clubAnalyser = this.ctx.createAnalyser();
     this.clubAnalyser.fftSize = 64;
     this.clubAnalyser.smoothingTimeConstant = 0.78;
@@ -1011,10 +1027,33 @@ const audio = {
     this.clubDistort = this.ctx.createWaveShaper();
     this.clubDistort.oversample = "2x";
     this.clubDistort.curve = null;
-    this.clubSource.connect(this.clubAnalyser);
+    this.clubDelay = this.ctx.createDelay(1);
+    this.clubDelay.delayTime.value = 0.22;
+    this.clubEchoGain = this.ctx.createGain();
+    this.clubEchoGain.gain.value = 0;
+    this.clubEchoFeedback = this.ctx.createGain();
+    this.clubEchoFeedback.gain.value = 0;
+    this.clubDeckSources = [];
+    this.clubDeckGains = [];
+    this.clubDeckTracks = [null, null];
+    for (const player of this.clubDecks) {
+      const source = this.ctx.createMediaElementSource(player);
+      const deckGain = this.ctx.createGain();
+      deckGain.gain.value = 0;
+      source.connect(deckGain);
+      deckGain.connect(this.clubAnalyser);
+      this.clubDeckSources.push(source);
+      this.clubDeckGains.push(deckGain);
+    }
+    this.clubSource = this.clubDeckSources[0];
     this.clubAnalyser.connect(this.clubDistort);
     this.clubDistort.connect(this.clubGain);
-    this.clubGain.connect(this.ctx.destination);
+    this.clubGain.connect(this.master || this.ctx.destination);
+    this.clubGain.connect(this.clubDelay);
+    this.clubDelay.connect(this.clubEchoGain);
+    this.clubEchoGain.connect(this.master || this.ctx.destination);
+    this.clubDelay.connect(this.clubEchoFeedback);
+    this.clubEchoFeedback.connect(this.clubDelay);
   },
 
   clubCurve(drive) {
@@ -1045,20 +1084,99 @@ const audio = {
     }
     this.clubCursor = 0;
   },
-  nextClubTrack() {
-    if (!this.clubAudio || !this.clubOrder.length) return;
+  takeClubTrack() {
     if (this.clubCursor >= this.clubOrder.length) this.shuffleClub();
-    const track = CLUB_PLAYLIST[this.clubOrder[this.clubCursor++]];
-    this.clubTrack = track;
-    this.clubAudio.src = track.src;
-    this.clubAudio.load();
-    const play = this.clubAudio.play();
+    return CLUB_PLAYLIST[this.clubOrder[this.clubCursor++]];
+  },
+  loadClubDeck(index, track) {
+    const player = this.clubDecks[index];
+    if (!player || !track) return;
+    player.pause();
+    player.currentTime = 0;
+    player.src = track.src;
+    player.load();
+    this.clubDeckTracks[index] = track;
+  },
+  prepareClubNext() {
+    if (!this.clubDecks.length) return;
+    const next = 1 - this.clubActiveDeck;
+    if (!this.clubDeckTracks[next]) this.loadClubDeck(next, this.takeClubTrack());
+  },
+  startClubDeck(index) {
+    const play = this.clubDecks[index]?.play();
     play?.catch?.(() => {});
+  },
+  beginClubFade(duration = 3) {
+    if (this.clubFade || !this.clubDecks.length) return;
+    this.prepareClubNext();
+    const from = this.clubActiveDeck;
+    const to = 1 - from;
+    if (!this.clubDeckTracks[to]) return;
+    const fadeSeconds = Math.max(0.02, Number(duration) || 3);
+    const now = this.ctx?.currentTime || 0;
+    const fromGain = this.clubDeckGains[from];
+    const toGain = this.clubDeckGains[to];
+    if (fromGain && toGain && this.ctx) {
+      fromGain.gain.cancelScheduledValues(now);
+      fromGain.gain.setValueAtTime(1, now);
+      fromGain.gain.linearRampToValueAtTime(0, now + fadeSeconds);
+      toGain.gain.cancelScheduledValues(now);
+      toGain.gain.setValueAtTime(0, now);
+      toGain.gain.linearRampToValueAtTime(1, now + fadeSeconds);
+    } else {
+      this.clubDecks[from].volume = 1;
+      this.clubDecks[to].volume = 0;
+    }
+    this.startClubDeck(to);
+    this.clubFade = { from, to, end: now + fadeSeconds };
+  },
+  finishClubFade() {
+    const fade = this.clubFade;
+    if (!fade) return;
+    const old = this.clubDecks[fade.from];
+    old.pause();
+    old.currentTime = 0;
+    this.clubDeckTracks[fade.from] = null;
+    this.clubActiveDeck = fade.to;
+    this.clubAudio = this.clubDecks[fade.to];
+    this.clubTrack = this.clubDeckTracks[fade.to];
+    const now = this.ctx?.currentTime || 0;
+    this.clubDeckGains[fade.from]?.gain.setValueAtTime(0, now);
+    this.clubDeckGains[fade.to]?.gain.setValueAtTime(1, now);
+    this.clubFade = null;
+    this.prepareClubNext();
+  },
+  clubDeckEnded(index) {
+    if (index !== this.clubActiveDeck || this.clubFade) return;
+    this.prepareClubNext();
+    this.beginClubFade(0.12);
+  },
+  clubDeckError(index) {
+    if (index !== this.clubActiveDeck || this.clubFade) return;
+    this.clubDeckTracks[index] = null;
+    this.prepareClubNext();
+    this.beginClubFade(0.12);
+  },
+  nextClubTrack() {
+    if (!this.clubDecks.length || !this.clubOrder.length) return;
+    if (!this.clubTrack) {
+      const track = this.takeClubTrack();
+      this.loadClubDeck(0, track);
+      this.clubActiveDeck = 0;
+      this.clubAudio = this.clubDecks[0];
+      this.clubTrack = track;
+      this.clubDeckGains[0]?.gain.setValueAtTime(1, this.ctx?.currentTime || 0);
+      this.startClubDeck(0);
+      this.prepareClubNext();
+      return;
+    }
+    this.prepareClubNext();
+    this.beginClubFade(3);
   },
   skipClubTrack() {
     if (!this.clubAudio) return false;
-    this.clubAudio.pause();
-    this.nextClubTrack();
+    this.prepareClubNext();
+    this.beginClubFade(3);
     return true;
   },
   clubPrompt() {
@@ -1073,7 +1191,7 @@ const audio = {
     g.gain.value = vol;
     g.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + dur);
     o.connect(g);
-    g.connect(this.ctx.destination);
+    g.connect(this.master || this.ctx.destination);
     o.start();
     o.stop(this.ctx.currentTime + dur);
   },
@@ -1103,7 +1221,7 @@ const audio = {
     g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
     src.connect(f);
     f.connect(g);
-    g.connect(this.ctx.destination);
+    g.connect(this.master || this.ctx.destination);
     src.start();
     src.stop(now + dur);
   },
@@ -1204,7 +1322,7 @@ const audio = {
     g.gain.value = 0.03;
     src.connect(f);
     f.connect(g);
-    g.connect(this.ctx.destination);
+    g.connect(this.master || this.ctx.destination);
     src.start();
     this.sinkOsc = { src, g };
   },
@@ -1233,7 +1351,7 @@ const audio = {
     g.gain.value = 0.028;
     src.connect(f);
     f.connect(g);
-    g.connect(this.ctx.destination);
+    g.connect(this.master || this.ctx.destination);
     src.start();
     this.peeOsc = { src, g };
   },
@@ -1296,7 +1414,7 @@ const audio = {
     f.frequency.value = 240;
     o.connect(f);
     f.connect(n);
-    n.connect(this.ctx.destination);
+    n.connect(this.master || this.ctx.destination);
     o.start();
     this.eng = { o, n, f };
   },
@@ -1340,7 +1458,7 @@ const audio = {
     f.Q.value = 2.4;
     o.connect(f);
     f.connect(g);
-    g.connect(this.ctx.destination);
+    g.connect(this.master || this.ctx.destination);
     o.start();
     this.siren = { o, g, f, t: 0 };
   },
@@ -1356,21 +1474,34 @@ const audio = {
     try { this.siren.o.stop(); } catch (err) { /* already stopped */ }
     this.siren = null;
   },
-  clubTick(dt, proximity) {
+  clubTick(dt, proximity, drunk = 0) {
     if (!this.clubAudio) return;
+    const now = this.ctx?.currentTime || 0;
+    if (this.clubFade && now >= this.clubFade.end) this.finishClubFade();
     const inside = Number.isFinite(proximity) && proximity >= 0;
     const near = inside ? THREE.MathUtils.clamp(proximity, 0, 1) : 0;
     const target = inside ? CLUB_FAR_GAIN + near * (CLUB_NEAR_GAIN - CLUB_FAR_GAIN) : 0;
     this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
     if (this.clubGain && this.ctx) {
-      this.clubGain.gain.setTargetAtTime(this.clubVol, this.ctx.currentTime, 0.045);
+      this.clubGain.gain.setTargetAtTime(this.clubVol, now, 0.045);
+      const drunkMix = inside ? THREE.MathUtils.clamp((Number(drunk) || 0) / 2.4, 0, 1) : 0;
+      this.clubEchoGain?.gain.setTargetAtTime(drunkMix * 0.26, now, 0.12);
+      this.clubEchoFeedback?.gain.setTargetAtTime(drunkMix * 0.22, now, 0.12);
     } else {
       this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
     }
     this.setClubDrive(inside ? 0.12 + near * 0.88 : 0);
-    if (inside && this.clubAudio.paused) {
-      const play = this.clubAudio.play();
-      play?.catch?.(() => {});
+    const duration = this.clubAudio.duration;
+    if (!this.clubFade && Number.isFinite(duration) && duration > 3.2 && this.clubAudio.currentTime >= duration - 3) {
+      this.prepareClubNext();
+      this.beginClubFade(3);
+    }
+    if (inside && this.clubAudio.paused) this.startClubDeck(this.clubActiveDeck);
+  },
+  toggleMute() {
+    this.muted = !this.muted;
+    if (this.master && this.ctx) {
+      this.master.gain.setTargetAtTime(this.muted ? 0 : 1, this.ctx.currentTime, 0.025);
     }
   },
   clubSpectrum() {
@@ -1390,7 +1521,7 @@ const audio = {
     f.frequency.value = 900;
     o.connect(f);
     f.connect(n);
-    n.connect(this.ctx.destination);
+    n.connect(this.master || this.ctx.destination);
     o.start();
     this.pourOsc = { o, n };
   },
@@ -1453,7 +1584,6 @@ const solids = [];
 const pickables = [];
 const bottles = [];
 const drops = [];
-const deliveries = [];
 
 const keys = Object.create(null);
 let vy = 0;
@@ -2379,7 +2509,6 @@ function restockDrinks(fromNet) {
       registerPick(obj);
     }
   }
-  deliveries.length = 0;
   for (const drop of drops) scene.remove(drop);
   drops.length = 0;
   for (let i = bottles.length - 1; i >= 0; i--) {
@@ -2771,7 +2900,7 @@ function buildWorld() {
     makeHingeDoor,
     neonTex,
     audio,
-    playerPos: () => bodyPos,
+    drunkLevel: () => drunkLevel(),
     makeBottle,
     makeGlassMesh,
     randomDrink,
@@ -5594,17 +5723,10 @@ function pourIntoGlass(drink, amount) {
 function deliver(drink) {
   const b = makeBottle(drink);
   b.userData.stock = false;
-  b.position.set(-3.7, 1.2, WELL_Z);
+  b.position.set(bodyPos.x, bodyPos.y, bodyPos.z);
   scene.add(b);
   bottles.push(b);
-  registerPick(b);
-  deliveries.push({
-    mesh: b,
-    t: 0,
-    from: b.position.clone(),
-    to: new THREE.Vector3(0.2 + Math.random() * 0.35, 1.05, WELL_Z + 0.16),
-  });
-  audio.clink();
+  attachHeld(b);
 }
 
 function paintCats() {
@@ -6204,21 +6326,6 @@ function updateDrops(dt) {
   }
 }
 
-function updateDeliveries(dt) {
-  for (let i = deliveries.length - 1; i >= 0; i--) {
-    const d = deliveries[i];
-    d.t += dt * 1.6;
-    const t = Math.min(1, d.t);
-    d.mesh.position.lerpVectors(d.from, d.to, t);
-    d.mesh.position.y = THREE.MathUtils.lerp(d.from.y, d.to.y, t) + Math.sin(t * Math.PI) * 0.4;
-    d.mesh.rotation.y += dt * 4;
-    if (t >= 1) {
-      d.mesh.position.copy(d.to);
-      d.mesh.rotation.set(0, 0, 0);
-      deliveries.splice(i, 1);
-    }
-  }
-}
 
 
 function nearestCar(max = 3.4) {
@@ -7182,12 +7289,8 @@ function meleePunch() {
   if (kind === "cop") return hitOfficer(best, fx, fz, dmg);
   if (kind === "club") {
     const result = houseClub.applyPunch(best, { fx, fz, dmg });
-    if (result === "djhit") toast("DJ flashed red · still mixing");
-    else if (result === "guardhit") toast("the bouncer is pissed");
-    else if (result === "guardkill") {
-      toast("bouncer down · cops incoming");
-      spawnPolice(bodyPos.x, bodyPos.z);
-    } else if (result === "kill") spawnPolice(bodyPos.x, bodyPos.z);
+    if (result === "guardkill") spawnPolice(bodyPos.x, bodyPos.z);
+    else if (result === "kill") spawnPolice(bodyPos.x, bodyPos.z);
     return !!result;
   }
   if (kind === "peer") return !!landPunch(best, fx, fz);
@@ -8519,7 +8622,6 @@ function tick() {
     if (started && !passedOut && chatOpen) applyDrunkCam(dt);
   }
   updateDrops(dt);
-  updateDeliveries(dt);
   if (playing()) houseGames?.tick(dt, tWorld);
   houseClub?.tick(dt, tWorld);
   tickSignals(tWorld);
@@ -8726,6 +8828,11 @@ function bind() {
       return;
     }
     if (summonOpen && e.key === "Escape") closeSummon();
+    if (!typing && e.code === "KeyM" && !e.repeat) {
+      e.preventDefault();
+      audio.toggleMute();
+      return;
+    }
     if (!playing()) return;
     if (e.repeat && (e.code === "KeyF" || e.code === "KeyG" || e.code === "KeyE")) return;
     if (e.code === "KeyE") {
@@ -8740,7 +8847,7 @@ function bind() {
         return;
       }
       if (look?.userData?.kind === "clubDj") {
-        if (audio.skipClubTrack()) toast(`DJ skipped · ${audio.clubTrack?.title || "next track"}`);
+        audio.skipClubTrack();
         return;
       }
       if (look && (look.userData.kind === "restroomDoor" || look.userData.kind === "stallDoor" || look.userData.kind === "clubDoor")) {
