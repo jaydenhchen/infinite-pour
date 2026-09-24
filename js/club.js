@@ -474,7 +474,7 @@ export function createClub(api) {
     if (inStairwell(x, z) || onStairs(x, z)) return true;
     if (x > 24.8 && z > 1.02) return true;
     if (z < -3.4 && x > 15.1 && x < 22.9) return true;
-    if (x < 12.6 && z > 2.85) return true;
+    if (x < 11.2 && z > 4.85) return true;
     if (Math.abs(x - 19) < 1.2 && z > 5.05) return true;
     if (x < CX0 + 0.55 || x > CX1 - 0.55) return true;
     if (z < CZ0 + 0.55 || z > CZ1 - 0.55) return true;
@@ -1050,7 +1050,7 @@ export function createClub(api) {
       pickTarget(p);
     });
     const walls = [
-      ...packLine(10.9, -3.15, 10.9, 2.45, 8, 0.9, blockedFloor, taken, Math.PI / 2),
+      ...packLine(10.9, -3.15, 10.9, 5.15, 12, 0.9, blockedFloor, taken, Math.PI / 2),
       ...packLine(11.5, 5.52, 17.25, 5.52, 7, 0.9, blockedFloor, taken, Math.PI),
       ...packLine(20.75, 5.52, 23.35, 5.52, 4, 0.9, blockedFloor, taken, Math.PI),
       ...packLine(13.35, -3.22, 23.7, -3.22, 10, 0.9, blockedFloor, taken, 0),
@@ -1178,12 +1178,6 @@ export function createClub(api) {
     addLedScreen(2.5, 1.1, 10.34, 3.58, 3.55, Math.PI / 2);
     addLedScreen(2.5, 1.1, 27.7, 3.88, 3.2, -Math.PI / 2);
     addLedScreen(4.2, 0.8, frontDoorX, 4.18, CZ1 - 0.14, Math.PI);
-
-    addMesh(scene, unitBox, lambert(0x1a1018), 11.55, 0.55, 4.15, 1.7, 1.1, 2.2);
-    worldSolid(11.55, 4.15, 1.8, 2.3, 1.15);
-    addMesh(scene, unitBox, lambert(0x2a1a22), 11.55, 1.12, 4.15, 1.82, 0.06, 2.32);
-    for (let i = 0; i < 6; i++) addMesh(scene, unitCyl, lambert(0x3dfff2), 11.15 + (i % 3) * 0.22, 1.28, 3.55 + Math.floor(i / 3) * 0.7, 0.04, 0.22, 0.04);
-    sign("COAT", 0x3dfff2, 0.7, 0.18, 11.55, 2.15, 3.0);
 
     for (let i = 0; i < 5; i++) {
       addMesh(scene, unitBox, lambert(0x1a1220), 13.2 + i * 3.0, 5.12, 0.15, 2.4, 0.08, 0.14);
