@@ -113,6 +113,11 @@ export function setCopHandler(fn) {
 export function pokePose() {
   lastPose = "";
   forcePose = true;
+  try {
+    sendPose();
+  } catch {
+    /* ignore */
+  }
 }
 
 export function setWorldCollide(fn) {
@@ -806,10 +811,10 @@ function applyState(id, state) {
   if (incomingName) peer.name = liveName(incomingName, peer.name);
   setNametag(peer, peer.name);
   peer.ty = state.y ?? peer.ty;
-  if ((peer.stunT || 0) <= 0 && (peer.hurtT || 0) <= 0.12) {
-    peer.tx = state.x ?? peer.tx;
-    peer.tz = state.z ?? peer.tz;
+  if (state.hurt && !peerKnocking(peer)) {
+    applyHurt(peer, state.rdx, state.rdz);
   }
+  acceptPeerPos(peer, state.x, state.z);
   peer.tyaw = state.yaw ?? peer.tyaw;
   peer.tpit = state.pit ?? peer.tpit;
   if (state.b != null) peer.bac = clamp(state.b, 0, DRUNK_NET);
@@ -1553,15 +1558,55 @@ function findPeer(id) {
   return remotes.get(id) || null;
 }
 
+function peerKnocking(peer) {
+  return (peer.hurtT || 0) > 0 || (peer.knockT || 0) > 0 || Math.hypot(peer.kvx || 0, peer.kvz || 0) > 0.08 || peer.hitOX != null;
+}
+
+function acceptPeerPos(peer, x, z) {
+  if (!peer || !Number.isFinite(x) || !Number.isFinite(z)) return;
+  if ((peer.stunT || 0) > 0) return;
+  if (peer.hitOX != null && Number.isFinite(peer.hitOX) && Number.isFinite(peer.hitOZ)) {
+    const rdx = peer.rdx || 0;
+    const rdz = peer.rdz || 0;
+    const curAlong = ((peer.tx ?? x) - peer.hitOX) * rdx + ((peer.tz ?? z) - peer.hitOZ) * rdz;
+    const inAlong = (x - peer.hitOX) * rdx + (z - peer.hitOZ) * rdz;
+    const fromHit = Math.hypot(x - peer.hitOX, z - peer.hitOZ);
+    if (inAlong + 0.1 < curAlong && fromHit < 0.62) return;
+    peer.tx = x;
+    peer.tz = z;
+    if (fromHit > 0.28 || inAlong > 0.16) {
+      peer.hitOX = null;
+      peer.hitOZ = null;
+      peer.knockT = Math.min(peer.knockT || 0, 0.2);
+    }
+    return;
+  }
+  if (peerKnocking(peer)) {
+    const dx = x - (peer.tx ?? x);
+    const dz = z - (peer.tz ?? z);
+    if (dx * (peer.rdx || 0) + dz * (peer.rdz || 0) < -0.05) return;
+    if (Math.hypot(dx, dz) > 3.6) return;
+  }
+  peer.tx = x;
+  peer.tz = z;
+}
+
 function applyHurt(peer, nx, nz) {
   if (!peer || (peer.hurtT || 0) > 0.1) return false;
-  const knock = applyKnock(peer.tx ?? peer.rig?.position.x ?? 0, peer.tz ?? peer.rig?.position.z ?? 0, nx, nz, collideFn, 0.32);
+  const ox = peer.tx ?? peer.rig?.position.x ?? 0;
+  const oz = peer.tz ?? peer.rig?.position.z ?? 0;
+  const knock = applyKnock(ox, oz, nx, nz, collideFn, 0.32);
   peer.hurtT = HURT_T;
+  peer.knockT = 1.8;
+  peer.hitOX = ox;
+  peer.hitOZ = oz;
   peer.rdx = knock.dx;
   peer.rdz = knock.dz;
   if (peer.drive) return true;
   peer.kvx = (peer.kvx || 0) + knock.vx;
   peer.kvz = (peer.kvz || 0) + knock.vz;
+  peer.tx = knock.x;
+  peer.tz = knock.z;
   const eye = eyeHeight(peer.gender);
   peer.ty = Math.max(peer.ty ?? eye, eye) + KNOCK_UP;
   return true;
@@ -1585,15 +1630,25 @@ function handleHitEvent(msg) {
   const from = findPeer(msg.from);
   swingPunch(from);
   const mine = !!(msg.to && me && msg.to === me);
-  const target = mine ? null : findPeer(msg.to);
-  const toX = mine ? camera?.position.x : target?.tx ?? target?.rig?.position.x;
-  const toZ = mine ? camera?.position.z : target?.tz ?? target?.rig?.position.z;
-  if (from && toX != null && toZ != null && pathBlocked(from.tx ?? from.rig?.position.x, from.tz ?? from.rig?.position.z, toX, toZ)) return;
   if (mine) {
     localHitFn?.(nx, nz, msg.n || from?.name || "");
     return;
   }
-  applyHurt(target, nx, nz);
+  applyHurt(findPeer(msg.to), nx, nz);
+}
+
+export function punchables() {
+  return targets();
+}
+
+export function landPunch(peer, nx, nz) {
+  if (!peer) return null;
+  applyHurt(peer, nx, nz);
+  const hid = Math.random().toString(36).slice(2, 10);
+  seenHits.add(hid);
+  lastHit = { hid, to: peer.id, nx, nz, until: performance.now() + 1800 };
+  publishEvent({ t: "hit", id: hid, to: peer.id, nx: round(nx, 3), nz: round(nz, 3), n: local.name });
+  return { id: peer.id, name: peer.name, nx, nz };
 }
 
 export function tryPunch() {
@@ -1627,14 +1682,7 @@ export function tryPunch() {
     bestDist = dist;
   }
   if (!best) return null;
-  const nx = fx;
-  const nz = fz;
-  applyHurt(best, nx, nz);
-  const hid = Math.random().toString(36).slice(2, 10);
-  seenHits.add(hid);
-  lastHit = { hid, to: best.id, nx, nz, until: performance.now() + 1800 };
-  publishEvent({ t: "hit", id: hid, to: best.id, nx: round(nx, 3), nz: round(nz, 3), n: local.name });
-  return { id: best.id, name: best.name, nx, nz };
+  return landPunch(best, fx, fz);
 }
 
 function drunkSway(drunk, t, phase, moving, walk) {
@@ -1658,6 +1706,7 @@ function animatePeer(peer, dt, t) {
 
   if (peer.stunT > 0) peer.stunT = Math.max(0, peer.stunT - dt);
   if (peer.hurtT > 0) peer.hurtT = Math.max(0, peer.hurtT - dt);
+  if (peer.knockT > 0) peer.knockT = Math.max(0, peer.knockT - dt);
   if (peer.punchT > 0) peer.punchT = Math.max(0, peer.punchT - dt);
   if (peer.sipT > 0) peer.sipT = Math.max(0, peer.sipT - dt);
   if (!peer.local && (peer.kvx || peer.kvz)) {
@@ -1978,7 +2027,7 @@ function tickBot(dt, t) {
   ai.look += dt;
   bot.tpit = Math.sin(t * (0.7 + drunk) + bot.phase) * (0.15 + drunk * 0.45);
 
-  if ((bot.hurtT || 0) > 0) {
+  if ((bot.hurtT || 0) > 0 || Math.hypot(bot.kvx || 0, bot.kvz || 0) > 0.08) {
     bot.tyaw += Math.sin(t * 8) * 0.4 * dt;
   } else if (ai.wait > 0) {
     bot.tyaw += Math.sin(t * 0.8) * drunk * 0.9 * dt;
@@ -2009,9 +2058,14 @@ function tickBot(dt, t) {
     }
   }
 
-  const kept = collideFn(bot.tx, bot.tz, 0.36);
-  bot.tx = clamp(kept[0], -6.8, 6.8);
-  bot.tz = clamp(kept[1], -1.7, 4.6);
+  if ((bot.hurtT || 0) <= 0 && Math.hypot(bot.kvx || 0, bot.kvz || 0) < 0.08) {
+    const inBar = bot.tx > -7.2 && bot.tx < 7.2 && bot.tz > -2.0 && bot.tz < 5.0;
+    if (inBar) {
+      const kept = collideFn(bot.tx, bot.tz, 0.36);
+      bot.tx = clamp(kept[0], -6.8, 6.8);
+      bot.tz = clamp(kept[1], -1.7, 4.6);
+    }
+  }
   animatePeer(bot, dt, t);
 }
 

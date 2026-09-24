@@ -29,6 +29,8 @@ import {
   setWorldCollide,
   shirtColor,
   tryPunch,
+  punchables,
+  landPunch,
   poseHurt,
   eyeHeight,
   setPeeDrainFn,
@@ -44,9 +46,9 @@ import {
   setWorldBlock,
   makeBatonMesh,
   seatBatonOnArm,
-} from "./multiplayer.js?v=133";
+} from "./multiplayer.js?v=137";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=13";
+import { createClub } from "./club.js?v=18";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1599,6 +1601,22 @@ function worldBlocked(x0, z0, x1, z1) {
   return camRayHit(x0, 1.22, z0, dx * inv, 0, dz * inv, dist, 0.12) < dist - 0.28;
 }
 
+function punchBlocked(x0, z0, x1, z1) {
+  if (houseClub?.inside?.(x0, z0) && houseClub.inside(x1, z1)) return false;
+  return worldBlocked(x0, z0, x1, z1);
+}
+
+function punchReach(x0, z0, x1, z1, fx, fz, maxDist = 2.25) {
+  const dx = (x1 || 0) - (x0 || 0);
+  const dz = (z1 || 0) - (z0 || 0);
+  const dist = Math.hypot(dx, dz);
+  if (dist < 0.08 || dist > maxDist) return null;
+  const aim = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
+  if (aim < 0.18) return null;
+  if (punchBlocked(x0, z0, x1, z1)) return null;
+  return dist;
+}
+
 function sweepPush(x, z, fx, fz, dist, r = 0.28) {
   const len = Math.hypot(fx, fz) || 1;
   const ux = fx / len;
@@ -2521,7 +2539,7 @@ function buildWorld() {
   });
   houseClub.build();
   setWorldCollide(collide);
-  setWorldBlock(worldBlocked);
+  setWorldBlock(punchBlocked);
 }
 
 function asphalt(x, z, w, d, mat = mats.asphalt, y = 0.004) {
@@ -4093,7 +4111,9 @@ function holdingDrink() {
 }
 
 function takeHit(nx, nz, by) {
-  const knock = applyKnock(camera.position.x, camera.position.z, nx, nz, collide, 0.28);
+  const ox = bodyPos.x;
+  const oz = bodyPos.z;
+  const knock = applyKnock(ox, oz, nx, nz, collide, 0.28);
   lastKnock = { x: knock.dx, z: knock.dz };
   hurtFlash = 0.7;
   audio.hit();
@@ -4103,6 +4123,10 @@ function takeHit(nx, nz, by) {
     inCar.speed *= 0.32;
     inCar.drift += (Math.random() - 0.5) * 0.35;
   } else {
+    camera.position.x += knock.x - ox;
+    camera.position.z += knock.z - oz;
+    bodyPos.x = knock.x;
+    bodyPos.z = knock.z;
     knockVx += knock.vx;
     knockVz += knock.vz;
     if (onGround) {
@@ -4110,7 +4134,12 @@ function takeHit(nx, nz, by) {
       onGround = false;
     }
   }
-  if (localPeer) localPeer.hurtT = 0.28;
+  if (localPeer) {
+    localPeer.hurtT = 0.28;
+    localPeer.tx = bodyPos.x;
+    localPeer.tz = bodyPos.z;
+  }
+  pokePose();
 }
 
 function flash(text, kind = "win") {
@@ -5275,6 +5304,9 @@ function startShift() {
       gc: glassState.fill > 0.02 ? mixColor(glassState.parts) : 0,
       sip: sipT,
       sk: sipKind === "chug" ? 1 : 0,
+      hurt: hurtFlash > 0.08 || (localPeer?.hurtT || 0) > 0.02 ? 1 : 0,
+      rdx: lastKnock.x,
+      rdz: lastKnock.z,
       k: punchT > 0.02 ? 1 : 0,
       pk: punchGen,
       aimx: punchAim().fx,
@@ -6317,7 +6349,7 @@ function dropOfficerBaton(off) {
 }
 
 function hitOfficer(off, fx, fz, dmg) {
-  if (!off || off.dead) return false;
+  if (!off || off.dead || off.gone) return false;
   if (off.state === "ride") {
     const car = off.car;
     if (car) {
@@ -6347,29 +6379,58 @@ function hitOfficer(off, fx, fz, dmg) {
   return true;
 }
 
-function punchCops() {
-  if (!cops.length || inCar) return false;
+function meleePunch() {
+  if (inCar) return false;
   const { fx, fz } = punchAim();
   const x = bodyPos.x;
   const z = bodyPos.z;
+  const feet = Math.max(0, (bodyPos.y || 0) - 1.5);
+  const dmg = holdingBaton() ? BATON_DMG : PUNCH_DMG;
   let best = null;
-  let bestDist = 2.35;
+  let bestDist = 2.25;
+  let kind = "";
+
+  function consider(dist, nextKind, ref) {
+    if (dist == null || dist >= bestDist) return;
+    bestDist = dist;
+    best = ref;
+    kind = nextKind;
+  }
+
   for (const pack of cops) {
     for (const off of pack.officers) {
-      if (off.dead) continue;
-      const dx = off.x - x;
-      const dz = off.z - z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 0.04 || dist > bestDist) continue;
-      const aim = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
-      if (aim < 0.15) continue;
-      if (worldBlocked(x, z, off.x, off.z)) continue;
-      best = off;
-      bestDist = dist;
+      if (off.dead || off.gone || off.state === "ride") continue;
+      if (Math.abs((off.hopY || 0) - feet) > 1.35) continue;
+      consider(punchReach(x, z, off.x, off.z, fx, fz), "cop", off);
     }
   }
+
+  const club = houseClub?.punchPick?.({ fx, fz });
+  if (club && !punchBlocked(x, z, club.person.x, club.person.z)) {
+    consider(club.dist, "club", club.person);
+  }
+
+  for (const peer of punchables()) {
+    if (!peer || peer.local) continue;
+    const tx = peer.tx ?? peer.rig?.position.x;
+    const tz = peer.tz ?? peer.rig?.position.z;
+    if (!Number.isFinite(tx) || !Number.isFinite(tz)) continue;
+    consider(punchReach(x, z, tx, tz, fx, fz), "peer", peer);
+  }
+
   if (!best) return false;
-  return hitOfficer(best, fx, fz, holdingBaton() ? BATON_DMG : PUNCH_DMG);
+  if (kind === "cop") return hitOfficer(best, fx, fz, dmg);
+  if (kind === "club") {
+    const result = houseClub.applyPunch(best, { fx, fz, dmg });
+    if (result === "kill") spawnPolice(bodyPos.x, bodyPos.z);
+    return !!result;
+  }
+  if (kind === "peer") return !!landPunch(best, fx, fz);
+  return false;
+}
+
+function punchCops() {
+  return meleePunch();
 }
 
 function makeOfficer() {
@@ -6967,6 +7028,17 @@ function tickPolice(dt) {
     stickToRideCar();
     for (const off of pack.officers) {
       if (off.dead) {
+        if (off.gone) continue;
+        off.deadT = (off.deadT || 0) + dt;
+        if (off.deadT >= 10) {
+          off.gone = true;
+          off.rd = null;
+          if (off.rig) {
+            off.rig.parent?.remove(off.rig);
+            off.rig.visible = false;
+          }
+          continue;
+        }
         tickRagdoll(off, dt);
         continue;
       }
@@ -7757,9 +7829,7 @@ function bind() {
       }
       audio.punch();
       pokePose();
-      const clubHit = houseClub?.punch?.(punchAim());
-      if (clubHit === "kill") spawnPolice(bodyPos.x, bodyPos.z);
-      if (clubHit || tryPunch() || punchCops()) audio.hit();
+      if (meleePunch()) audio.hit();
     }
     if (playing() && look && look !== held) {
       if (look.userData.kind === "bottle") {
