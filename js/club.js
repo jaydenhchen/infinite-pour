@@ -24,9 +24,11 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
-const CLUB_MIST_OPACITY = 0.082;
-const CLUB_FOG_NEAR = 2.4;
-const CLUB_FOG_FAR = 22;
+const CLUB_MIST_OPACITY = 0.14;
+const CLUB_FOG_COLOR = 0x73797d;
+const OUTDOOR_FOG_COLOR = 0x12080c;
+const CLUB_FOG_NEAR = 1.6;
+const CLUB_FOG_FAR = 18;
 const laserGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, false);
 const laserAxis = new THREE.Vector3(0, 1, 0);
 const laserRaycaster = new THREE.Raycaster();
@@ -92,6 +94,7 @@ export function createClub(api) {
   const lasers = [];
   const laserSurfaces = [];
   const mistMeshes = [];
+  const smokeClouds = [];
   const platters = [];
   const knobs = [];
   const ledWalls = [];
@@ -522,6 +525,12 @@ export function createClub(api) {
       deadT: 0,
       gone: false,
     };
+    rig.userData.clubPerson = person;
+    if (!rig.userData.kind) {
+      rig.userData.kind = "clubPerson";
+      rig.userData.root = rig;
+      registerPick?.(rig);
+    }
     crowd.push(person);
     return person;
   }
@@ -1965,15 +1974,24 @@ export function createClub(api) {
     if (!built) return;
     const pos = playerPos();
     const inHere = inside(pos.x, pos.z);
+    for (const cloud of smokeClouds) {
+      const u = cloud.userData;
+      const phase = u.smokePhase || 0;
+      cloud.position.x = u.smokeBaseX + Math.sin(t * 0.09 + phase) * 0.48 + Math.sin(t * 0.047 + phase * 1.7) * 0.18;
+      cloud.position.y = u.smokeBaseY + Math.sin(t * 0.13 + phase * 1.3) * 0.08;
+      cloud.position.z = u.smokeBaseZ + Math.cos(t * 0.075 + phase) * 0.34 + Math.sin(t * 0.052 + phase * 0.8) * 0.12;
+      cloud.rotation.y = t * 0.04 + phase;
+    }
     if (scene.fog) {
       if (fogClubMode !== inHere) {
+        scene.fog.color.setHex(inHere ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
         scene.fog.near = inHere ? CLUB_FOG_NEAR : 28;
         scene.fog.far = inHere ? CLUB_FOG_FAR : 170;
         fogClubMode = inHere;
       }
       for (const mist of mistMeshes) {
         const distance = Math.hypot(pos.x - mist.position.x, pos.z - mist.position.z);
-        const density = inHere ? THREE.MathUtils.clamp(0.72 + distance / 13, 0.72, 1.7) : 1;
+        const density = inHere ? THREE.MathUtils.clamp(0.9 + distance / 8, 0.9, 2.4) : 1;
         mist.material.opacity = CLUB_MIST_OPACITY * density;
       }
     }
@@ -2250,7 +2268,7 @@ export function createClub(api) {
   function buildMist() {
     const fogMat = () =>
       new THREE.MeshBasicMaterial({
-        color: 0x68737c,
+        color: 0x7b8082,
         transparent: true,
         opacity: CLUB_MIST_OPACITY,
         depthWrite: false,
@@ -2283,10 +2301,15 @@ export function createClub(api) {
         0.45 + hash01(i, 95) * 4.45,
         -5.35 + hash01(i, 96) * 10.0
       );
+      mist.userData.smokeBaseX = mist.position.x;
+      mist.userData.smokeBaseY = mist.position.y;
+      mist.userData.smokeBaseZ = mist.position.z;
+      mist.userData.smokePhase = hash01(i, 97) * Math.PI * 2;
       mist.renderOrder = 4;
       mist.userData.laserIgnore = true;
       scene.add(mist);
       mistMeshes.push(mist);
+      smokeClouds.push(mist);
     }
     const sheets = [
       { x: 19.0, z: -0.35, w: 16.5, yaw: 0 },

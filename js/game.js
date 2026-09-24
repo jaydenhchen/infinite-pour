@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=34";
+import { createClub } from "./club.js?v=37";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1091,6 +1091,8 @@ const audio = {
   loadClubDeck(index, track) {
     const player = this.clubDecks[index];
     if (!player || !track) return;
+    player.__clubPlayRequested = false;
+    player.__clubPlayPending = false;
     player.pause();
     player.currentTime = 0;
     player.src = track.src;
@@ -1103,8 +1105,22 @@ const audio = {
     if (!this.clubDeckTracks[next]) this.loadClubDeck(next, this.takeClubTrack());
   },
   startClubDeck(index) {
-    const play = this.clubDecks[index]?.play();
-    play?.catch?.(() => {});
+    const player = this.clubDecks[index];
+    if (!player) return;
+    player.__clubPlayRequested = true;
+    if (this.ctx?.state === "suspended") this.ctx.resume().catch(() => {});
+    const playWhenReady = () => {
+      player.__clubPlayPending = false;
+      if (!player.__clubPlayRequested || !player.paused) return;
+      player.play()?.catch?.(() => {});
+    };
+    if (player.readyState >= 2) {
+      playWhenReady();
+      return;
+    }
+    if (player.__clubPlayPending) return;
+    player.__clubPlayPending = true;
+    player.addEventListener("canplay", playWhenReady, { once: true });
   },
   beginClubFade(duration = 3) {
     if (this.clubFade || !this.clubDecks.length) return;
@@ -1176,7 +1192,26 @@ const audio = {
   skipClubTrack() {
     if (!this.clubAudio) return false;
     this.prepareClubNext();
-    this.beginClubFade(3);
+    const from = this.clubActiveDeck;
+    const to = 1 - from;
+    if (!this.clubDeckTracks[to]) return false;
+    const old = this.clubDecks[from];
+    old.__clubPlayRequested = false;
+    old.__clubPlayPending = false;
+    old.pause();
+    old.currentTime = 0;
+    this.clubDeckTracks[from] = null;
+    const now = this.ctx?.currentTime || 0;
+    this.clubDeckGains[from]?.gain.cancelScheduledValues(now);
+    this.clubDeckGains[from]?.gain.setValueAtTime(0, now);
+    this.clubDeckGains[to]?.gain.cancelScheduledValues(now);
+    this.clubDeckGains[to]?.gain.setValueAtTime(1, now);
+    this.clubActiveDeck = to;
+    this.clubAudio = this.clubDecks[to];
+    this.clubTrack = this.clubDeckTracks[to];
+    this.clubFade = null;
+    this.startClubDeck(to);
+    this.prepareClubNext();
     return true;
   },
   clubPrompt() {
@@ -7164,7 +7199,7 @@ function hitOfficer(off, fx, fz, dmg) {
   return true;
 }
 
-function meleePunch() {
+function meleePunch(target = null) {
   if (inCar) return false;
   const { fx, fz } = punchAim();
   const x = bodyPos.x;
@@ -7190,6 +7225,16 @@ function meleePunch() {
     }
   }
 
+  const lookedAtClubPerson = target?.userData?.clubPerson;
+  if (lookedAtClubPerson && !lookedAtClubPerson.dead && !lookedAtClubPerson.gone) {
+    const dx = lookedAtClubPerson.x - x;
+    const dz = lookedAtClubPerson.z - z;
+    const dist = Math.hypot(dx, dz);
+    const along = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
+    if (dist >= 0.12 && dist < bestDist && along >= 0.18 && !punchBlocked(x, z, lookedAtClubPerson.x, lookedAtClubPerson.z)) {
+      consider(dist, "club", lookedAtClubPerson);
+    }
+  }
   const club = houseClub?.punchPick?.({ fx, fz });
   if (club && !punchBlocked(x, z, club.person.x, club.person.z)) {
     consider(club.dist, "club", club.person);
@@ -8653,7 +8698,7 @@ function bind() {
       }
       audio.punch();
       pokePose();
-      if (meleePunch()) audio.hit();
+      if (meleePunch(look)) audio.hit();
     }
     if (playing() && look && look !== held) {
       if (look.userData.kind === "bottle") {
