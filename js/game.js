@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=23";
+import { createClub } from "./club.js?v=26";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -442,6 +442,7 @@ function addBox(parent, geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) {
 const dropGeo = new THREE.BoxGeometry(0.03, 0.05, 0.03);
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 8);
+const unitCyl12 = new THREE.CylinderGeometry(1, 1, 1, 12);
 const unitCyl6 = new THREE.CylinderGeometry(1, 1, 1, 6);
 const smokeGeo = new THREE.SphereGeometry(0.2, 6, 5);
 
@@ -869,6 +870,7 @@ function makeHand(side) {
 
   const open = new THREE.Group();
   const wrap = new THREE.Group();
+  open.visible = false;
   wrap.visible = false;
   g.add(open);
   g.add(wrap);
@@ -878,12 +880,6 @@ function makeHand(side) {
   g.userData.skin = skin;
   g.userData.sleeve = sleeve;
   g.userData.palm = palm;
-
-  addBox(wrap, unitBox, skin, 0.018 * side, 0.036, -0.05, 0.03, 0.042, 0.08);
-  addBox(wrap, unitBox, skin, -0.004 * side, 0.034, -0.048, 0.026, 0.038, 0.074);
-  addBox(wrap, unitBox, skin, 0.038 * side, 0.028, -0.036, 0.024, 0.034, 0.06);
-  addBox(wrap, unitBox, skin, -0.028 * side, 0.026, -0.032, 0.022, 0.03, 0.052);
-  addBox(wrap, unitBox, skin, -0.058 * side, -0.006, -0.012, 0.03, 0.042, 0.058);
 
   const grip = new THREE.Group();
   grip.position.set(-0.012 * side, -0.018, -0.048);
@@ -1449,6 +1445,11 @@ const PLAYER_HP = 10;
 const PUNCH_DMG = 1;
 const BATON_DMG = 3;
 let playerHp = PLAYER_HP;
+let hpWait = 0;
+let hpRegenT = 0;
+let hpRegenFrom = 0;
+let hpHoldUntil = 0;
+let hpRegenStart = 0;
 let stunT = 0;
 let hurtFlash = 0;
 let crashCool = 0;
@@ -1727,7 +1728,7 @@ function pushSolid(px, pz, r, s) {
   return [px, pz];
 }
 
-function collideWorld(px, pz, r = 0.28, feet = 0, airborne = false) {
+function collideWorld(px, pz, r = 0.28, feet = 0, airborne = false, opts = null) {
   const list = insideBar(px, pz) ? solids : [];
   for (const s of list) {
     if (skipClimbWall(s, feet, airborne)) continue;
@@ -1735,12 +1736,17 @@ function collideWorld(px, pz, r = 0.28, feet = 0, airborne = false) {
   }
   for (const s of worldSolids) {
     if (doorIsOpen(s)) continue;
+    if (opts?.cop && s.swing?.userData?.kind === "clubDoor" && s.swing.userData.open) continue;
     if (skipClimbWall(s, feet, airborne)) continue;
     [px, pz] = pushSolid(px, pz, r, s);
   }
   px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
   pz = THREE.MathUtils.clamp(pz, WORLD_Z_MIN, WORLD_Z_MAX);
   return [px, pz];
+}
+
+function collideWorldForCop(px, pz, r = 0.28, feet = 0, airborne = false) {
+  return collideWorld(px, pz, r, feet, airborne, { cop: true });
 }
 
 function collideWorldForCar(px, pz, r = 0.48) {
@@ -1774,8 +1780,25 @@ function collideCars(px, pz, r = 0.28, skip = null) {
   return [px, pz, hit];
 }
 
+function collideStreetProps(px, pz, r) {
+  for (const p of streetProps) {
+    if (p.down) continue;
+    const dx = px - p.x;
+    const dz = pz - p.z;
+    const cr = r + (p.kind === "signal" ? 0.22 : 0.16);
+    const d2 = dx * dx + dz * dz;
+    if (d2 >= cr * cr) continue;
+    const dist = Math.sqrt(d2) || 1e-4;
+    const need = cr - dist;
+    px += (dx / dist) * need;
+    pz += (dz / dist) * need;
+  }
+  return [px, pz];
+}
+
 function collide(px, pz, r = 0.28, feet = 0, airborne = false, skipCar = null) {
   [px, pz] = collideWorld(px, pz, r, feet, airborne);
+  [px, pz] = collideStreetProps(px, pz, r);
   [px, pz] = collideCarsWalk(px, pz, r, skipCar, feet, airborne);
   if (houseClub) [px, pz] = houseClub.collide(px, pz, r, feet);
   px = THREE.MathUtils.clamp(px, -WORLD_X, WORLD_X);
@@ -1945,8 +1968,8 @@ function detachHeld() {
 
 function setRightGrip(on) {
   if (!rightHand) return;
-  rightHand.userData.open.visible = !on;
-  rightHand.userData.wrap.visible = !!on;
+  rightHand.userData.open.visible = false;
+  rightHand.userData.wrap.visible = false;
 }
 
 function makeViewPants() {
@@ -2180,6 +2203,11 @@ function restockDrinks(fromNet) {
 
 function resetShift() {
   playerHp = PLAYER_HP;
+  hpWait = 0;
+  hpRegenT = 0;
+  hpRegenFrom = 0;
+  hpHoldUntil = 0;
+  hpRegenStart = 0;
   restockDrinks();
   bac = 0;
   bacWait = 0;
@@ -2546,7 +2574,7 @@ function buildWorld() {
     makeGlassMesh,
     randomDrink,
     trackLooseGlass,
-    collideWorld,
+    collideWorld: collideWorldForCop,
     makeBatonMesh,
     seatBatonOnArm,
     hitPlayer: (nx, nz, dmg, kind) => takeHit(nx, nz, kind === "guard" ? "the bouncer" : "a cop", { lethal: true, dmg, kind }),
@@ -3174,28 +3202,66 @@ function fillTownLots() {
   }
 }
 
+function addCyl(parent, mat, x, y, z, r, h, rotX = 0, rotZ = 0) {
+  const m = addBox(parent, unitCyl12, mat, x, y, z, r, h, r);
+  if (rotX) m.rotation.x = rotX;
+  if (rotZ) m.rotation.z = rotZ;
+  return m;
+}
+
+function addSignalHead(parent, x, y, z, lights, scale = 1) {
+  const dark = lambert(0x141418);
+  const plate = lambert(0xc4a024);
+  const w = 0.38 * scale;
+  const h = 1.08 * scale;
+  const d = 0.24 * scale;
+  addBox(parent, unitBox, plate, x, y, z - 0.02 * scale, w + 0.18 * scale, h + 0.2 * scale, 0.045);
+  addBox(parent, unitBox, dark, x, y, z + d * 0.28, w, h, d);
+  const lensR = 0.12 * scale;
+  const gap = 0.34 * scale;
+  const cols = [lights.r, lights.y, lights.g];
+  for (let i = 0; i < 3; i++) {
+    const ly = y + gap - i * gap;
+    const lens = new THREE.Mesh(unitCyl12, cols[i]);
+    lens.rotation.x = Math.PI / 2;
+    lens.scale.set(lensR, 0.032 * scale, lensR);
+    lens.position.set(x, ly, z + d * 0.72);
+    lens.castShadow = false;
+    parent.add(lens);
+    addBox(parent, unitBox, dark, x, ly + lensR * 0.95, z + d * 0.88, w * 0.9, 0.035 * scale, 0.16 * scale);
+    addBox(parent, unitBox, dark, x - w * 0.42, ly, z + d * 0.84, 0.03 * scale, lensR * 2.05, 0.14 * scale);
+    addBox(parent, unitBox, dark, x + w * 0.42, ly, z + d * 0.84, 0.03 * scale, lensR * 2.05, 0.14 * scale);
+  }
+}
+
 function trafficPole(x, z, rotY, lights, lit) {
   const g = new THREE.Group();
   g.position.set(x, 0, z);
   g.rotation.y = rotY;
-  addBox(g, unitCyl, mats.steel, 0, 2.28, 0, 0.075, 4.56, 0.075);
-  addBox(g, unitBox, mats.curb, 0, 0.08, 0, 0.32, 0.16, 0.32);
-  addBox(g, unitBox, mats.steel, 0, 4.34, -0.82, 0.07, 0.07, 1.64);
-  addBox(g, unitBox, mats.steel, 2.5, 4.34, -1.62, 5.0, 0.07, 0.07);
-  addBox(g, unitBox, lambert(0x121216), 4.78, 3.96, -1.62, 0.2, 0.78, 0.2);
-  addBox(g, unitBox, lights.r, 4.64, 4.22, -1.62, 0.06, 0.15, 0.15);
-  addBox(g, unitBox, lights.y, 4.64, 3.96, -1.62, 0.06, 0.15, 0.15);
-  addBox(g, unitBox, lights.g, 4.64, 3.7, -1.62, 0.06, 0.15, 0.15);
-  addBox(g, unitBox, mats.steel, 0, 4.58, -1.35, 0.05, 0.05, 2.5);
-  addBox(g, unitBox, lambert(0x16181c), 0, 4.42, -2.48, 0.28, 0.1, 0.4);
-  addBox(g, unitBox, mats.glow, 0, 4.36, -2.48, 0.2, 0.035, 0.3);
-  addBox(g, unitBox, lambert(0x161616), 0.14, 2.58, -0.08, 0.1, 0.34, 0.08);
-  addBox(g, unitBox, lambert(0xff8a2a, { emissive: 0xff6a10, emissiveIntensity: 0.35 }), 0.2, 2.68, -0.08, 0.04, 0.08, 0.05);
-  addBox(g, unitBox, lambert(0xd8e8e0, { emissive: 0x8aa090, emissiveIntensity: 0.2 }), 0.2, 2.48, -0.08, 0.04, 0.08, 0.05);
+  const dark = lambert(0x141418);
+  const armY = 5.18;
+  const armLen = 8.15;
+  addBox(g, unitBox, mats.curb, 0, 0.1, 0, 0.58, 0.2, 0.58);
+  addCyl(g, mats.steel, 0, 0.28, 0, 0.2, 0.36);
+  addCyl(g, mats.steel, 0, 2.68, 0, 0.145, 4.96);
+  addCyl(g, mats.steel, 0, armY, 0, 0.17, 0.32);
+  addCyl(g, mats.steel, armLen * 0.5, armY, 0, 0.09, armLen, 0, Math.PI / 2);
+  addCyl(g, mats.steel, 0.22, armY, 0, 0.11, 0.44, 0, Math.PI / 2);
+  addBox(g, unitBox, mats.steel, 4.35, armY - 0.16, 0, 0.06, 0.28, 0.06);
+  addBox(g, unitBox, mats.steel, 7.55, armY - 0.16, 0, 0.06, 0.28, 0.06);
+  addSignalHead(g, 4.35, armY - 0.72, 0.02, lights);
+  addSignalHead(g, 7.55, armY - 0.72, 0.02, lights);
+  addSignalHead(g, 0.02, 3.42, 0.36, lights, 0.82);
+  addBox(g, unitBox, dark, -0.22, 2.42, 0.02, 0.12, 0.5, 0.3);
+  addBox(g, unitBox, lambert(0xff8a2a, { emissive: 0xff6a10, emissiveIntensity: 0.45 }), -0.29, 2.54, 0.02, 0.03, 0.14, 0.16);
+  addBox(g, unitBox, lambert(0xd8e8e0, { emissive: 0x8aa090, emissiveIntensity: 0.25 }), -0.29, 2.3, 0.02, 0.03, 0.14, 0.16);
+  addCyl(g, mats.steel, -1.05, 5.42, 0, 0.05, 2.1, 0, Math.PI / 2);
+  addBox(g, unitBox, lambert(0x16181c), -2.1, 5.28, 0, 0.34, 0.1, 0.48);
+  addBox(g, unitBox, mats.glow, -2.1, 5.22, 0, 0.24, 0.035, 0.36);
   let pl = null;
   if (lit) {
     pl = new THREE.PointLight(0xffd4a0, 0.95, 12);
-    pl.position.set(0, 4.36, -2.48);
+    pl.position.set(-2.1, 5.2, 0);
     g.add(pl);
   }
   scene.add(g);
@@ -3232,17 +3298,6 @@ function knockStreetProp(p, fromX, fromZ, spd = 6) {
     poleBangT = 0.16;
   }
   return true;
-}
-
-function knockStreetPropsNear(px, pz, r, fromX, fromZ, spd) {
-  let n = 0;
-  for (const p of streetProps) {
-    if (p.down) continue;
-    if (Math.hypot(px - p.x, pz - p.z) < p.r + r) {
-      if (knockStreetProp(p, fromX, fromZ, spd)) n++;
-    }
-  }
-  return n;
 }
 
 function carHitsProp(car, p, nx, nz) {
@@ -3293,10 +3348,10 @@ function buildSignals() {
   for (const ix of NS_XS) {
     for (const iz of EW_ZS) {
       const lit = ((ix + iz) / 8) % 2 === 0;
-      trafficPole(ix + POLE_OUT, iz - POLE_OUT, Math.PI, ew, lit);
-      trafficPole(ix - POLE_OUT, iz + POLE_OUT, 0, ew, false);
-      trafficPole(ix + POLE_OUT, iz + POLE_OUT, -Math.PI / 2, ns, false);
-      trafficPole(ix - POLE_OUT, iz - POLE_OUT, Math.PI / 2, ns, false);
+      trafficPole(ix + POLE_OUT, iz - POLE_OUT, -Math.PI / 2, ew, lit);
+      trafficPole(ix - POLE_OUT, iz + POLE_OUT, Math.PI / 2, ew, false);
+      trafficPole(ix + POLE_OUT, iz + POLE_OUT, Math.PI, ns, false);
+      trafficPole(ix - POLE_OUT, iz - POLE_OUT, 0, ns, false);
     }
   }
 }
@@ -4179,8 +4234,8 @@ function doorCoords(plane, x, z) {
   return { side: dx * plane.nx + dz * plane.nz, along: dx * plane.tx + dz * plane.tz };
 }
 
-function doorTraffic(plane) {
-  const folks = [{ x: bodyPos.x, z: bodyPos.z }];
+function doorTraffic(plane, extras = []) {
+  const folks = [{ x: bodyPos.x, z: bodyPos.z }, ...extras];
   for (const p of remotePeers()) {
     const x = p.tx ?? p.rig?.position.x;
     const z = p.tz ?? p.rig?.position.z;
@@ -4199,7 +4254,7 @@ function doorTraffic(plane) {
   return { blocking, near };
 }
 
-function stepAutoClose(state, plane, isOpen, setOpen, dt) {
+function stepAutoClose(state, plane, isOpen, setOpen, dt, extras = []) {
   if (!plane || !state) return;
   if (!isOpen) {
     state.prevSide = null;
@@ -4215,7 +4270,7 @@ function stepAutoClose(state, plane, isOpen, setOpen, dt) {
     state.closeT = 0.34;
   }
   state.prevSide = side;
-  const traffic = doorTraffic(plane);
+  const traffic = doorTraffic(plane, extras);
   if (state.closeT > 0) {
     state.closeT -= dt;
     if (state.closeT <= 0 && !traffic.blocking) setOpen(false);
@@ -4229,13 +4284,48 @@ function stepAutoClose(state, plane, isOpen, setOpen, dt) {
   }
 }
 
+function livingOfficers() {
+  const out = [];
+  for (const pack of cops) {
+    for (const off of pack.officers) {
+      if (off.dead || off.gone || off.state === "ride") continue;
+      out.push(off);
+    }
+  }
+  return out;
+}
+
+function nearDoorLane(plane, x, z, sidePad = 2.35, alongPad = 0.35) {
+  if (!plane) return false;
+  const { side, along } = doorCoords(plane, x, z);
+  const alongMin = Math.min(0, plane.dir * plane.w) - alongPad;
+  const alongMax = Math.max(0, plane.dir * plane.w) + alongPad;
+  return along >= alongMin && along <= alongMax && Math.abs(side) < sidePad;
+}
+
+function copsOpenClubDoors() {
+  const officers = livingOfficers();
+  const guards = houseClub?.angryGuards?.() || [];
+  const folks = officers.concat(guards);
+  if (!folks.length) return;
+  for (const door of swingDoors) {
+    if (door.userData.kind !== "clubDoor" || door.userData.open || !door.userData.plane) continue;
+    if (folks.some((off) => nearDoorLane(door.userData.plane, off.x, off.z, 2.8, 0.42))) {
+      setSwingDoor(door, true);
+    }
+  }
+}
+
 function tickDoorClosers(dt) {
   stepAutoClose(frontDoorAuto, frontDoorPlane, frontDoorOpen, (open) => setFrontDoor(open), dt);
+  const officers = livingOfficers();
   for (const door of swingDoors) {
     if (!door.userData.auto || !door.userData.plane) continue;
     if (!door.userData.autoState) door.userData.autoState = { prevSide: null, closeT: 0, awayT: 0 };
-    stepAutoClose(door.userData.autoState, door.userData.plane, door.userData.open, (open) => setSwingDoor(door, open), dt);
+    const extras = door.userData.kind === "clubDoor" ? officers.concat(houseClub?.angryGuards?.() || []) : [];
+    stepAutoClose(door.userData.autoState, door.userData.plane, door.userData.open, (open) => setSwingDoor(door, open), dt, extras);
   }
+  copsOpenClubDoors();
 }
 
 function tickBathrooms(dt) {
@@ -4528,6 +4618,14 @@ function takeHit(nx, nz, by, opts = {}) {
   pokePose();
   if (opts.lethal) {
     playerHp = Math.max(0, playerHp - (Number(opts.dmg) || 1));
+    if (playerHp > 0) bumpHurt();
+    else {
+      hpWait = 0;
+      hpRegenT = 0;
+      hpRegenFrom = 0;
+      hpHoldUntil = 0;
+      hpRegenStart = 0;
+    }
     hud();
     if (playerHp <= 0) finishPlayer(opts.kind || "down", by);
   }
@@ -5591,6 +5689,14 @@ function bumpDrink() {
   bacDecayStart = 0;
 }
 
+function bumpHurt() {
+  hpWait = BAC_HOLD;
+  hpRegenT = 0;
+  hpRegenFrom = 0;
+  hpHoldUntil = tWorld + BAC_HOLD;
+  hpRegenStart = 0;
+}
+
 function drinkGlass(kind) {
   if (!holdingGlass()) return;
   if (glassState.fill < 0.02) return;
@@ -6045,32 +6151,33 @@ function ensureGhost(w, h) {
 
 function renderDoubleVision() {
   const d = drunkLevel();
-  if (d < 0.55 || passedOut || inCar) return;
-  const amt = THREE.MathUtils.clamp((d - 0.55) / 3.35, 0, 1);
+  if (d < 0.28 || passedOut || inCar) return;
+  const amt = THREE.MathUtils.clamp((d - 0.28) / 2.55, 0, 1);
   const w = renderer.domElement.width;
   const h = renderer.domElement.height;
   if (w < 8 || h < 8) return;
   ensureGhost(w, h);
-  ghostFollow.yaw += (drunkCam.yaw - ghostFollow.yaw) * 0.16;
-  ghostFollow.pit += (drunkCam.pit - ghostFollow.pit) * 0.16;
-  ghostFollow.roll += (drunkCam.roll - ghostFollow.roll) * 0.16;
+  ghostFollow.yaw += (drunkCam.yaw - ghostFollow.yaw) * 0.08;
+  ghostFollow.pit += (drunkCam.pit - ghostFollow.pit) * 0.08;
+  ghostFollow.roll += (drunkCam.roll - ghostFollow.roll) * 0.08;
   _ghostEuler.copy(camera.rotation);
   _ghostPos.copy(camera.position);
   camera.rotation.order = "YXZ";
-  camera.rotation.y += drunkCam.yaw * (0.85 + amt * 1.15) + ghostFollow.yaw * (0.9 + amt * 0.55);
-  camera.rotation.x += drunkCam.pit * (0.85 + amt * 1.05) + ghostFollow.pit * (0.85 + amt * 0.45);
-  camera.rotation.z += drunkCam.roll * (0.55 + amt * 0.7) + ghostFollow.roll * (0.6 + amt * 0.4);
+  camera.rotation.y += drunkCam.yaw * (1.7 + amt * 2.3) + ghostFollow.yaw * (1.8 + amt * 1.1);
+  camera.rotation.x += drunkCam.pit * (1.7 + amt * 2.1) + ghostFollow.pit * (1.7 + amt * 0.9);
+  camera.rotation.z += drunkCam.roll * (1.1 + amt * 1.4) + ghostFollow.roll * (1.2 + amt * 0.8);
   camera.quaternion.setFromEuler(camera.rotation);
   camera.updateMatrixWorld();
   _ghostRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-  camera.position.addScaledVector(_ghostRight, (0.08 + amt * 0.26) * (drunkCam.yaw >= 0 ? 1 : -1));
-  camera.position.y += amt * 0.05;
+  camera.position.addScaledVector(_ghostRight, (0.18 + amt * 0.58) * (drunkCam.yaw >= 0 ? 1 : -1));
+  camera.position.y += amt * 0.12;
   renderer.setRenderTarget(ghostRT);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
   camera.rotation.copy(_ghostEuler);
   camera.position.copy(_ghostPos);
-  ghostQuad.material.opacity = 0.34 + amt * 0.52;
+  ghostQuad.material.opacity = 0.58 + amt * 0.36;
+  ghostQuad.material.color.setHex(0xffb0ff);
   renderer.autoClear = false;
   renderer.render(ghostScene, ghostCam);
   renderer.autoClear = true;
@@ -6733,7 +6840,7 @@ function hijackCopCar(car) {
       const lz = -Math.sin(car.yaw);
       off.x = car.x + lx * side * 2.55;
       off.z = car.z + lz * side * 2.55;
-      [off.x, off.z] = collideWorld(off.x, off.z, 0.28);
+      [off.x, off.z] = collideWorldForCop(off.x, off.z, 0.28);
       off.state = "stagger";
       off.staggerT = 1.05;
       off.swingT = 0;
@@ -6782,13 +6889,13 @@ function hitOfficer(off, fx, fz, dmg) {
       const lz = -Math.sin(car.yaw);
       off.x = car.x + lx * side * 2.2;
       off.z = car.z + lz * side * 2.2;
-      [off.x, off.z] = collideWorld(off.x, off.z, 0.28);
+      [off.x, off.z] = collideWorldForCop(off.x, off.z, 0.28);
     }
     off.state = "chase";
     off.outT = 1;
   }
   off.swingT = 0;
-  const knock = applyKnock(off.x, off.z, fx, fz, collideWorld, 0.28);
+  const knock = applyKnock(off.x, off.z, fx, fz, collideWorldForCop, 0.28);
   off.kvx = (off.kvx || 0) + knock.vx;
   off.kvz = (off.kvz || 0) + knock.vz;
   off.hopY = Math.max(off.hopY || 0, 0.14);
@@ -6842,17 +6949,12 @@ function meleePunch() {
     consider(punchReach(x, z, tx, tz, fx, fz), "peer", peer);
   }
 
-  for (const pole of streetProps) {
-    if (pole.down) continue;
-    consider(punchReach(x, z, pole.x, pole.z, fx, fz, 2.05), "pole", pole);
-  }
-
   if (!best) return false;
   if (kind === "cop") return hitOfficer(best, fx, fz, dmg);
-  if (kind === "pole") return knockStreetProp(best, x, z, 8);
   if (kind === "club") {
     const result = houseClub.applyPunch(best, { fx, fz, dmg });
-    if (result === "guardkill") {
+    if (result === "guardhit") toast("the bouncer is pissed");
+    else if (result === "guardkill") {
       toast("bouncer down · cops incoming");
       spawnPolice(bodyPos.x, bodyPos.z);
     } else if (result === "kill") spawnPolice(bodyPos.x, bodyPos.z);
@@ -7477,7 +7579,7 @@ function tickPolice(dt) {
       }
       if (off.hurtT > 0) off.hurtT = Math.max(0, off.hurtT - dt);
       if (off.kvx || off.kvz) {
-        const [kx, kz, nvx, nvz] = stepKnock(off.x, off.z, off.kvx || 0, off.kvz || 0, dt, collideWorld, 0.28);
+        const [kx, kz, nvx, nvz] = stepKnock(off.x, off.z, off.kvx || 0, off.kvz || 0, dt, collideWorldForCop, 0.28);
         off.x = kx;
         off.z = kz;
         off.kvx = nvx;
@@ -7499,7 +7601,7 @@ function tickPolice(dt) {
         if (bdist > 0.32 && (off.hurtT || 0) <= 0.08) {
           let nx = off.x + (bdx / (bdist || 1)) * 3.7 * dt;
           let nz = off.z + (bdz / (bdist || 1)) * 3.7 * dt;
-          [nx, nz] = collideWorld(nx, nz, 0.28);
+          [nx, nz] = collideWorldForCop(nx, nz, 0.28);
           off.x = nx;
           off.z = nz;
         }
@@ -7554,7 +7656,7 @@ function tickPolice(dt) {
         const sdist = Math.hypot(sdx, sdz) || 1;
         let nx = off.x + (sdx / sdist) * 1.55 * dt;
         let nz = off.z + (sdz / sdist) * 1.55 * dt;
-        [nx, nz] = collideWorld(nx, nz, 0.28);
+        [nx, nz] = collideWorldForCop(nx, nz, 0.28);
         off.x = nx;
         off.z = nz;
         off.yaw = Math.atan2(px - off.x, pz - off.z);
@@ -7575,7 +7677,7 @@ function tickPolice(dt) {
         if (dist > 0.8 && (off.hurtT || 0) <= 0.08) {
           let nx = off.x + (dx / (dist || 1)) * 3.28 * dt;
           let nz = off.z + (dz / (dist || 1)) * 3.28 * dt;
-          [nx, nz] = collideWorld(nx, nz, 0.28);
+          [nx, nz] = collideWorldForCop(nx, nz, 0.28);
           off.x = nx;
           off.z = nz;
         }
@@ -7952,7 +8054,6 @@ function updatePlayer(dt) {
   const [nx, nz] = collide(camera.position.x, camera.position.z, 0.28, onGround ? standY : Math.max(feet, standY), !onGround);
   camera.position.x = nx;
   camera.position.z = nz;
-  if (len > 0) knockStreetPropsNear(nx, nz, 0.4, nx, nz, speed);
   const top = climbTopUnder(nx, nz, onGround ? standY : feet, !onGround);
   if (!onGround) {
     const want = eye + top;
@@ -8130,6 +8231,39 @@ function tick() {
     bacDecayFrom = 0;
     bacDecayStart = 0;
     bacHoldUntil = 0;
+  }
+  if (playerHp > 0 && playerHp < PLAYER_HP) {
+    if (tWorld < hpHoldUntil) {
+      hpWait = hpHoldUntil - tWorld;
+      hpRegenT = 0;
+      hpRegenFrom = 0;
+      hpRegenStart = 0;
+    } else {
+      hpWait = 0;
+      if (!hpRegenStart) {
+        hpRegenStart = tWorld;
+        hpRegenFrom = playerHp;
+      }
+      hpRegenT = tWorld - hpRegenStart;
+      const tau = 15;
+      const u = (Math.exp(hpRegenT / tau) - 1) / (Math.exp(BAC_FADE / tau) - 1);
+      const missing = PLAYER_HP - hpRegenFrom;
+      playerHp = Math.min(PLAYER_HP, hpRegenFrom + missing * Math.min(1, u));
+      if (hpRegenT >= BAC_FADE || playerHp >= PLAYER_HP - 0.00005) {
+        playerHp = PLAYER_HP;
+        hpRegenT = 0;
+        hpRegenFrom = 0;
+        hpRegenStart = 0;
+        hpHoldUntil = 0;
+      }
+    }
+  } else if (playerHp >= PLAYER_HP) {
+    playerHp = PLAYER_HP;
+    hpWait = 0;
+    hpRegenT = 0;
+    hpRegenFrom = 0;
+    hpRegenStart = 0;
+    hpHoldUntil = 0;
   }
   if (neonA) neonA.intensity = 3.0 + Math.sin(tWorld * 7) * 0.3 + (Math.random() < 0.015 ? -0.8 : 0);
   if (neonB) neonB.intensity = 1.8 + Math.sin(tWorld * 5 + 1) * 0.2;
