@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=41";
+import { createClub } from "./club.js?v=42";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1188,7 +1188,7 @@ const audio = {
       this.clubAudio = this.clubDecks[0];
       this.clubTrack = track;
       this.clubDeckGains[0]?.gain.setValueAtTime(1, this.ctx?.currentTime || 0);
-      if (this.clubInside) this.startClubDeck(0);
+      this.startClubDeck(0);
       this.prepareClubNext();
       return;
     }
@@ -1543,11 +1543,6 @@ const audio = {
     ) {
       this.prepareClubNext();
       this.beginClubFade(3);
-    }
-    if (!inside && this.clubVol < 0.004) {
-      for (const player of this.clubDecks) {
-        if (!player.paused) player.pause();
-      }
     }
     if (inside && this.clubAudio.paused) this.startClubDeck(this.clubActiveDeck);
   },
