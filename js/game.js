@@ -461,6 +461,14 @@ const CLUB_PLAYLIST = [
   { src: "audio/club/11-mac-miller-the-spins.mp3", title: "Mac Miller — The Spins" },
   { src: "audio/club/12-metro-boomin-superhero.mp3", title: "Metro Boomin & Future — Superhero" },
   { src: "audio/club/13-whethan-lock-it-up.mp3", title: "Whethan — LOCK IT UP" },
+  { src: "audio/club/14-charkas.mp3", title: "Charkas" },
+  { src: "audio/club/15-kanye-west-power.mp3", title: "Kanye West — POWER" },
+  { src: "audio/club/16-chief-keef-hate-bein-sober-flip.mp3", title: "Chief Keef — Hate Bein' Sober (Flip)" },
+  { src: "audio/club/17-jay-z-kanye-west-in-paris.mp3", title: "JAY-Z & Kanye West — In Paris" },
+  { src: "audio/club/18-don-toliver-no-pole.mp3", title: "Don Toliver — No Pole (slowed + reverb)" },
+  { src: "audio/club/19-kanye-west-all-of-the-lights.mp3", title: "Kanye West ft. Rihanna & Kid Cudi — All Of The Lights" },
+  { src: "audio/club/20-new-body.mp3", title: "New Body" },
+  { src: "audio/club/21-kid-cudi-pursuit-of-happiness.mp3", title: "Kid Cudi — Pursuit of Happiness" },
 ];
 
 function makeBottle(drink) {
