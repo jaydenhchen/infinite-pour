@@ -29,6 +29,9 @@ const CLUB_FOG_COLOR = 0x73797d;
 const OUTDOOR_FOG_COLOR = 0x12080c;
 const CLUB_FOG_NEAR = 1.6;
 const CLUB_FOG_FAR = 18;
+const CLOUD_DRIFT_X = 0.66;
+const CLOUD_DRIFT_Z = 0.46;
+const CLOUD_EDGE_PAD = 0.1;
 const laserGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, false);
 const laserAxis = new THREE.Vector3(0, 1, 0);
 const laserRaycaster = new THREE.Raycaster();
@@ -92,6 +95,7 @@ export function createClub(api) {
   const strobes = [];
   const spots = [];
   const lasers = [];
+  let laserRaycastT = 0;
   const laserSurfaces = [];
   const mistMeshes = [];
   const smokeClouds = [];
@@ -482,6 +486,7 @@ export function createClub(api) {
     rig.position.set(x, y, z);
     rig.rotation.y = yaw;
     scene.add(rig);
+    rig.userData.laserIgnore = true;
     if (kind === "dj" || kind === "djf") {
       rig.userData.kind = "clubDj";
       rig.userData.root = rig;
@@ -525,12 +530,6 @@ export function createClub(api) {
       deadT: 0,
       gone: false,
     };
-    rig.userData.clubPerson = person;
-    if (!rig.userData.kind) {
-      rig.userData.kind = "clubPerson";
-      rig.userData.root = rig;
-      registerPick?.(rig);
-    }
     crowd.push(person);
     return person;
   }
@@ -1813,6 +1812,10 @@ export function createClub(api) {
   function flushSkin(p) {
     const u = p.rig.userData;
     const bases = u.flashBase || [];
+    const hurtStep = p.hurtT > 0 ? Math.ceil(p.hurtT * 60) : 0;
+    const state = hurtStep ? 100 + hurtStep : p.mode === "guard" && p.angry ? 2 : 1;
+    if (u.flushState === state) return;
+    u.flushState = state;
     for (const b of bases) b.m.color.setRGB(b.r, b.g, b.b);
     if (p.mode === "guard" && p.angry && u.skin) {
       u.skin.color.setRGB(0.96, 0.4, 0.34);
@@ -1820,7 +1823,7 @@ export function createClub(api) {
       const flush = Math.min(1, p.drunk * 0.7);
       u.skin.color.setRGB(0.91 + flush * 0.08, 0.7 - flush * 0.42, 0.54 - flush * 0.38);
     }
-    if ((p.hurtT || 0) > 0) {
+    if (hurtStep) {
       const a = Math.min(1, p.hurtT / 0.12);
       for (const b of bases) b.m.color.setRGB(1, 0.28 * (1 - a), 0.28 * (1 - a));
       if (u.skin) u.skin.color.setRGB(1, 0.32, 0.32);
@@ -1977,10 +1980,20 @@ export function createClub(api) {
     for (const cloud of smokeClouds) {
       const u = cloud.userData;
       const phase = u.smokePhase || 0;
-      cloud.position.x = u.smokeBaseX + Math.sin(t * 0.09 + phase) * 0.48 + Math.sin(t * 0.047 + phase * 1.7) * 0.18;
-      cloud.position.y = u.smokeBaseY + Math.sin(t * 0.13 + phase * 1.3) * 0.08;
-      cloud.position.z = u.smokeBaseZ + Math.cos(t * 0.075 + phase) * 0.34 + Math.sin(t * 0.052 + phase * 0.8) * 0.12;
-      cloud.rotation.y = t * 0.04 + phase;
+      const driftX = Math.sin(t * 0.09 + phase) * 0.48 + Math.sin(t * 0.047 + phase * 1.7) * 0.18;
+      const driftY = Math.sin(t * 0.13 + phase * 1.3) * 0.08;
+      const driftZ = Math.cos(t * 0.075 + phase) * 0.34 + Math.sin(t * 0.052 + phase * 0.8) * 0.12;
+      cloud.position.x = THREE.MathUtils.clamp(
+        u.smokeBaseX + driftX,
+        CX0 + u.smokeExtentX + CLOUD_DRIFT_X + CLOUD_EDGE_PAD,
+        CX1 - u.smokeExtentX - CLOUD_DRIFT_X - CLOUD_EDGE_PAD
+      );
+      cloud.position.y = THREE.MathUtils.clamp(u.smokeBaseY + driftY, u.smokeMinY, u.smokeMaxY);
+      cloud.position.z = THREE.MathUtils.clamp(
+        u.smokeBaseZ + driftZ,
+        CZ0 + u.smokeExtentZ + CLOUD_DRIFT_Z + CLOUD_EDGE_PAD,
+        CZ1 - u.smokeExtentZ - CLOUD_DRIFT_Z - CLOUD_EDGE_PAD
+      );
     }
     if (scene.fog) {
       if (fogClubMode !== inHere) {
@@ -2041,6 +2054,9 @@ export function createClub(api) {
         s.beam.visible = s.light.intensity > 0.2;
       }
     }
+    laserRaycastT -= dt;
+    const refreshLasers = laserRaycastT <= 0;
+    if (refreshLasers) laserRaycastT = 0.08;
     for (const laser of lasers) {
       const ang = t * 0.52 + laser.phase;
       const tx = 19.0 + Math.cos(ang) * 5.4;
@@ -2048,7 +2064,8 @@ export function createClub(api) {
       const ty = 0.35 + (Math.sin(ang * 0.71) * 0.5 + 0.5) * 2.8;
       laserOrigin.copy(laser.light.position);
       laserDirection.set(tx - laserOrigin.x, ty - laserOrigin.y, tz - laserOrigin.z).normalize();
-      const length = laserLength(laserOrigin, laserDirection);
+      const length = refreshLasers ? laserLength(laserOrigin, laserDirection) : laser.length;
+      laser.length = length;
       laserEnd.copy(laserOrigin).addScaledVector(laserDirection, length);
       laser.light.target.position.copy(laserEnd);
       laser.light.target.updateMatrixWorld?.();
@@ -2276,18 +2293,6 @@ export function createClub(api) {
       });
     const y0 = 0.28;
     const y1 = CLUB_H - 0.08;
-    const layerGeo = new THREE.PlaneGeometry(17.0, 10.8);
-    const layerCount = 20;
-    for (let i = 0; i < layerCount; i++) {
-      const u = layerCount <= 1 ? 0.5 : i / (layerCount - 1);
-      const mist = new THREE.Mesh(layerGeo, fogMat());
-      mist.rotation.x = -Math.PI / 2;
-      mist.position.set(19.0, y0 + (y1 - y0) * u, -0.35);
-      mist.renderOrder = 4;
-      mist.userData.laserIgnore = true;
-      scene.add(mist);
-      mistMeshes.push(mist);
-    }
     const cloudGeo = new THREE.SphereGeometry(1, 14, 8);
     for (let i = 0; i < 28; i++) {
       const mist = new THREE.Mesh(cloudGeo, fogMat());
@@ -2296,10 +2301,26 @@ export function createClub(api) {
         0.18 + hash01(i, 92) * 0.28,
         0.72 + hash01(i, 93) * 1.5
       );
+      mist.userData.smokeExtentX = mist.scale.x;
+      mist.userData.smokeExtentZ = mist.scale.z;
+      mist.userData.smokeMinY = 0.75 + mist.scale.y;
+      mist.userData.smokeMaxY = CLUB_H - 0.2 - mist.scale.y;
       mist.position.set(
-        11.0 + hash01(i, 94) * 16.0,
-        0.45 + hash01(i, 95) * 4.45,
-        -5.35 + hash01(i, 96) * 10.0
+        THREE.MathUtils.clamp(
+          11.0 + hash01(i, 94) * 16.0,
+          CX0 + mist.userData.smokeExtentX + CLOUD_DRIFT_X + CLOUD_EDGE_PAD,
+          CX1 - mist.userData.smokeExtentX - CLOUD_DRIFT_X - CLOUD_EDGE_PAD
+        ),
+        THREE.MathUtils.clamp(
+          1.0 + hash01(i, 95) * 3.5,
+          mist.userData.smokeMinY,
+          mist.userData.smokeMaxY
+        ),
+        THREE.MathUtils.clamp(
+          -5.35 + hash01(i, 96) * 10.0,
+          CZ0 + mist.userData.smokeExtentZ + CLOUD_DRIFT_Z + CLOUD_EDGE_PAD,
+          CZ1 - mist.userData.smokeExtentZ - CLOUD_DRIFT_Z - CLOUD_EDGE_PAD
+        )
       );
       mist.userData.smokeBaseX = mist.position.x;
       mist.userData.smokeBaseY = mist.position.y;

@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=37";
+import { createClub } from "./club.js?v=40";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -71,6 +71,7 @@ const PEE_SECS = 8;
 const ONE_DRINK_BAC = (40 / 40) * (1.5 / 1.2) * 0.028;
 const CUP_STACK_MAX = 5;
 const CUP_NEST = 0.028;
+const CLUB_OUTSIDE_GAIN = 0.08;
 const CLUB_FAR_GAIN = 0.54;
 const CLUB_NEAR_GAIN = 0.74;
 const WORLD_X = 108;
@@ -951,7 +952,7 @@ const audio = {
   clubOrder: [],
   clubCursor: 0,
   clubTrack: null,
-  clubVol: 0,
+  clubVol: CLUB_OUTSIDE_GAIN,
   clubSource: null,
   clubAnalyser: null,
   clubFreq: null,
@@ -977,6 +978,7 @@ const audio = {
     }
     const ctx = new AudioContext();
     this.ctx = ctx;
+    ctx.resume().catch(() => {});
     this.master = ctx.createGain();
     this.master.gain.value = this.muted ? 0 : 1;
     this.master.connect(ctx.destination);
@@ -1007,6 +1009,7 @@ const audio = {
       const player = new Audio();
       player.preload = "auto";
       player.volume = 1;
+      player.muted = false;
       player.addEventListener("ended", () => this.clubDeckEnded(index));
       player.addEventListener("error", () => this.clubDeckError(index));
       return player;
@@ -1023,7 +1026,7 @@ const audio = {
     this.clubAnalyser.smoothingTimeConstant = 0.78;
     this.clubFreq = new Uint8Array(this.clubAnalyser.frequencyBinCount);
     this.clubGain = this.ctx.createGain();
-    this.clubGain.gain.value = 0;
+    this.clubGain.gain.value = CLUB_OUTSIDE_GAIN;
     this.clubDistort = this.ctx.createWaveShaper();
     this.clubDistort.oversample = "2x";
     this.clubDistort.curve = null;
@@ -1515,7 +1518,7 @@ const audio = {
     if (this.clubFade && now >= this.clubFade.end) this.finishClubFade();
     const inside = Number.isFinite(proximity) && proximity >= 0;
     const near = inside ? THREE.MathUtils.clamp(proximity, 0, 1) : 0;
-    const target = inside ? CLUB_FAR_GAIN + near * (CLUB_NEAR_GAIN - CLUB_FAR_GAIN) : 0;
+    const target = inside ? CLUB_FAR_GAIN + near * (CLUB_NEAR_GAIN - CLUB_FAR_GAIN) : CLUB_OUTSIDE_GAIN;
     this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
     if (this.clubGain && this.ctx) {
       this.clubGain.gain.setTargetAtTime(this.clubVol, now, 0.045);
@@ -1601,6 +1604,8 @@ camera.position.set(0, EYE, -1.05);
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 renderer.shadowMap.type = THREE.BasicShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.28;
@@ -1646,6 +1651,7 @@ let resultIndex = 0;
 let results = [];
 let passedOut = false;
 let tWorld = 0;
+let shadowRefreshT = 0;
 let mouseDown = false;
 let fridgeOpen = false;
 const toilets = [];
@@ -7199,7 +7205,7 @@ function hitOfficer(off, fx, fz, dmg) {
   return true;
 }
 
-function meleePunch(target = null) {
+function meleePunch() {
   if (inCar) return false;
   const { fx, fz } = punchAim();
   const x = bodyPos.x;
@@ -7225,16 +7231,6 @@ function meleePunch(target = null) {
     }
   }
 
-  const lookedAtClubPerson = target?.userData?.clubPerson;
-  if (lookedAtClubPerson && !lookedAtClubPerson.dead && !lookedAtClubPerson.gone) {
-    const dx = lookedAtClubPerson.x - x;
-    const dz = lookedAtClubPerson.z - z;
-    const dist = Math.hypot(dx, dz);
-    const along = dist > 0.001 ? (dx * fx + dz * fz) / dist : 0;
-    if (dist >= 0.12 && dist < bestDist && along >= 0.18 && !punchBlocked(x, z, lookedAtClubPerson.x, lookedAtClubPerson.z)) {
-      consider(dist, "club", lookedAtClubPerson);
-    }
-  }
   const club = houseClub?.punchPick?.({ fx, fz });
   if (club && !punchBlocked(x, z, club.person.x, club.person.z)) {
     consider(club.dist, "club", club.person);
@@ -8619,6 +8615,11 @@ function tick() {
   applyDrunkLook();
   if (localPeer) updateLocalAvatar(dt);
   tickHeartbeat(dt);
+  shadowRefreshT -= dt;
+  if (shadowRefreshT <= 0) {
+    shadowRefreshT = 1 / 30;
+    renderer.shadowMap.needsUpdate = true;
+  }
   hud();
   renderer.render(scene, camera);
   renderDoubleVision();
@@ -8698,7 +8699,7 @@ function bind() {
       }
       audio.punch();
       pokePose();
-      if (meleePunch(look)) audio.hit();
+      if (meleePunch()) audio.hit();
     }
     if (playing() && look && look !== held) {
       if (look.userData.kind === "bottle") {
