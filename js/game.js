@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=28";
+import { createClub } from "./club.js?v=29";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -61,7 +61,7 @@ function eyeY() {
 const WELL_Z = -2.22;
 const SHELF_Z = -3.62;
 const PASS_OUT = 2.6;
-const DRUNK_VIS = 0.3;
+const DRUNK_VIS = 0.42;
 const DRUNK_MAX = 6.25;
 const HEART_START = 0.7;
 const BAC_HOLD = 30;
@@ -447,6 +447,21 @@ const unitCyl12 = new THREE.CylinderGeometry(1, 1, 1, 12);
 const unitCyl6 = new THREE.CylinderGeometry(1, 1, 1, 6);
 const smokeGeo = new THREE.SphereGeometry(0.2, 6, 5);
 const DRIFT_SMOKE_COLOR = 0x4d535c;
+const CLUB_PLAYLIST = [
+  { src: "audio/club/01-cherub-doses-and-mimosas.mp3", title: "Cherub — Doses & Mimosas" },
+  { src: "audio/club/02-cochise-tell-em.mp3", title: "Cochise — Tell Em" },
+  { src: "audio/club/03-don-toliver-bandit.mp3", title: "Don Toliver — BANDIT" },
+  { src: "audio/club/04-dua-lipa-levitating.mp3", title: "Dua Lipa — Levitating" },
+  { src: "audio/club/05-flashing-lights-ascend.mp3", title: "Flashing Lights — but you will ascend" },
+  { src: "audio/club/06-far-east-movement-like-a-g6.mp3", title: "Far East Movement — Like a G6" },
+  { src: "audio/club/07-future-metro-boomin-like-that.mp3", title: "Future, Metro Boomin & Kendrick Lamar — Like That" },
+  { src: "audio/club/08-kanye-west-i-dont-like.mp3", title: "Kanye West — I Don't Like" },
+  { src: "audio/club/09-kanye-west-jail.mp3", title: "Kanye West — Jail" },
+  { src: "audio/club/10-kanye-west-mercy.mp3", title: "Kanye West — Mercy" },
+  { src: "audio/club/11-mac-miller-the-spins.mp3", title: "Mac Miller — The Spins" },
+  { src: "audio/club/12-metro-boomin-superhero.mp3", title: "Metro Boomin & Future — Superhero" },
+  { src: "audio/club/13-whethan-lock-it-up.mp3", title: "Whethan — LOCK IT UP" },
+];
 
 function makeBottle(drink) {
   const g = new THREE.Group();
@@ -922,9 +937,15 @@ const audio = {
   juke: false,
   jukeNodes: [],
   jukeVol: 0,
+  clubAudio: null,
+  clubOrder: [],
+  clubCursor: 0,
+  clubTrack: null,
+  clubVol: 0,
   boot() {
     if (this.ctx) {
       if (this.ctx.state === "suspended") this.ctx.resume();
+      this.ensureClubAudio();
       return;
     }
     const ctx = new AudioContext();
@@ -948,6 +969,45 @@ const audio = {
     f.connect(g);
     g.connect(ctx.destination);
     src.start();
+    this.ensureClubAudio();
+  },
+  ensureClubAudio() {
+    if (this.clubAudio || !CLUB_PLAYLIST.length) return;
+    const player = new Audio();
+    player.preload = "auto";
+    player.volume = 0;
+    player.addEventListener("ended", () => this.nextClubTrack());
+    player.addEventListener("error", () => this.nextClubTrack());
+    this.clubAudio = player;
+    this.shuffleClub();
+    this.nextClubTrack();
+  },
+  shuffleClub() {
+    this.clubOrder = CLUB_PLAYLIST.map((_, i) => i);
+    for (let i = this.clubOrder.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [this.clubOrder[i], this.clubOrder[j]] = [this.clubOrder[j], this.clubOrder[i]];
+    }
+    this.clubCursor = 0;
+  },
+  nextClubTrack() {
+    if (!this.clubAudio || !this.clubOrder.length) return;
+    if (this.clubCursor >= this.clubOrder.length) this.shuffleClub();
+    const track = CLUB_PLAYLIST[this.clubOrder[this.clubCursor++]];
+    this.clubTrack = track;
+    this.clubAudio.src = track.src;
+    this.clubAudio.load();
+    const play = this.clubAudio.play();
+    play?.catch?.(() => {});
+  },
+  skipClubTrack() {
+    if (!this.clubAudio) return false;
+    this.clubAudio.pause();
+    this.nextClubTrack();
+    return true;
+  },
+  clubPrompt() {
+    return this.clubTrack ? `DJ · ${this.clubTrack.title} · E skip song` : "DJ · E skip song";
   },
   beep(freq, dur, type = "square", vol = 0.06) {
     if (!this.ctx) return;
@@ -1242,21 +1302,14 @@ const audio = {
     this.siren = null;
   },
   clubTick(dt, vol) {
-    if (!this.ctx || vol < 0.02) {
-      this.club = null;
-      return;
+    if (!this.clubAudio) return;
+    const target = vol >= 0.02 ? THREE.MathUtils.clamp(vol, 0, 1) * 0.46 : 0;
+    this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
+    this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
+    if (target > 0.02 && this.clubAudio.paused) {
+      const play = this.clubAudio.play();
+      play?.catch?.(() => {});
     }
-    if (!this.club) this.club = { t: 0 };
-    this.club.t += dt;
-    const step = 0.27;
-    const prev = (this.club.t - dt) / step;
-    const now = this.club.t / step;
-    if ((now | 0) === (prev | 0)) return;
-    const n = now | 0;
-    if (n % 2 === 0) this.beep(52, 0.08, "sine", 0.045 * vol);
-    if (n % 4 === 2) this.burst(0.055, 0.035, 1900, "highpass", 0.28);
-    if (n % 8 === 4) this.beep(196, 0.08, "square", 0.016 * vol);
-    if (n % 8 === 0) this.beep(98, 0.11, "sawtooth", 0.018 * vol);
   },
   pourStart() {
     if (!this.ctx || this.pourOsc) return;
@@ -1328,7 +1381,7 @@ const ndc = new THREE.Vector2(0, 0);
 const _pickOrigin = new THREE.Vector3();
 const _pickDir = new THREE.Vector3();
 const _pickWorld = new THREE.Vector3();
-const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "clubChair", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "clubDoor", "darts", "cupstack", "baton"]);
+const NEAR_USE = new Set(["door", "register", "hatch", "sink", "bathSink", "juke", "stool", "clubChair", "clubDj", "car", "tap", "toilet", "urinal", "stallDoor", "restroomDoor", "clubDoor", "darts", "cupstack", "baton"]);
 const solids = [];
 const pickables = [];
 const bottles = [];
@@ -4873,8 +4926,8 @@ function hud() {
     $("heldMeta").textContent = "E grab a cup from the right stacks · Y summon · T chat";
   }
   const d = drunkLevel();
-  $("vignette").style.filter = `hue-rotate(${Math.min(180, d * 40)}deg) saturate(${1 + Math.min(4, d)})`;
-  $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(6, 50 - d * 12)}%, rgba(${Math.min(220, 40 + d * 40)}, 8, 20, ${Math.min(0.92, 0.45 + d * 0.12)}) 100%)`;
+  $("vignette").style.filter = `hue-rotate(${Math.min(50, d * 10)}deg) saturate(${1 + Math.min(1.6, d * 0.32)})`;
+  $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(20, 50 - d * 6)}%, rgba(${Math.min(180, 40 + d * 22)}, 8, 20, ${Math.min(0.64, 0.32 + d * 0.05)}) 100%)`;
   $("lookHint").classList.toggle("show", started && !controls.isLocked && !summonOpen && !chatOpen && !passedOut);
   const list = $("onlineList");
   if (list) {
@@ -5004,6 +5057,7 @@ function promptFrom(obj) {
   if (k === "urinal") return localGender === "f" ? "girls sit on the toilet" : "P to pee";
   if (k === "restroomDoor") return lookDoorOpen(obj) ? "E close the restroom door" : "E open the restroom door";
   if (k === "clubDoor") return houseClub?.prompt(obj) || (lookDoorOpen(obj) ? "E close the club door" : "E open the club");
+  if (k === "clubDj") return houseClub?.prompt(obj) || audio.clubPrompt();
   if (k === "clubChair") return houseClub?.prompt(obj) || (obj.userData.sitter && obj.userData.sitter !== "player" ? "E kick them out of the chair" : "E sit and watch the floor");
   if (k === "stallDoor") return lookDoorOpen(obj) ? "E close the stall" : "E open the stall";
   if (k === "register" || k === "hatch") return "E / Y  summon any drink";
@@ -5097,10 +5151,10 @@ function nearbyUse() {
     const dx = _pickWorld.x - bodyPos.x;
     const dz = _pickWorld.z - bodyPos.z;
     const dist = Math.hypot(dx, dz);
-    const max = kind === "car" ? 3.6 : kind === "door" || kind === "restroomDoor" || kind === "stallDoor" || kind === "clubDoor" ? 2.8 : reach;
+    const max = kind === "car" ? 3.6 : kind === "door" || kind === "restroomDoor" || kind === "stallDoor" || kind === "clubDoor" || kind === "clubDj" ? 2.8 : reach;
     if (dist > max) continue;
     const forward = dist < 0.15 ? 1 : (dx * fx + dz * fz) / dist;
-    if (kind !== "door" && kind !== "car" && kind !== "stool" && kind !== "clubChair" && kind !== "restroomDoor" && kind !== "stallDoor" && kind !== "clubDoor" && kind !== "toilet" && kind !== "urinal" && kind !== "bathSink" && kind !== "darts" && forward < -0.25) continue;
+    if (kind !== "door" && kind !== "car" && kind !== "stool" && kind !== "clubChair" && kind !== "restroomDoor" && kind !== "stallDoor" && kind !== "clubDoor" && kind !== "clubDj" && kind !== "toilet" && kind !== "urinal" && kind !== "bathSink" && kind !== "darts" && forward < -0.25) continue;
     const score = dist - Math.max(0, forward) * 0.9 - (kind === "door" ? 0.4 : 0);
     if (!best || score < best.score) best = { root, distance: dist, point: _pickWorld.clone(), score };
   }
@@ -5512,7 +5566,7 @@ function drunkTypeChar(ch) {
   const d = drunkLevel();
   if (d < 0.1) return ch;
   if (!/[a-zA-Z0-9 ]/.test(ch)) return ch;
-  const chance = THREE.MathUtils.clamp((d - 0.1) / 2.05, 0, 0.82);
+  const chance = THREE.MathUtils.clamp((d - 0.18) / 3.1, 0, 0.34);
   if (Math.random() >= chance) return ch;
   if (ch === " ") {
     if (Math.random() < 0.48) return "";
@@ -6162,12 +6216,12 @@ function setView(mode) {
 
 function applyDrunkCam(dt, extra = 0) {
   const drunk = Math.max(0, drunkLevel());
-  const amp = drunk;
+  const amp = Math.min(1.8, drunk * 0.34);
   shakePhase += dt * 1.05;
   const moving = sitting == null && inCar == null && onGround && (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD);
   if (moving) shakeWalk += dt * 5.2;
   const zoom = zoomHold;
-  const feel = zoom ? 1.2 : 1;
+  const feel = zoom ? 1.08 : 1;
   if (inCar || amp < 0.03) {
     drunkCam.yaw = 0;
     drunkCam.pit = 0;
@@ -6178,7 +6232,7 @@ function applyDrunkCam(dt, extra = 0) {
     drunkCam.roll = (Math.sin(shakePhase) * 0.2 + Math.sin(shakeWalk) * 0.055 * (moving ? 1 : 0.1)) * amp * feel + extra;
   }
   const base = zoom ? 22 : 78 + extra * 8;
-  const pulse = amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * (zoom ? 1.8 : 4.2) * amp;
+  const pulse = amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * (zoom ? 1.1 : 2.2) * amp;
   camera.fov = base + pulse + heartKick * (zoom ? 6 : 16);
   camera.updateProjectionMatrix();
 }
@@ -6219,7 +6273,7 @@ function ensureGhost(w, h) {
     const mat = new THREE.MeshBasicMaterial({
       map: ghostRT.texture,
       transparent: true,
-      opacity: 0.32,
+      opacity: 0.16,
       depthTest: false,
       depthWrite: false,
       toneMapped: false,
@@ -6234,8 +6288,8 @@ function ensureGhost(w, h) {
 
 function renderDoubleVision() {
   const d = drunkLevel();
-  if (d < 0.28 || passedOut || inCar) return;
-  const amt = THREE.MathUtils.clamp((d - 0.28) / 2.55, 0, 1);
+  if (d < 0.72 || passedOut || inCar) return;
+  const amt = THREE.MathUtils.clamp((d - 0.72) / 3.6, 0, 1);
   const w = renderer.domElement.width;
   const h = renderer.domElement.height;
   if (w < 8 || h < 8) return;
@@ -6246,21 +6300,21 @@ function renderDoubleVision() {
   _ghostEuler.copy(camera.rotation);
   _ghostPos.copy(camera.position);
   camera.rotation.order = "YXZ";
-  camera.rotation.y += drunkCam.yaw * (1.7 + amt * 2.3) + ghostFollow.yaw * (1.8 + amt * 1.1);
-  camera.rotation.x += drunkCam.pit * (1.7 + amt * 2.1) + ghostFollow.pit * (1.7 + amt * 0.9);
-  camera.rotation.z += drunkCam.roll * (1.1 + amt * 1.4) + ghostFollow.roll * (1.2 + amt * 0.8);
+  camera.rotation.y += drunkCam.yaw * (1.05 + amt * 0.65) + ghostFollow.yaw * (0.95 + amt * 0.5);
+  camera.rotation.x += drunkCam.pit * (1.05 + amt * 0.6) + ghostFollow.pit * (0.95 + amt * 0.45);
+  camera.rotation.z += drunkCam.roll * (0.85 + amt * 0.45) + ghostFollow.roll * (0.95 + amt * 0.5);
   camera.quaternion.setFromEuler(camera.rotation);
   camera.updateMatrixWorld();
   _ghostRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-  camera.position.addScaledVector(_ghostRight, (0.18 + amt * 0.58) * (drunkCam.yaw >= 0 ? 1 : -1));
-  camera.position.y += amt * 0.12;
+  camera.position.addScaledVector(_ghostRight, (0.08 + amt * 0.24) * (drunkCam.yaw >= 0 ? 1 : -1));
+  camera.position.y += amt * 0.06;
   renderer.setRenderTarget(ghostRT);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
   camera.rotation.copy(_ghostEuler);
   camera.position.copy(_ghostPos);
-  ghostQuad.material.opacity = 0.58 + amt * 0.36;
-  ghostQuad.material.color.setHex(0xffb0ff);
+  ghostQuad.material.opacity = 0.08 + amt * 0.16;
+  ghostQuad.material.color.setHex(0xffd8f4);
   renderer.autoClear = false;
   renderer.render(ghostScene, ghostCam);
   renderer.autoClear = true;
@@ -8590,6 +8644,10 @@ function bind() {
       if (houseGames?.use(look) || houseGames?.use(null)) return;
       if (houseGames?.playing?.()) {
         houseGames.leave();
+        return;
+      }
+      if (look?.userData?.kind === "clubDj") {
+        if (audio.skipClubTrack()) toast(`DJ skipped · ${audio.clubTrack?.title || "next track"}`);
         return;
       }
       if (look && (look.userData.kind === "restroomDoor" || look.userData.kind === "stallDoor" || look.userData.kind === "clubDoor")) {
