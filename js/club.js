@@ -449,6 +449,11 @@ export function createClub(api) {
     rig.position.set(x, y, z);
     rig.rotation.y = yaw;
     scene.add(rig);
+    if (kind === "dj" || kind === "djf") {
+      rig.userData.kind = "clubDj";
+      rig.userData.root = rig;
+      registerPick?.(rig);
+    }
     const person = {
       rig,
       x,
@@ -1265,7 +1270,6 @@ export function createClub(api) {
 
     sign("AFTER HOURS", 0xff3dac, 4.8, 0.72, frontDoorX, 3.58, CZ1 + 0.14);
     sign("PULSE", 0x3dfff2, 2.2, 0.4, frontDoorX, 2.96, CZ1 + 0.14);
-    sign("VIP", 0xff3dac, 1.1, 0.28, 24.4, BALC_Y + 1.15, 0.2, Math.PI / 2);
     addLedScreen(2.5, 1.1, 10.34, 3.58, 3.55, Math.PI / 2);
     addLedScreen(2.5, 1.1, 27.7, 3.88, 3.2, -Math.PI / 2);
     addLedScreen(4.2, 0.8, frontDoorX, 4.18, CZ1 - 0.14, Math.PI);
@@ -2061,6 +2065,9 @@ export function createClub(api) {
   }
 
   function prompt(obj) {
+    if (obj?.userData?.kind === "clubDj") {
+      return audio?.clubPrompt?.() || "E skip club song";
+    }
     if (obj?.userData?.kind === "clubDoor") {
       return Math.abs(obj.userData.ang || 0) > 0.45 ? "E close the club door" : "E open the club";
     }
