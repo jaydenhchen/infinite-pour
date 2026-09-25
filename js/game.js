@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=139";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=45";
+import { createClub } from "./club.js?v=48";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -76,6 +76,7 @@ const CLUB_FAR_GAIN = 0.95;
 const CLUB_NEAR_GAIN = 1.16;
 const CLUB_FAR_DRIVE = 0.7;
 const CLUB_NEAR_DRIVE = 1;
+const DOUBLE_VISION_SCALE = 0.72;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -964,6 +965,10 @@ const audio = {
   clubDrive: -1,
   clubDryGain: null,
   clubWetGain: null,
+  clubHighpass: null,
+  clubBass: null,
+  clubPresence: null,
+  clubCompressor: null,
   clubDecks: [],
   clubDeckSources: [],
   clubDeckGains: [],
@@ -1036,11 +1041,30 @@ const audio = {
     this.clubDryGain.gain.value = 0.36;
     this.clubWetGain = this.ctx.createGain();
     this.clubWetGain.gain.value = 0.82;
+    this.clubHighpass = this.ctx.createBiquadFilter();
+    this.clubHighpass.type = "highpass";
+    this.clubHighpass.frequency.value = 32;
+    this.clubHighpass.Q.value = 0.7;
+    this.clubBass = this.ctx.createBiquadFilter();
+    this.clubBass.type = "lowshelf";
+    this.clubBass.frequency.value = 120;
+    this.clubBass.gain.value = 0;
+    this.clubPresence = this.ctx.createBiquadFilter();
+    this.clubPresence.type = "peaking";
+    this.clubPresence.frequency.value = 2600;
+    this.clubPresence.Q.value = 0.8;
+    this.clubPresence.gain.value = 0;
+    this.clubCompressor = this.ctx.createDynamicsCompressor();
+    this.clubCompressor.threshold.value = -9;
+    this.clubCompressor.knee.value = 10;
+    this.clubCompressor.ratio.value = 5;
+    this.clubCompressor.attack.value = 0.003;
+    this.clubCompressor.release.value = 0.16;
     this.clubDistort = this.ctx.createWaveShaper();
     this.clubDistort.oversample = "2x";
     this.clubDistort.curve = null;
     this.clubDelay = this.ctx.createDelay(1);
-    this.clubDelay.delayTime.value = 0.22;
+    this.clubDelay.delayTime.value = 0.14;
     this.clubEchoGain = this.ctx.createGain();
     this.clubEchoGain.gain.value = 0;
     this.clubEchoFeedback = this.ctx.createGain();
@@ -1058,11 +1082,15 @@ const audio = {
       this.clubDeckGains.push(deckGain);
     }
     this.clubSource = this.clubDeckSources[0];
-    this.clubAnalyser.connect(this.clubDryGain);
-    this.clubDryGain.connect(this.clubGain);
-    this.clubAnalyser.connect(this.clubDistort);
+    this.clubAnalyser.connect(this.clubHighpass);
+    this.clubHighpass.connect(this.clubBass);
+    this.clubBass.connect(this.clubPresence);
+    this.clubPresence.connect(this.clubDryGain);
+    this.clubDryGain.connect(this.clubCompressor);
+    this.clubPresence.connect(this.clubDistort);
     this.clubDistort.connect(this.clubWetGain);
-    this.clubWetGain.connect(this.clubGain);
+    this.clubWetGain.connect(this.clubCompressor);
+    this.clubCompressor.connect(this.clubGain);
     this.clubGain.connect(this.master || this.ctx.destination);
     this.clubGain.connect(this.clubDelay);
     this.clubDelay.connect(this.clubEchoGain);
@@ -1085,7 +1113,7 @@ const audio = {
 
   setClubDrive(drive) {
     if (!this.clubDistort) return;
-    const level = Math.round(THREE.MathUtils.clamp(drive, 0, 1) * 20) / 20;
+    const level = Math.round(THREE.MathUtils.clamp(drive, 0, 1.45) * 20) / 20;
     if (Math.abs(level - this.clubDrive) < 0.05) return;
     this.clubDrive = level;
     this.clubDistort.curve = level < 0.05 ? null : this.clubCurve(level);
@@ -1093,8 +1121,10 @@ const audio = {
 
   shuffleClub() {
     this.clubOrder = CLUB_PLAYLIST.map((_, i) => i);
+    let seed = 0x51f15e;
     for (let i = this.clubOrder.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const j = seed % (i + 1);
       [this.clubOrder[i], this.clubOrder[j]] = [this.clubOrder[j], this.clubOrder[i]];
     }
     this.clubCursor = 0;
@@ -1102,6 +1132,57 @@ const audio = {
   takeClubTrack() {
     if (this.clubCursor >= this.clubOrder.length) this.shuffleClub();
     return CLUB_PLAYLIST[this.clubOrder[this.clubCursor++]];
+  },
+  clubTrackIndex(track) {
+    return track ? CLUB_PLAYLIST.findIndex((candidate) => candidate.src === track.src) : -1;
+  },
+  alignClubCursor(index) {
+    const orderIndex = this.clubOrder.indexOf(Number(index));
+    if (orderIndex >= 0) this.clubCursor = orderIndex + 1;
+  },
+  seekClubDeck(index, seconds) {
+    const player = this.clubDecks[index];
+    if (!player) return;
+    const seek = () => {
+      const max = Number.isFinite(player.duration) ? Math.max(0, player.duration - 0.25) : Number(seconds) || 0;
+      try {
+        player.currentTime = THREE.MathUtils.clamp(Number(seconds) || 0, 0, max);
+      } catch {
+        /* media metadata is not ready */
+      }
+    };
+    if (player.readyState >= 1) seek();
+    else player.addEventListener("loadedmetadata", seek, { once: true });
+  },
+  clubPlaybackState() {
+    const deck = this.clubFade ? this.clubFade.to : this.clubActiveDeck;
+    const track = this.clubDeckTracks[deck];
+    const index = this.clubTrackIndex(track);
+    if (index < 0) return null;
+    return {
+      i: index,
+      p: Math.round((Number(this.clubDecks[deck]?.currentTime) || 0) * 100) / 100,
+    };
+  },
+  syncClubPlayback(index, seconds, fadeSeconds = 3) {
+    const trackIndex = Number(index) | 0;
+    const track = CLUB_PLAYLIST[trackIndex];
+    if (!track) return false;
+    const currentDeck = this.clubFade ? this.clubFade.to : this.clubActiveDeck;
+    if (this.clubTrackIndex(this.clubDeckTracks[currentDeck]) === trackIndex) {
+      const player = this.clubDecks[currentDeck];
+      const target = Math.max(0, Number(seconds) || 0);
+      if (Math.abs((Number(player?.currentTime) || 0) - target) > 0.45) this.seekClubDeck(currentDeck, target);
+      this.alignClubCursor(trackIndex);
+      this.startClubDeck(currentDeck);
+      return true;
+    }
+    if (this.clubFade) return false;
+    const next = 1 - this.clubActiveDeck;
+    this.loadClubDeck(next, track);
+    this.seekClubDeck(next, seconds);
+    this.alignClubCursor(trackIndex);
+    return this.beginClubFade(fadeSeconds);
   },
   loadClubDeck(index, track) {
     const player = this.clubDecks[index];
@@ -1143,11 +1224,11 @@ const audio = {
     });
   },
   beginClubFade(duration = 3) {
-    if (this.clubFade || !this.clubDecks.length) return;
+    if (this.clubFade || !this.clubDecks.length) return false;
     this.prepareClubNext();
     const from = this.clubActiveDeck;
     const to = 1 - from;
-    if (!this.clubDeckTracks[to]) return;
+    if (!this.clubDeckTracks[to]) return false;
     const fadeSeconds = Math.max(0.02, Number(duration) || 3);
     const now = this.ctx?.currentTime || 0;
     const fromGain = this.clubDeckGains[from];
@@ -1165,6 +1246,7 @@ const audio = {
     }
     this.startClubDeck(to);
     this.clubFade = { from, to, end: now + fadeSeconds };
+    return true;
   },
   finishClubFade() {
     const fade = this.clubFade;
@@ -1212,27 +1294,7 @@ const audio = {
   skipClubTrack() {
     if (!this.clubAudio) return false;
     this.prepareClubNext();
-    const from = this.clubActiveDeck;
-    const to = 1 - from;
-    if (!this.clubDeckTracks[to]) return false;
-    const old = this.clubDecks[from];
-    old.__clubPlayRequested = false;
-    old.__clubPlayPending = false;
-    old.pause();
-    old.currentTime = 0;
-    this.clubDeckTracks[from] = null;
-    const now = this.ctx?.currentTime || 0;
-    this.clubDeckGains[from]?.gain.cancelScheduledValues(now);
-    this.clubDeckGains[from]?.gain.setValueAtTime(0, now);
-    this.clubDeckGains[to]?.gain.cancelScheduledValues(now);
-    this.clubDeckGains[to]?.gain.setValueAtTime(1, now);
-    this.clubActiveDeck = to;
-    this.clubAudio = this.clubDecks[to];
-    this.clubTrack = this.clubDeckTracks[to];
-    this.clubFade = null;
-    this.startClubDeck(to);
-    this.prepareClubNext();
-    return true;
+    return this.beginClubFade(3);
   },
   clubPrompt() {
     return this.clubTrack ? `DJ · ${this.clubTrack.title} · E skip song` : "DJ · E skip song";
@@ -1541,15 +1603,19 @@ const audio = {
     if (this.clubGain && this.ctx) {
       this.clubGain.gain.setTargetAtTime(this.clubVol, now, 0.045);
       const drunkMix = inside ? THREE.MathUtils.clamp((Number(drunk) || 0) / 2.4, 0, 1) : 0;
-      this.clubEchoGain?.gain.setTargetAtTime(drunkMix * 0.26, now, 0.12);
-      this.clubEchoFeedback?.gain.setTargetAtTime(drunkMix * 0.22, now, 0.12);
+      this.clubBass?.gain.setTargetAtTime(inside ? 5 + near * 3 : 0, now, 0.1);
+      this.clubPresence?.gain.setTargetAtTime(inside ? 1.5 + near * 1.5 : 0, now, 0.1);
+      this.clubDelay?.delayTime.setTargetAtTime(inside ? 0.12 + drunkMix * 0.12 : 0.14, now, 0.16);
+      this.clubEchoGain?.gain.setTargetAtTime(inside ? 0.08 + drunkMix * 0.32 : 0, now, 0.12);
+      this.clubEchoFeedback?.gain.setTargetAtTime(inside ? 0.1 + drunkMix * 0.28 : 0, now, 0.12);
     } else {
       this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
     }
-    this.setClubDrive(inside ? CLUB_FAR_DRIVE + near * (CLUB_NEAR_DRIVE - CLUB_FAR_DRIVE) : 0);
+    this.setClubDrive(
+      inside ? CLUB_FAR_DRIVE + near * (CLUB_NEAR_DRIVE - CLUB_FAR_DRIVE) + THREE.MathUtils.clamp((Number(drunk) || 0) / 2.4, 0, 1) * 0.45 : 0
+    );
     const duration = this.clubAudio.duration;
     if (
-      inside &&
       !this.clubFade &&
       Number.isFinite(duration) &&
       duration > 3.2 &&
@@ -1721,6 +1787,11 @@ const remotePacks = new Map();
 let lastCopKey = "";
 let copNetAcc = 0;
 let copNetHeartbeat = 0;
+let sharedHostId = "";
+let npcNetAcc = 0;
+let npcFullAcc = 999;
+let clubMusicAcc = 999;
+const npcLastState = new Map();
 const cars = [];
 const worldSolids = [];
 const carBlocks = [];
@@ -1758,6 +1829,7 @@ let shakeWalk = 0;
 let localGender = "m";
 let heartT = 0;
 let heartKick = 0;
+let hudDrunkStep = -1;
 const cops = [];
 let wanted = false;
 let wantedT = 0;
@@ -2013,9 +2085,7 @@ function tickHeartbeat(dt) {
   heartKick = Math.max(0, heartKick - dt * 3.2);
   const beat = Math.max(heartPulse(p1, 0, 0.14), heartPulse(p1, 0.2, 0.12) * 0.72);
   const dark = Math.min(0.96, 0.2 + str * 0.46 + beat * (0.32 + str * 0.38));
-  const hole = Math.max(6, 64 - str * 30 - beat * (12 + str * 18));
-  el.style.opacity = "1";
-  el.style.background = `radial-gradient(ellipse at center, transparent ${hole.toFixed(1)}%, rgba(0,0,0,${dark.toFixed(3)}) 100%)`;
+  el.style.opacity = dark.toFixed(3);
 }
 
 function insideBar(x, z) {
@@ -2972,7 +3042,6 @@ function buildWorld() {
     makeBottle,
     makeGlassMesh,
     randomDrink,
-    trackLooseGlass,
     collideWorld: collideWorldForCop,
     makeBatonMesh,
     seatBatonOnArm,
@@ -5212,9 +5281,13 @@ function hud() {
     $("heldMeta").textContent = "E grab a cup from the right stacks · Y summon · T chat";
   }
   const d = drunkLevel();
-  const vignetteRgb = drunkVignetteRgb(d);
-  $("vignette").style.filter = `saturate(${1 + Math.min(2.1, d * 0.42)})`;
-  $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(20, 50 - d * 6)}%, rgba(${vignetteRgb}, ${Math.min(0.7, 0.3 + d * 0.065)}) 100%)`;
+  const visualStep = Math.round(d * 40) / 40;
+  if (visualStep !== hudDrunkStep) {
+    hudDrunkStep = visualStep;
+    const vignetteRgb = drunkVignetteRgb(visualStep);
+    $("vignette").style.filter = `saturate(${1 + Math.min(2.1, visualStep * 0.42)})`;
+    $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(20, 50 - visualStep * 6)}%, rgba(${vignetteRgb}, ${Math.min(0.7, 0.3 + visualStep * 0.065)}) 100%)`;
+  }
   const list = $("onlineList");
   const online = $("online");
   if (online) online.classList.toggle("show", tabHeld);
@@ -6204,6 +6277,30 @@ function startShift() {
       catchPeeInCup(Number(msg.a) || 0.03);
       return;
     }
+    if (msg?.t === "clubSkip") {
+      if (isRoomAuthority() && msg.from !== localId()) commitClubSkip();
+      return;
+    }
+    if (msg?.t === "clubMusic") {
+      applyClubMusic(msg);
+      return;
+    }
+    if (msg?.t === "npcs") {
+      if (msg.from !== localId() && String(msg.from || "") === roomAuthorityId()) {
+        houseClub?.applyNpcSnapshot(msg.p, !!msg.f);
+      }
+      return;
+    }
+    if (msg?.t === "npcHit") {
+      if (msg.from !== localId()) {
+        houseClub?.applyNetworkPunch(msg.i, {
+          fx: Number(msg.fx) || 0,
+          fz: Number(msg.fz) || 0,
+          dmg: Number(msg.d) || 1,
+        });
+      }
+      return;
+    }
     if (msg?.t === "cops") {
       applyRemoteCops(msg);
       return;
@@ -6482,15 +6579,17 @@ function renderDoubleVision() {
   const d = drunkLevel();
   if (d < 0.72 || passedOut || inCar) return false;
   const amt = THREE.MathUtils.clamp((d - 0.72) / 3.6, 0, 1);
-  const w = renderer.domElement.width;
-  const h = renderer.domElement.height;
-  if (w < 8 || h < 8) return false;
+  const displayW = renderer.domElement.width;
+  const displayH = renderer.domElement.height;
+  if (displayW < 8 || displayH < 8) return false;
+  const w = Math.max(8, Math.floor(displayW * DOUBLE_VISION_SCALE));
+  const h = Math.max(8, Math.floor(displayH * DOUBLE_VISION_SCALE));
   ensureGhost(w, h);
   renderer.setRenderTarget(ghostRT);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
-  const side = drunkCam.yaw >= 0 ? 1 : -1;
-  ghostQuad.position.set(side * (0.018 + amt * 0.065), amt * 0.012, 0);
+  const sway = THREE.MathUtils.clamp(drunkCam.yaw / 0.22, -1, 1);
+  ghostQuad.position.set(sway * (0.018 + amt * 0.065), amt * 0.012, 0);
   ghostQuad.rotation.z = drunkCam.roll * 0.08;
   ghostQuad.scale.setScalar(1 + amt * 0.012);
   ghostQuad.material.opacity = 0.08 + amt * 0.16;
@@ -6552,6 +6651,91 @@ function applyWorld(msg) {
     return;
   }
   if (msg.i != null) applyWorldBit(msg.i, msg.o, true);
+}
+
+function roomAuthorityId() {
+  let authority = String(localId() || "");
+  for (const peer of humanPeers()) {
+    const id = String(peer.id || "");
+    if (id && (!authority || id < authority)) authority = id;
+  }
+  return authority;
+}
+
+function isRoomAuthority() {
+  const authority = roomAuthorityId();
+  return !authority || authority === String(localId() || "");
+}
+
+function publishClubMusicState() {
+  const state = audio.clubPlaybackState();
+  if (state) publishEvent({ t: "clubMusic", a: "state", i: state.i, p: state.p });
+}
+
+function commitClubSkip() {
+  if (!audio.skipClubTrack()) return false;
+  publishClubMusicState();
+  return true;
+}
+
+function requestClubSkip() {
+  if (isRoomAuthority()) return commitClubSkip();
+  publishEvent({ t: "clubSkip" });
+  return true;
+}
+
+function applyClubMusic(msg) {
+  if (!msg || msg.from === localId() || String(msg.from || "") !== roomAuthorityId()) return;
+  audio.syncClubPlayback(msg.i, msg.p, 3);
+}
+
+function sameNpcRow(a, b) {
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < b.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function syncSharedClub(dt, authority = roomAuthorityId()) {
+  const me = String(localId() || "");
+  if (!me || !started) return;
+  if (authority !== sharedHostId) {
+    sharedHostId = authority;
+    npcNetAcc = 0;
+    npcFullAcc = 999;
+    clubMusicAcc = 999;
+    npcLastState.clear();
+  }
+  if (authority !== me) return;
+  npcNetAcc += dt;
+  npcFullAcc += dt;
+  clubMusicAcc += dt;
+  if (npcNetAcc >= 0.2) {
+    npcNetAcc = 0;
+    const full = npcFullAcc >= 3;
+    if (full) npcFullAcc = 0;
+    const snapshot = houseClub?.npcSnapshot?.() || [];
+    const next = new Map();
+    const rows = [];
+    for (const row of snapshot) {
+      const id = Number(row[0]);
+      next.set(id, row);
+      if (full || !sameNpcRow(npcLastState.get(id), row)) rows.push(row);
+    }
+    if (!full) {
+      for (const id of npcLastState.keys()) {
+        if (!next.has(id)) rows.push([id]);
+      }
+    }
+    npcLastState.clear();
+    for (const [id, row] of next) npcLastState.set(id, row);
+    if (full || rows.length) publishEvent({ t: "npcs", f: full ? 1 : 0, p: rows });
+  }
+  if (clubMusicAcc >= 1) {
+    clubMusicAcc = 0;
+    publishClubMusicState();
+  }
 }
 
 function setFrontDoor(open, silent, fromNet) {
@@ -7387,7 +7571,9 @@ function meleePunch() {
   if (!best) return false;
   if (kind === "cop") return hitOfficer(best, fx, fz, dmg);
   if (kind === "club") {
+    const npcId = houseClub.personId(best);
     const result = houseClub.applyPunch(best, { fx, fz, dmg });
+    if (npcId >= 0 && result) publishEvent({ t: "npcHit", i: npcId, fx, fz, d: dmg });
     if (result === "guardkill") spawnPolice(bodyPos.x, bodyPos.z);
     else if (result === "kill") spawnPolice(bodyPos.x, bodyPos.z);
     return !!result;
@@ -8652,7 +8838,12 @@ function resize() {
   canvas.style.height = `${h}px`;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  if (ghostRT) ghostRT.setSize(Math.floor(w * scale), Math.floor(h * scale));
+  if (ghostRT) {
+    ghostRT.setSize(
+      Math.max(8, Math.floor(w * scale * DOUBLE_VISION_SCALE)),
+      Math.max(8, Math.floor(h * scale * DOUBLE_VISION_SCALE))
+    );
+  }
 }
 
 function tick() {
@@ -8775,6 +8966,8 @@ function tick() {
   }
   updateDrops(dt);
   if (playing()) houseGames?.tick(dt, tWorld);
+  const clubAuthority = roomAuthorityId();
+  houseClub?.setNpcAuthority(!clubAuthority || clubAuthority === String(localId() || ""));
   houseClub?.tick(dt, tWorld);
   tickSignals(tWorld);
   tickStreetProps(dt);
@@ -8798,8 +8991,11 @@ function tick() {
   } catch (err) {
     console.warn("mp", err);
   }
+  syncSharedClub(dt, roomAuthorityId());
   const peerN = remotePeers().length;
   if (peerN !== lastPeerN) {
+    npcFullAcc = 999;
+    clubMusicAcc = 999;
     lastPeerN = peerN;
     if (peerN && playing()) publishWorldSync();
   }
@@ -9007,7 +9203,7 @@ function bind() {
         return;
       }
       if (look?.userData?.kind === "clubDj") {
-        audio.skipClubTrack();
+        requestClubSkip();
         return;
       }
       if (look && (look.userData.kind === "restroomDoor" || look.userData.kind === "stallDoor" || look.userData.kind === "clubDoor")) {
@@ -9222,6 +9418,43 @@ window.__POUR = {
     spawnPolice(bodyPos.x, bodyPos.z);
     return cops.length;
   },
+  club: () => {
+    const state = audio.clubPlaybackState() || {};
+    const now = audio.ctx?.currentTime || 0;
+    return {
+      ...state,
+      fade: audio.clubFade
+        ? {
+            from: audio.clubFade.from,
+            to: audio.clubFade.to,
+            remaining: Math.max(0, audio.clubFade.end - now),
+          }
+        : null,
+      decks: audio.clubDecks.map((player, deck) => ({
+        deck,
+        i: audio.clubTrackIndex(audio.clubDeckTracks[deck]),
+        p: Math.round((Number(player.currentTime) || 0) * 100) / 100,
+        paused: player.paused,
+        gain: audio.clubDeckGains[deck]?.gain.value ?? player.volume,
+      })),
+      mix: {
+        bass: audio.clubBass?.gain.value ?? 0,
+        presence: audio.clubPresence?.gain.value ?? 0,
+        delay: audio.clubDelay?.delayTime.value ?? 0,
+        echo: audio.clubEchoGain?.gain.value ?? 0,
+        feedback: audio.clubEchoFeedback?.gain.value ?? 0,
+        drive: audio.clubDrive,
+      },
+    };
+  },
+  clubSkip: requestClubSkip,
+  npcs: () => houseClub?.npcSnapshot?.() || [],
+  npcHit(id, dmg = 1) {
+    const result = houseClub?.applyNetworkPunch?.(Number(id), { fx: 1, fz: 0, dmg: Number(dmg) || 1 });
+    if (result) publishEvent({ t: "npcHit", i: Number(id), fx: 1, fz: 0, d: Number(dmg) || 1 });
+    return result;
+  },
+  roomAuthority: roomAuthorityId,
   bumpDrink,
   grabNearest() {
     let best = null;
@@ -9255,6 +9488,15 @@ window.__POUR = {
     cops: { local: cops.length, remote: remotePacks.size },
   }),
 };
+
+const ghostWarmW = Math.max(8, Math.floor(renderer.domElement.width * DOUBLE_VISION_SCALE));
+const ghostWarmH = Math.max(8, Math.floor(renderer.domElement.height * DOUBLE_VISION_SCALE));
+ensureGhost(ghostWarmW, ghostWarmH);
+renderer.compile(ghostScene, ghostCam);
+renderer.setRenderTarget(ghostRT);
+renderer.render(scene, camera);
+renderer.setRenderTarget(null);
+renderer.render(ghostScene, ghostCam);
 
 try {
   tick();

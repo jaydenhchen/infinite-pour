@@ -47,7 +47,7 @@ canvas.webgl {
   inset: 0;
   z-index: 41;
   background: radial-gradient(ellipse at center, transparent 50%, rgba(8, 3, 2, 0.55) 100%);
-  transition: filter 0.4s linear, background 0.4s linear;
+  will-change: filter;
 }
 
 #heartVig {
@@ -55,8 +55,9 @@ canvas.webgl {
   position: fixed;
   inset: 0;
   z-index: 42;
-  background: radial-gradient(ellipse at center, transparent 68%, rgba(0, 0, 0, 0) 100%);
+  background: radial-gradient(ellipse at center, transparent 38%, rgba(0, 0, 0, 0.96) 100%);
   opacity: 0;
+  will-change: opacity;
 }
 
 #hud, #title, #summon, #passout {
