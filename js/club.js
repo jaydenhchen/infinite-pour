@@ -24,10 +24,10 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
-const CLUB_CLOUD_OPACITY = 0.18;
-const CLUB_FOG_COLOR = 0x858b90;
+const CLUB_CLOUD_OPACITY = 0.24;
+const CLUB_FOG_COLOR = 0x50485c;
 const OUTDOOR_FOG_COLOR = 0x12080c;
-const CLUB_FOG_DENSITY = 0.135;
+const CLUB_FOG_DENSITY = 0.18;
 const OUTDOOR_FOG_DENSITY = 0.006;
 const CLOUD_DRIFT_X = 0.66;
 const CLOUD_DRIFT_Z = 0.46;
@@ -857,6 +857,7 @@ export function createClub(api) {
   function addSkySpot(x, z, phase, hex, kind = "wash") {
     const tight = kind === "strobe";
     const sl = new THREE.SpotLight(hex, tight ? 7.4 : 5.4, 26, tight ? 0.2 : 0.34, 0.38, 1.0);
+    sl.visible = false;
     sl.position.set(x, 5.12, z);
     sl.target.position.set(19, 0.92, 0.25);
     scene.add(sl);
@@ -881,6 +882,8 @@ export function createClub(api) {
     beam.add(cone);
     beam.position.copy(sl.position);
     scene.add(beam);
+    beam.visible = false;
+    cone.visible = false;
     spots.push({ light: sl, hex, phase, ax: x, az: z, beam, cone, kind, coneH });
   }
   function buildCeilingSpeakers() {
@@ -915,6 +918,7 @@ export function createClub(api) {
   }
   function addLaser(x, z, phase) {
     const light = new THREE.SpotLight(0xff0000, 0, LASER_MAX_RANGE, 0.01, 0.02, 1.0);
+    light.visible = false;
     light.position.set(x, 5.02, z);
     light.target.position.set(19, 0.75, 0.25);
     scene.add(light);
@@ -925,6 +929,7 @@ export function createClub(api) {
     );
     beam.userData.laserBeam = true;
     beam.renderOrder = 5;
+    beam.visible = false;
     scene.add(beam);
     lasers.push({ light, phase, beam });
   }
@@ -2040,10 +2045,11 @@ export function createClub(api) {
     }
   }
 
-  function tick(dt, t) {
+  function tick(dt, t, doorOpen = false) {
     if (!built) return;
     const pos = playerPos();
     const inHere = inside(pos.x, pos.z);
+    const clubActive = inHere || !!doorOpen;
     if (inHere) {
       for (const cloud of smokeClouds) {
         const u = cloud.userData;
@@ -2075,13 +2081,14 @@ export function createClub(api) {
     for (const speaker of SPEAKERS) {
       speakerDistance = Math.min(speakerDistance, Math.hypot(pos.x - speaker[0], pos.z - speaker[1]));
     }
-    const musicProximity = inHere ? THREE.MathUtils.clamp(1 - speakerDistance / 4.8, 0, 1) : -1;
+    const musicProximity = clubActive ? THREE.MathUtils.clamp(1 - speakerDistance / 4.8, 0, 1) : -1;
     audio.clubTick?.(dt, musicProximity, drunkLevel?.() || 0);
 
-    if (inHere) {
+    if (clubActive) {
     const beat = (t * 2.15) % 1;
     const flash = beat < 0.08 || (beat > 0.5 && beat < 0.58) || (beat > 0.75 && beat < 0.8);
     for (const s of strobes) {
+      s.light.visible = true;
       if (s.wash) s.light.intensity = 0.85 + Math.sin(t * 1.3 + s.phase) * 0.25;
       else {
         s.light.intensity = flash ? 3.1 : 0.14 + Math.sin(t * 9 + s.phase) * 0.1;
@@ -2090,6 +2097,9 @@ export function createClub(api) {
     }
     const lit = crowd.filter((p) => !p.dead && (p.mode === "dance" || p.mode === "mingle" || p.mode === "kiss"));
     for (const s of spots) {
+      s.light.visible = true;
+      if (s.beam) s.beam.visible = true;
+      if (s.cone) s.cone.visible = true;
       const ang = t * (s.kind === "strobe" ? 0.86 : 0.4) + s.phase;
       const rad = (s.kind === "strobe" ? 5.4 : 4.5) + Math.sin(t * 0.28 + s.phase) * 1.35;
       let tx = 18.85 + Math.cos(ang) * rad;
@@ -2152,12 +2162,23 @@ export function createClub(api) {
     for (const p of platters) p.rotation.y = t * 4.8;
     for (let i = 0; i < knobs.length; i++) knobs[i].rotation.y = t * (1.6 + i * 0.35);
     if (fader) fader.position.x = 19.0 + Math.sin(t * 1.3) * 0.16;
+    } else {
+      for (const s of strobes) s.light.visible = false;
+      for (const s of spots) {
+        s.light.visible = false;
+        s.beam.visible = false;
+        s.cone.visible = false;
+      }
+      for (const laser of lasers) {
+        laser.beam.visible = false;
+        laser.light.visible = false;
+      }
     }
     const crowdTime = Date.now() * 0.001;
     for (const p of crowd) {
       if (p.pushNetT > 0) p.pushNetT = Math.max(0, p.pushNetT - dt);
     }
-    if (!inHere && !npcAuthority) return;
+    if (!clubActive && !npcAuthority) return;
     if (!npcAuthority) {
       tickSyncedCrowd(dt, crowdTime);
       return;
@@ -2202,6 +2223,8 @@ export function createClub(api) {
       else poseSway(p, crowdTime);
       poseDizzy(p, crowdTime);
       flushSkin(p);
+      p.rig.position.set(p.x, p.y, p.z);
+      if (p.mode !== "sit") p.rig.rotation.y = p.yaw;
     }
     if (inHere) separate(dt);
     for (let i = crowd.length - 1; i >= 0; i--) {
@@ -2578,6 +2601,7 @@ export function createClub(api) {
     claimChair,
     freeChair,
     punch,
+    applyPunch,
     punchPick,
     applyNetworkPunch,
     applyNetworkPush,
@@ -2585,7 +2609,6 @@ export function createClub(api) {
     setNpcAuthority,
     npcSnapshot,
     applyNpcSnapshot,
-    applyNetworkPunch,
     personId,
   };
 }
