@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=138";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=42";
+import { createClub } from "./club.js?v=43";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -72,10 +72,10 @@ const ONE_DRINK_BAC = (40 / 40) * (1.5 / 1.2) * 0.028;
 const CUP_STACK_MAX = 5;
 const CUP_NEST = 0.028;
 const CLUB_OUTSIDE_GAIN = 0;
-const CLUB_FAR_GAIN = 0.68;
-const CLUB_NEAR_GAIN = 0.92;
-const CLUB_FAR_DRIVE = 0.42;
-const CLUB_NEAR_DRIVE = 0.92;
+const CLUB_FAR_GAIN = 0.95;
+const CLUB_NEAR_GAIN = 1.16;
+const CLUB_FAR_DRIVE = 0.7;
+const CLUB_NEAR_DRIVE = 1;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;

@@ -24,10 +24,10 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
-const CLUB_MIST_OPACITY = 0.18;
+const CLUB_MIST_OPACITY = 0.28;
 const CLUB_FOG_COLOR = 0x858b90;
 const OUTDOOR_FOG_COLOR = 0x12080c;
-const CLUB_FOG_DENSITY = 0.075;
+const CLUB_FOG_DENSITY = 0.11;
 const OUTDOOR_FOG_DENSITY = 0.006;
 const CLOUD_DRIFT_X = 0.66;
 const CLOUD_DRIFT_Z = 0.46;
@@ -42,7 +42,6 @@ const laserEnd = new THREE.Vector3();
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 10);
 
-const dizzyGeo = new THREE.OctahedronGeometry(0.075, 0);
 const SKINS = [0xe8b48a, 0xd4a07a, 0xc48a62, 0xf0c4a0, 0x8a5a3a, 0xb88858];
 const HAIRS = [0x1a100c, 0x3a1a12, 0xc9a227, 0x8a2018, 0x0c0c12, 0x4a2040, 0x2a140c, 0x5a3018, 0xc47820];
 const TOPS = [0x120814, 0xff3dac, 0xc41e3a, 0xf4ead0, 0x3dfff2, 0x6b1c9a, 0xe8c547, 0x1a1a28, 0x2e6bff, 0x8a1028];
@@ -446,22 +445,6 @@ export function createClub(api) {
     else if (guard) body.scale.set(1.04, 1.02, 1.04);
     else body.scale.setScalar(0.95);
     const stars = new THREE.Group();
-    if (!guard) {
-      const starMats = [
-        lambert(0xffe066, { emissive: 0xffa000, emissiveIntensity: 0.72 }),
-        lambert(0xffc928, { emissive: 0xff8a00, emissiveIntensity: 0.62 }),
-      ];
-      for (let i = 0; i < 3; i++) {
-        const star = new THREE.Mesh(dizzyGeo, starMats[i % starMats.length]);
-        const a = (i / 3) * Math.PI * 2 + hash01(seed, 30) * 0.4;
-        const radius = 0.2 + hash01(seed, 31 + i) * 0.05;
-        star.position.set(Math.cos(a) * radius, 0.02 + hash01(seed, 34 + i) * 0.07, Math.sin(a) * radius);
-        star.scale.setScalar(0.72 + hash01(seed, 38 + i) * 0.42);
-        star.rotation.set(hash01(seed, 42 + i) * 0.8, a, hash01(seed, 46 + i) * 0.8);
-        star.castShadow = false;
-        stars.add(star);
-      }
-    }
     stars.position.set(0, 0.34, 0);
     stars.visible = false;
     head.add(stars);
