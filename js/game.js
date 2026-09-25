@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=139";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=52";
+import { createClub } from "./club.js?v=57";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -76,7 +76,7 @@ const CLUB_FAR_GAIN = 0.95;
 const CLUB_NEAR_GAIN = 1.16;
 const CLUB_FAR_DRIVE = 0.55;
 const CLUB_NEAR_DRIVE = 0.85;
-const DOUBLE_VISION_SCALE = 0.32;
+const DOUBLE_VISION_SCALE = 0.24;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -1294,10 +1294,14 @@ const audio = {
     this.beginClubFade(3);
   },
   skipClubTrack() {
-    if (!this.clubAudio) return false;
+    if (!this.clubDecks.length || !this.clubAudio) return false;
     if (this.clubFade) this.finishClubFade();
     this.prepareClubNext();
-    return this.beginClubFade(3);
+    const next = 1 - this.clubActiveDeck;
+    if (!this.clubDeckTracks[next]) return false;
+    const changed = this.beginClubFade(0.45);
+    if (changed) this.clubTrack = this.clubDeckTracks[next];
+    return changed;
   },
   clubPrompt() {
     return this.clubTrack ? `DJ · ${this.clubTrack.title} · E skip song` : "DJ · E skip song";
@@ -1833,6 +1837,7 @@ let localGender = "m";
 let heartT = 0;
 let heartKick = 0;
 let hudDrunkStep = -1;
+let hudDrunkFlashStep = -1;
 const cops = [];
 let wanted = false;
 let wantedT = 0;
@@ -5290,11 +5295,16 @@ function hud() {
   }
   const d = drunkLevel();
   const visualStep = Math.round(d * 40) / 40;
-  if (visualStep !== hudDrunkStep) {
+  const flashStep = d >= 0.72 ? Math.floor(tWorld * (2.1 + Math.min(1.8, d * 0.28))) : -1;
+  if (visualStep !== hudDrunkStep || flashStep !== hudDrunkFlashStep) {
     hudDrunkStep = visualStep;
-    const vignetteRgb = drunkVignetteRgb(visualStep);
-    $("vignette").style.filter = `saturate(${1 + Math.min(0.45, visualStep * 0.12)})`;
-    $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(38, 60 - visualStep * 3.5)}%, rgba(${vignetteRgb}, ${Math.min(0.24, 0.1 + visualStep * 0.03)}) 100%)`;
+    hudDrunkFlashStep = flashStep;
+    const vignetteRgb = flashStep >= 0
+      ? ["224, 24, 38", "32, 214, 82", "38, 86, 238"][((flashStep % 3) + 3) % 3]
+      : drunkVignetteRgb(visualStep);
+    const flashAlpha = flashStep >= 0 ? Math.min(0.28, 0.12 + visualStep * 0.035) : Math.min(0.24, 0.1 + visualStep * 0.03);
+    $("vignette").style.filter = `saturate(${1 + Math.min(0.65, visualStep * 0.16)})`;
+    $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(34, 60 - visualStep * 3.5)}%, rgba(${vignetteRgb}, ${flashAlpha}) 100%)`;
   }
   const list = $("onlineList");
   const online = $("online");
@@ -6360,7 +6370,10 @@ function clockIn() {
 function useLook() {
   if (!look) return;
   const k = look.userData.kind;
-  if (k === "bottle") {
+  if (k === "clubDj") {
+    const skipped = requestClubSkip();
+    if (!skipped) toast("DJ set is still loading");
+  } else if (k === "bottle") {
     if (held && held.userData.kind === "glass") {
       const add = pourIntoGlass(look.userData.drink, 0.12);
       if (add) audio.clink();
@@ -6528,8 +6541,11 @@ function applyDrunkCam(dt, extra = 0) {
   }
   const base = zoom ? 22 : 78 + extra * 8;
   const pulse = amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * (zoom ? 1.1 : 2.2) * amp;
-  camera.fov = base + pulse + heartKick * (zoom ? 6 : 16);
-  camera.updateProjectionMatrix();
+  const nextFov = base + pulse + heartKick * (zoom ? 6 : 16);
+  if (Math.abs(camera.fov - nextFov) > 0.002) {
+    camera.fov = nextFov;
+    camera.updateProjectionMatrix();
+  }
 }
 
 function applyDrunkLook() {
@@ -6559,6 +6575,7 @@ let ghostScene = null;
 let ghostCam = null;
 let ghostQuad = null;
 let ghostBase = null;
+let ghostTint = new THREE.Color();
 let ghostRefreshT = 0;
 
 function ensureGhost(w, h) {
@@ -6580,8 +6597,10 @@ function ensureGhost(w, h) {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         map: { value: ghostRT.texture },
-        opacity: { value: 0.08 },
+        opacity: { value: 0.12 },
         shift: { value: new THREE.Vector2() },
+        tint: { value: ghostTint },
+        flash: { value: 0 },
       },
       vertexShader: `
         varying vec2 vUv;
@@ -6594,14 +6613,20 @@ function ensureGhost(w, h) {
         uniform sampler2D map;
         uniform float opacity;
         uniform vec2 shift;
+        uniform vec3 tint;
+        uniform float flash;
         varying vec2 vUv;
         void main() {
-          vec2 uvR = clamp(vUv + shift, vec2(0.0), vec2(1.0));
-          vec2 uvB = clamp(vUv - shift, vec2(0.0), vec2(1.0));
+          vec2 blur = shift * (1.0 + flash * 0.7);
+          vec2 uvR = clamp(vUv + blur * 1.8, vec2(0.0), vec2(1.0));
+          vec2 uvG = clamp(vUv + blur * 0.35, vec2(0.0), vec2(1.0));
+          vec2 uvB = clamp(vUv - blur * 1.8, vec2(0.0), vec2(1.0));
           float r = texture2D(map, uvR).r;
-          float g = texture2D(map, vUv).g;
+          float g = texture2D(map, uvG).g;
           float b = texture2D(map, uvB).b;
-          gl_FragColor = vec4(r, g, b, opacity);
+          vec3 separated = vec3(r, g, b);
+          vec3 glow = tint * (0.12 + flash * 0.24);
+          gl_FragColor = vec4(separated * (0.56 + flash * 0.35) + glow, opacity);
         }
       `,
       transparent: true,
@@ -6633,7 +6658,7 @@ function renderDoubleVision(dt = 0) {
   ensureGhost(w, h);
   ghostRefreshT -= dt;
   if (ghostRefreshT <= 0) {
-    ghostRefreshT = 0.1;
+    ghostRefreshT = 0.12;
     ghostBase.visible = true;
     renderer.setRenderTarget(ghostRT);
     renderer.render(scene, camera);
@@ -6642,13 +6667,21 @@ function renderDoubleVision(dt = 0) {
     renderer.render(scene, camera);
     ghostBase.visible = false;
   }
+  const cycle = (tWorld * (1.05 + amt * 1.8) + d * 0.35) % 3;
+  const phase = Math.floor(cycle);
+  const pulse = 0.5 + 0.5 * Math.sin(cycle * Math.PI * 2);
+  if (phase === 0) ghostTint.setRGB(1, 0.08, 0.12);
+  else if (phase === 1) ghostTint.setRGB(0.08, 1, 0.2);
+  else ghostTint.setRGB(0.1, 0.24, 1);
   const sway = THREE.MathUtils.clamp(drunkCam.yaw / 0.22, -1, 1);
-  const channelShift = (0.002 + amt * 0.008) * (sway >= 0 ? 1 : -1);
+  const channelShift = (0.002 + amt * 0.014) * (sway >= 0 ? 1 : -1);
   ghostQuad.position.set(0, 0, 0);
   ghostQuad.rotation.z = drunkCam.roll * 0.025;
   ghostQuad.scale.setScalar(1);
-  ghostQuad.material.uniforms.shift.value.set(channelShift, amt * 0.0015);
-  ghostQuad.material.uniforms.opacity.value = 0.035 + amt * 0.065;
+  ghostQuad.material.uniforms.shift.value.set(channelShift, amt * 0.0025);
+  ghostQuad.material.uniforms.tint.value.copy(ghostTint);
+  ghostQuad.material.uniforms.flash.value = pulse;
+  ghostQuad.material.uniforms.opacity.value = 0.08 + amt * 0.14;
   const autoClear = renderer.autoClear;
   renderer.autoClear = false;
   renderer.render(ghostScene, ghostCam);
@@ -9028,7 +9061,7 @@ function tick() {
   if (playing()) houseGames?.tick(dt, tWorld);
   const clubAuthority = roomAuthorityId();
   houseClub?.setNpcAuthority(!clubAuthority || clubAuthority === String(localId() || ""));
-  houseClub?.tick(dt, tWorld, frontDoorOpen || Math.abs(frontDoorAng) > 0.02);
+  houseClub?.tick(dt, tWorld);
   tickSignals(tWorld);
   tickStreetProps(dt);
   $("prompt").textContent = playing() ? promptFrom(look) : "";
@@ -9269,7 +9302,8 @@ function bind() {
         return;
       }
       if (look?.userData?.kind === "clubDj") {
-        requestClubSkip();
+        const skipped = requestClubSkip();
+        if (!skipped) toast("DJ set is still loading");
         return;
       }
       if (look && (look.userData.kind === "restroomDoor" || look.userData.kind === "stallDoor" || look.userData.kind === "clubDoor")) {

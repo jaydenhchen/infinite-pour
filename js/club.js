@@ -161,6 +161,7 @@ export function createClub(api) {
   let equalizer = null;
   let fader = null;
   let built = false;
+  let clubDoor = null;
   let wantUp = 0;
   let wantDown = 0;
   let wantDance = 0;
@@ -173,6 +174,10 @@ export function createClub(api) {
 
   function inside(x, z) {
     return x > CX0 + 0.12 && x < CX1 - 0.12 && z > CZ0 + 0.12 && z < CZ1 - 0.12;
+  }
+  function doorActive() {
+    const state = clubDoor?.userData;
+    return !!state?.open || Math.abs(Number(state?.ang) || 0) > 0.02;
   }
 
   const DECKS = [
@@ -1424,7 +1429,7 @@ export function createClub(api) {
     wall((CX1 + frontDoorX + frontW / 2) / 2, CZ1, rightW, CLUB_H, 0.22, plaster);
     addMesh(scene, unitBox, plaster, frontDoorX, 3.9, CZ1, frontW + 0.1, 1.5, 0.22);
     camBox(frontDoorX, 3.9, CZ1, frontW + 0.16, 1.5, 0.28);
-    const clubDoor = makeHingeDoor(frontDoorX - frontW / 2, CZ1, 0, frontW, 2.32, "clubDoor", 1);
+    clubDoor = makeHingeDoor(frontDoorX - frontW / 2, CZ1, 0, frontW, 2.32, "clubDoor", 1);
     if (clubDoor) {
       clubDoor.material = lambert(0x6a2048, { emissive: 0xff2d6a, emissiveIntensity: 0.62 });
       const hinge = clubDoor.userData.hinge;
@@ -2045,12 +2050,11 @@ export function createClub(api) {
     }
   }
 
-  function tick(dt, t, doorOpen = false) {
+  function tick(dt, t, doorOpen = doorActive()) {
     if (!built) return;
-    const pos = playerPos();
-    const inHere = inside(pos.x, pos.z);
-    const clubActive = inHere || !!doorOpen;
-    if (inHere) {
+    const clubActive = !!doorOpen;
+    if (clubActive) {
+      const pos = playerPos();
       for (const cloud of smokeClouds) {
         const u = cloud.userData;
         const phase = u.smokePhase || 0;
@@ -2071,12 +2075,13 @@ export function createClub(api) {
       }
     }
     if (scene.fog) {
-      scene.fog.color.setHex(inHere ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
-      scene.fog.density = inHere ? CLUB_FOG_DENSITY : OUTDOOR_FOG_DENSITY;
+      scene.fog.color.setHex(clubActive ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
+      scene.fog.density = clubActive ? CLUB_FOG_DENSITY : OUTDOOR_FOG_DENSITY;
     }
     if (cloudMaterial) {
-      cloudMaterial.uniforms.uOpacity.value = inHere ? CLUB_CLOUD_OPACITY : CLUB_CLOUD_OPACITY * 0.55;
+      cloudMaterial.uniforms.uOpacity.value = clubActive ? CLUB_CLOUD_OPACITY : CLUB_CLOUD_OPACITY * 0.55;
     }
+    const pos = playerPos();
     let speakerDistance = Infinity;
     for (const speaker of SPEAKERS) {
       speakerDistance = Math.min(speakerDistance, Math.hypot(pos.x - speaker[0], pos.z - speaker[1]));
@@ -2178,7 +2183,7 @@ export function createClub(api) {
     for (const p of crowd) {
       if (p.pushNetT > 0) p.pushNetT = Math.max(0, p.pushNetT - dt);
     }
-    if (!clubActive && !npcAuthority) return;
+    if (!clubActive) return;
     if (!npcAuthority) {
       tickSyncedCrowd(dt, crowdTime);
       return;
@@ -2226,7 +2231,7 @@ export function createClub(api) {
       p.rig.position.set(p.x, p.y, p.z);
       if (p.mode !== "sit") p.rig.rotation.y = p.yaw;
     }
-    if (inHere) separate(dt);
+    if (clubActive) separate(dt);
     for (let i = crowd.length - 1; i >= 0; i--) {
       if (crowd[i].gone) crowd.splice(i, 1);
     }
@@ -2397,6 +2402,8 @@ export function createClub(api) {
       uniforms: {
         uColor: { value: new THREE.Color(CLUB_FOG_COLOR) },
         uOpacity: { value: CLUB_CLOUD_OPACITY * 0.55 },
+        fogColor: { value: new THREE.Color(OUTDOOR_FOG_COLOR) },
+        fogDensity: { value: OUTDOOR_FOG_DENSITY },
       },
       vertexShader: CLOUD_VERTEX_SHADER,
       fragmentShader: CLOUD_FRAGMENT_SHADER,
@@ -2595,6 +2602,7 @@ export function createClub(api) {
     build,
     tick,
     collide,
+    doorActive,
     inside,
     prompt,
     use,
