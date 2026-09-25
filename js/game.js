@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=139";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=48";
+import { createClub } from "./club.js?v=51";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -74,9 +74,9 @@ const CUP_NEST = 0.028;
 const CLUB_OUTSIDE_GAIN = 0;
 const CLUB_FAR_GAIN = 0.95;
 const CLUB_NEAR_GAIN = 1.16;
-const CLUB_FAR_DRIVE = 0.7;
-const CLUB_NEAR_DRIVE = 1;
-const DOUBLE_VISION_SCALE = 0.72;
+const CLUB_FAR_DRIVE = 0.55;
+const CLUB_NEAR_DRIVE = 0.85;
+const DOUBLE_VISION_SCALE = 0.4;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -3042,7 +3042,7 @@ function buildWorld() {
     makeBottle,
     makeGlassMesh,
     randomDrink,
-    collideWorld: collideWorldForCop,
+    pushNpc: (id, dx, dz) => publishEvent({ t: "npcPush", i: id, dx, dz }),
     makeBatonMesh,
     seatBatonOnArm,
     hitPlayer: (nx, nz, dmg, kind) => takeHit(nx, nz, kind === "guard" ? "the bouncer" : "a cop", { lethal: true, dmg, kind }),
@@ -6291,6 +6291,12 @@ function startShift() {
       }
       return;
     }
+    if (msg?.t === "npcPush") {
+      if (msg.from !== localId() && isRoomAuthority()) {
+        houseClub?.applyNetworkPush(msg.i, Number(msg.dx) || 0, Number(msg.dz) || 0);
+      }
+      return;
+    }
     if (msg?.t === "npcHit") {
       if (msg.from !== localId()) {
         houseClub?.applyNetworkPunch(msg.i, {
@@ -6541,6 +6547,8 @@ let ghostRT = null;
 let ghostScene = null;
 let ghostCam = null;
 let ghostQuad = null;
+let ghostBase = null;
+let ghostRefreshT = 0;
 
 function ensureGhost(w, h) {
   if (!ghostRT) {
@@ -6548,7 +6556,7 @@ function ensureGhost(w, h) {
     ghostScene = new THREE.Scene();
     ghostCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     const geo = new THREE.PlaneGeometry(2, 2);
-    const base = new THREE.Mesh(
+    ghostBase = new THREE.Mesh(
       geo,
       new THREE.MeshBasicMaterial({
         map: ghostRT.texture,
@@ -6557,7 +6565,7 @@ function ensureGhost(w, h) {
         toneMapped: false,
       })
     );
-    base.renderOrder = 0;
+    ghostBase.renderOrder = 0;
     const mat = new THREE.MeshBasicMaterial({
       map: ghostRT.texture,
       transparent: true,
@@ -6569,15 +6577,18 @@ function ensureGhost(w, h) {
     });
     ghostQuad = new THREE.Mesh(geo, mat);
     ghostQuad.renderOrder = 1;
-    ghostScene.add(base, ghostQuad);
+    ghostScene.add(ghostBase, ghostQuad);
   } else if (ghostRT.width !== w || ghostRT.height !== h) {
     ghostRT.setSize(w, h);
   }
 }
 
-function renderDoubleVision() {
+function renderDoubleVision(dt = 0) {
   const d = drunkLevel();
-  if (d < 0.72 || passedOut || inCar) return false;
+  if (d < 0.72 || passedOut || inCar || sipT > 0) {
+    ghostRefreshT = 0;
+    return false;
+  }
   const amt = THREE.MathUtils.clamp((d - 0.72) / 3.6, 0, 1);
   const displayW = renderer.domElement.width;
   const displayH = renderer.domElement.height;
@@ -6585,15 +6596,24 @@ function renderDoubleVision() {
   const w = Math.max(8, Math.floor(displayW * DOUBLE_VISION_SCALE));
   const h = Math.max(8, Math.floor(displayH * DOUBLE_VISION_SCALE));
   ensureGhost(w, h);
-  renderer.setRenderTarget(ghostRT);
-  renderer.render(scene, camera);
-  renderer.setRenderTarget(null);
+  ghostRefreshT -= dt;
+  if (ghostRefreshT <= 0) {
+    ghostRefreshT = 0.1;
+    ghostBase.visible = true;
+    renderer.setRenderTarget(ghostRT);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+  } else {
+    renderer.render(scene, camera);
+    ghostBase.visible = false;
+  }
   const sway = THREE.MathUtils.clamp(drunkCam.yaw / 0.22, -1, 1);
   ghostQuad.position.set(sway * (0.018 + amt * 0.065), amt * 0.012, 0);
   ghostQuad.rotation.z = drunkCam.roll * 0.08;
   ghostQuad.scale.setScalar(1 + amt * 0.012);
   ghostQuad.material.opacity = 0.08 + amt * 0.16;
   renderer.render(ghostScene, ghostCam);
+  ghostBase.visible = true;
   return true;
 }
 
@@ -9010,7 +9030,7 @@ function tick() {
     renderer.shadowMap.needsUpdate = true;
   }
   hud();
-  if (!renderDoubleVision()) renderer.render(scene, camera);
+  if (!renderDoubleVision(dt)) renderer.render(scene, camera);
   restoreBodyLook();
 }
 

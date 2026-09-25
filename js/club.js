@@ -140,6 +140,7 @@ export function createClub(api) {
     makeBatonMesh,
     seatBatonOnArm,
     hitPlayer,
+    pushNpc,
     drunkLevel,
   } = api;
 
@@ -571,6 +572,7 @@ export function createClub(api) {
       dead: false,
       deadT: 0,
       gone: false,
+      pushNetT: 0,
     };
     rig.userData.clubPerson = person;
     crowd.push(person);
@@ -1955,14 +1957,13 @@ export function createClub(api) {
       const need = cr - dist;
       const ux = dx / dist;
       const uz = dz / dist;
-      const isPlanted = planted(p);
-      if (!npcAuthority || isPlanted) {
-        px += ux * need;
-        pz += uz * need;
-        continue;
-      }
-      p.x -= ux * need * 0.92;
-      p.z -= uz * need * 0.92;
+      const anchored = planted(p);
+      const npcYield = anchored ? 0.42 : 0.82;
+      const playerResistance = anchored ? 0.34 : 0.18;
+      const pushX = -ux * need * npcYield;
+      const pushZ = -uz * need * npcYield;
+      p.x += pushX;
+      p.z += pushZ;
       if (p.mode === "kiss" && p.partner) {
         const other = p.partner;
         p.partner = null;
@@ -1976,10 +1977,20 @@ export function createClub(api) {
         p.wait = 0.12;
         pickTarget(p);
       }
+      if (!npcAuthority) {
+        if (p.netX != null) {
+          p.netX += pushX;
+          p.netZ += pushZ;
+        }
+        if (p.pushNetT <= 0) {
+          pushNpc?.(p.id, pushX, pushZ);
+          p.pushNetT = 0.12;
+        }
+      }
       pinPerson(p);
       p.rig.position.set(p.x, p.y, p.z);
-      px += ux * need * 0.12;
-      pz += uz * need * 0.12;
+      px += ux * need * playerResistance;
+      pz += uz * need * playerResistance;
     }
     return [px, pz];
   }
@@ -2033,23 +2044,25 @@ export function createClub(api) {
     if (!built) return;
     const pos = playerPos();
     const inHere = inside(pos.x, pos.z);
-    for (const cloud of smokeClouds) {
-      const u = cloud.userData;
-      const phase = u.smokePhase || 0;
-      const driftX = Math.sin(t * 0.09 + phase) * 0.48 + Math.sin(t * 0.047 + phase * 1.7) * 0.18;
-      const driftY = Math.sin(t * 0.13 + phase * 1.3) * 0.08;
-      const driftZ = Math.cos(t * 0.075 + phase) * 0.34 + Math.sin(t * 0.052 + phase * 0.8) * 0.12;
-      cloud.position.x = THREE.MathUtils.clamp(
-        u.smokeBaseX + driftX,
-        CX0 + u.smokeExtentX + CLOUD_DRIFT_X + CLOUD_EDGE_PAD,
-        CX1 - u.smokeExtentX - CLOUD_DRIFT_X - CLOUD_EDGE_PAD
-      );
-      cloud.position.y = THREE.MathUtils.clamp(u.smokeBaseY + driftY, u.smokeMinY, u.smokeMaxY);
-      cloud.position.z = THREE.MathUtils.clamp(
-        u.smokeBaseZ + driftZ,
-        CZ0 + u.smokeExtentZ + CLOUD_DRIFT_Z + CLOUD_EDGE_PAD,
-        CZ1 - u.smokeExtentZ - CLOUD_DRIFT_Z - CLOUD_EDGE_PAD
-      );
+    if (inHere) {
+      for (const cloud of smokeClouds) {
+        const u = cloud.userData;
+        const phase = u.smokePhase || 0;
+        const driftX = Math.sin(t * 0.09 + phase) * 0.48 + Math.sin(t * 0.047 + phase * 1.7) * 0.18;
+        const driftY = Math.sin(t * 0.13 + phase * 1.3) * 0.08;
+        const driftZ = Math.cos(t * 0.075 + phase) * 0.34 + Math.sin(t * 0.052 + phase * 0.8) * 0.12;
+        cloud.position.x = THREE.MathUtils.clamp(
+          u.smokeBaseX + driftX,
+          CX0 + u.smokeExtentX + CLOUD_DRIFT_X + CLOUD_EDGE_PAD,
+          CX1 - u.smokeExtentX - CLOUD_DRIFT_X - CLOUD_EDGE_PAD
+        );
+        cloud.position.y = THREE.MathUtils.clamp(u.smokeBaseY + driftY, u.smokeMinY, u.smokeMaxY);
+        cloud.position.z = THREE.MathUtils.clamp(
+          u.smokeBaseZ + driftZ,
+          CZ0 + u.smokeExtentZ + CLOUD_DRIFT_Z + CLOUD_EDGE_PAD,
+          CZ1 - u.smokeExtentZ - CLOUD_DRIFT_Z - CLOUD_EDGE_PAD
+        );
+      }
     }
     if (scene.fog) {
       scene.fog.color.setHex(inHere ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
@@ -2065,6 +2078,7 @@ export function createClub(api) {
     const musicProximity = inHere ? THREE.MathUtils.clamp(1 - speakerDistance / 4.8, 0, 1) : -1;
     audio.clubTick?.(dt, musicProximity, drunkLevel?.() || 0);
 
+    if (inHere) {
     const beat = (t * 2.15) % 1;
     const flash = beat < 0.08 || (beat > 0.5 && beat < 0.58) || (beat > 0.75 && beat < 0.8);
     for (const s of strobes) {
@@ -2138,7 +2152,12 @@ export function createClub(api) {
     for (const p of platters) p.rotation.y = t * 4.8;
     for (let i = 0; i < knobs.length; i++) knobs[i].rotation.y = t * (1.6 + i * 0.35);
     if (fader) fader.position.x = 19.0 + Math.sin(t * 1.3) * 0.16;
+    }
     const crowdTime = Date.now() * 0.001;
+    for (const p of crowd) {
+      if (p.pushNetT > 0) p.pushNetT = Math.max(0, p.pushNetT - dt);
+    }
+    if (!inHere && !npcAuthority) return;
     if (!npcAuthority) {
       tickSyncedCrowd(dt, crowdTime);
       return;
@@ -2184,7 +2203,7 @@ export function createClub(api) {
       poseDizzy(p, crowdTime);
       flushSkin(p);
     }
-    separate(dt);
+    if (inHere) separate(dt);
     for (let i = crowd.length - 1; i >= 0; i--) {
       if (crowd[i].gone) crowd.splice(i, 1);
     }
@@ -2518,6 +2537,19 @@ export function createClub(api) {
       if (!p.gone && p.rig && !seen.has(p.id)) buryPerson(p);
     }
   }
+  function applyNetworkPush(id, dx, dz) {
+    if (!npcAuthority) return false;
+    const person = crowdById.get(Number(id));
+    if (!person || person.dead || person.gone) return false;
+    const length = Math.hypot(Number(dx) || 0, Number(dz) || 0);
+    if (length < 0.0001) return false;
+    const scale = Math.min(0.8, length) / length;
+    person.x += (Number(dx) || 0) * scale;
+    person.z += (Number(dz) || 0) * scale;
+    pinPerson(person);
+    person.rig.position.set(person.x, person.y, person.z);
+    return true;
+  }
 
   function applyNetworkPunch(id, aim = {}) {
     const person = crowdById.get(Number(id));
@@ -2547,7 +2579,8 @@ export function createClub(api) {
     freeChair,
     punch,
     punchPick,
-    applyPunch,
+    applyNetworkPunch,
+    applyNetworkPush,
     angryGuards,
     setNpcAuthority,
     npcSnapshot,
