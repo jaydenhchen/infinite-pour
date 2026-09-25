@@ -46,9 +46,9 @@ import {
   setWorldBlock,
   makeBatonMesh,
   seatBatonOnArm,
-} from "./multiplayer.js?v=138";
+} from "./multiplayer.js?v=139";
 import { createGames } from "./games.js?v=106";
-import { createClub } from "./club.js?v=43";
+import { createClub } from "./club.js?v=45";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -962,6 +962,8 @@ const audio = {
   clubGain: null,
   clubDistort: null,
   clubDrive: -1,
+  clubDryGain: null,
+  clubWetGain: null,
   clubDecks: [],
   clubDeckSources: [],
   clubDeckGains: [],
@@ -1030,6 +1032,10 @@ const audio = {
     this.clubFreq = new Uint8Array(this.clubAnalyser.frequencyBinCount);
     this.clubGain = this.ctx.createGain();
     this.clubGain.gain.value = CLUB_OUTSIDE_GAIN;
+    this.clubDryGain = this.ctx.createGain();
+    this.clubDryGain.gain.value = 0.36;
+    this.clubWetGain = this.ctx.createGain();
+    this.clubWetGain.gain.value = 0.82;
     this.clubDistort = this.ctx.createWaveShaper();
     this.clubDistort.oversample = "2x";
     this.clubDistort.curve = null;
@@ -1052,8 +1058,11 @@ const audio = {
       this.clubDeckGains.push(deckGain);
     }
     this.clubSource = this.clubDeckSources[0];
+    this.clubAnalyser.connect(this.clubDryGain);
+    this.clubDryGain.connect(this.clubGain);
     this.clubAnalyser.connect(this.clubDistort);
-    this.clubDistort.connect(this.clubGain);
+    this.clubDistort.connect(this.clubWetGain);
+    this.clubWetGain.connect(this.clubGain);
     this.clubGain.connect(this.master || this.ctx.destination);
     this.clubGain.connect(this.clubDelay);
     this.clubDelay.connect(this.clubEchoGain);
@@ -1112,21 +1121,26 @@ const audio = {
   },
   startClubDeck(index) {
     const player = this.clubDecks[index];
-    if (!player) return;
+    if (!player || player.__clubPlayPending || !player.paused) return;
     player.__clubPlayRequested = true;
     if (this.ctx?.state === "suspended") this.ctx.resume().catch(() => {});
-    const playWhenReady = () => {
+    player.__clubPlayPending = true;
+    const result = player.play();
+    if (!result?.then) {
       player.__clubPlayPending = false;
-      if (!player.__clubPlayRequested || !player.paused) return;
-      player.play()?.catch?.(() => {});
-    };
-    if (player.readyState >= 2) {
-      playWhenReady();
       return;
     }
-    if (player.__clubPlayPending) return;
-    player.__clubPlayPending = true;
-    player.addEventListener("canplay", playWhenReady, { once: true });
+    result.then(() => {
+      player.__clubPlayPending = false;
+    }).catch(() => {
+      player.__clubPlayPending = false;
+      if (!player.__clubPlayRequested || player.readyState >= 2) return;
+      player.__clubPlayPending = true;
+      player.addEventListener("canplay", () => {
+        player.__clubPlayPending = false;
+        this.startClubDeck(index);
+      }, { once: true });
+    });
   },
   beginClubFade(duration = 3) {
     if (this.clubFade || !this.clubDecks.length) return;
@@ -1706,6 +1720,7 @@ const driftPuffs = [];
 const remotePacks = new Map();
 let lastCopKey = "";
 let copNetAcc = 0;
+let copNetHeartbeat = 0;
 const cars = [];
 const worldSolids = [];
 const carBlocks = [];
@@ -2952,6 +2967,7 @@ function buildWorld() {
     makeHingeDoor,
     neonTex,
     audio,
+    playerPos: () => bodyPos,
     drunkLevel: () => drunkLevel(),
     makeBottle,
     makeGlassMesh,
@@ -6424,20 +6440,27 @@ function applyDrunkLook() {
   }
 }
 
-const ghostFollow = { yaw: 0, pit: 0, roll: 0 };
 let ghostRT = null;
 let ghostScene = null;
 let ghostCam = null;
 let ghostQuad = null;
-const _ghostRight = new THREE.Vector3();
-const _ghostPos = new THREE.Vector3();
-const _ghostEuler = new THREE.Euler();
 
 function ensureGhost(w, h) {
   if (!ghostRT) {
     ghostRT = new THREE.WebGLRenderTarget(w, h, { depthBuffer: true });
     ghostScene = new THREE.Scene();
     ghostCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const geo = new THREE.PlaneGeometry(2, 2);
+    const base = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        map: ghostRT.texture,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      })
+    );
+    base.renderOrder = 0;
     const mat = new THREE.MeshBasicMaterial({
       map: ghostRT.texture,
       transparent: true,
@@ -6445,10 +6468,11 @@ function ensureGhost(w, h) {
       depthTest: false,
       depthWrite: false,
       toneMapped: false,
-      color: 0xffc8ff,
+      color: 0xffd8f4,
     });
-    ghostQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
-    ghostScene.add(ghostQuad);
+    ghostQuad = new THREE.Mesh(geo, mat);
+    ghostQuad.renderOrder = 1;
+    ghostScene.add(base, ghostQuad);
   } else if (ghostRT.width !== w || ghostRT.height !== h) {
     ghostRT.setSize(w, h);
   }
@@ -6456,36 +6480,22 @@ function ensureGhost(w, h) {
 
 function renderDoubleVision() {
   const d = drunkLevel();
-  if (d < 0.72 || passedOut || inCar) return;
+  if (d < 0.72 || passedOut || inCar) return false;
   const amt = THREE.MathUtils.clamp((d - 0.72) / 3.6, 0, 1);
   const w = renderer.domElement.width;
   const h = renderer.domElement.height;
-  if (w < 8 || h < 8) return;
+  if (w < 8 || h < 8) return false;
   ensureGhost(w, h);
-  ghostFollow.yaw += (drunkCam.yaw - ghostFollow.yaw) * 0.08;
-  ghostFollow.pit += (drunkCam.pit - ghostFollow.pit) * 0.08;
-  ghostFollow.roll += (drunkCam.roll - ghostFollow.roll) * 0.08;
-  _ghostEuler.copy(camera.rotation);
-  _ghostPos.copy(camera.position);
-  camera.rotation.order = "YXZ";
-  camera.rotation.y += drunkCam.yaw * (1.05 + amt * 0.65) + ghostFollow.yaw * (0.95 + amt * 0.5);
-  camera.rotation.x += drunkCam.pit * (1.05 + amt * 0.6) + ghostFollow.pit * (0.95 + amt * 0.45);
-  camera.rotation.z += drunkCam.roll * (0.85 + amt * 0.45) + ghostFollow.roll * (0.95 + amt * 0.5);
-  camera.quaternion.setFromEuler(camera.rotation);
-  camera.updateMatrixWorld();
-  _ghostRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-  camera.position.addScaledVector(_ghostRight, (0.08 + amt * 0.24) * (drunkCam.yaw >= 0 ? 1 : -1));
-  camera.position.y += amt * 0.06;
   renderer.setRenderTarget(ghostRT);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
-  camera.rotation.copy(_ghostEuler);
-  camera.position.copy(_ghostPos);
+  const side = drunkCam.yaw >= 0 ? 1 : -1;
+  ghostQuad.position.set(side * (0.018 + amt * 0.065), amt * 0.012, 0);
+  ghostQuad.rotation.z = drunkCam.roll * 0.08;
+  ghostQuad.scale.setScalar(1 + amt * 0.012);
   ghostQuad.material.opacity = 0.08 + amt * 0.16;
-  ghostQuad.material.color.setHex(0xffd8f4);
-  renderer.autoClear = false;
   renderer.render(ghostScene, ghostCam);
-  renderer.autoClear = true;
+  return true;
 }
 
 function setJuke(on, fromNet) {
@@ -7038,21 +7048,140 @@ function tickRemoteCars(dt) {
   }
 }
 
+function removeRemoteCopPack(key, pack) {
+  for (const off of pack.officers || []) off.rig?.parent?.remove(off.rig);
+  if (pack.car) {
+    const i = cars.indexOf(pack.car);
+    if (i >= 0) cars.splice(i, 1);
+    pack.car.mesh?.parent?.remove(pack.car.mesh);
+  }
+  remotePacks.delete(key);
+}
+
 function applyRemoteCops(msg) {
   if (!msg || msg.from === localId()) return;
-  if (msg.a === "clear" || !msg.p || !msg.p.length) {
+  const owner = String(msg.from || "");
+  if (msg.a === "clear" || !Array.isArray(msg.p) || !msg.p.length) {
     for (const [key, pack] of [...remotePacks]) {
-      if (!msg.from || pack.from === msg.from) {
-        for (const off of pack.officers || []) off.rig?.parent?.remove(off.rig);
-        remotePacks.delete(key);
-      }
+      if (!owner || pack.from === owner) removeRemoteCopPack(key, pack);
     }
     return;
   }
-  // lightweight: just toast once so remotes know heat exists
-  if (!remotePacks.has(msg.from)) {
-    remotePacks.set(msg.from, { from: msg.from, officers: [] });
-    toast(`${msg.fromName || "someone"}'s cops`);
+  const hadOwner = [...remotePacks.values()].some((pack) => pack.from === owner);
+  const seenPacks = new Set();
+  const now = performance.now();
+  for (const data of msg.p) {
+    const packId = String(data?.i ?? "");
+    if (!packId) continue;
+    const key = `${owner}:${packId}`;
+    seenPacks.add(key);
+    let pack = remotePacks.get(key);
+    if (!pack) {
+      pack = { from: owner, officers: [], car: null };
+      remotePacks.set(key, pack);
+    }
+    if (data.c) {
+      const carX = Number(data.c.x) || 0;
+      const carZ = Number(data.c.z) || 0;
+      const carYaw = Number(data.c.y) || 0;
+      if (!pack.car) {
+        pack.car = makeCar(carX, carZ, carYaw, 0x12141c, { exact: true });
+        pack.car.nid = `pc:${key}`;
+        pack.car.remoteSpawn = true;
+        pack.car.remoteCop = true;
+        dressCopCar(pack.car);
+      }
+      pack.car.tx = carX;
+      pack.car.tz = carZ;
+      pack.car.tyaw = carYaw;
+      pack.car.driverUntil = now + 1400;
+    } else if (pack.car) {
+      const i = cars.indexOf(pack.car);
+      if (i >= 0) cars.splice(i, 1);
+      pack.car.mesh?.parent?.remove(pack.car.mesh);
+      pack.car = null;
+    }
+    const seenOfficers = new Set();
+    for (const state of Array.isArray(data.o) ? data.o : []) {
+      const id = String(state?.i ?? "");
+      if (!id) continue;
+      seenOfficers.add(id);
+      let off = pack.officers.find((candidate) => candidate.id === id);
+      if (!off) {
+        const rig = makeOfficer();
+        off = {
+          id,
+          rig,
+          phase: Number(state.p) || 0,
+          state: "chase",
+          swingT: 0,
+          hurtT: 0,
+          tx: Number(state.x) || 0,
+          ty: Number(state.y) || 0,
+          tz: Number(state.z) || 0,
+          tyaw: Number(state.r) || 0,
+          trx: 0,
+          trz: 0,
+        };
+        rig.position.set(off.tx, off.ty, off.tz);
+        rig.rotation.y = off.tyaw;
+        pack.officers.push(off);
+      }
+      off.tx = Number(state.x) || 0;
+      off.ty = Number(state.y) || 0;
+      off.tz = Number(state.z) || 0;
+      off.tyaw = Number(state.r) || 0;
+      off.trx = Number(state.rx) || 0;
+      off.trz = Number(state.rz) || 0;
+      off.state = typeof state.s === "string" ? state.s : "chase";
+      off.moving = !!state.m;
+      off.dead = !!state.d;
+      off.swingT = Number(state.w) || 0;
+      off.hurtT = Number(state.h) || 0;
+    }
+    for (let i = pack.officers.length - 1; i >= 0; i--) {
+      const off = pack.officers[i];
+      if (seenOfficers.has(off.id)) continue;
+      off.rig?.parent?.remove(off.rig);
+      pack.officers.splice(i, 1);
+    }
+  }
+  for (const [key, pack] of [...remotePacks]) {
+    if (pack.from === owner && !seenPacks.has(key)) removeRemoteCopPack(key, pack);
+  }
+  if (!hadOwner && seenPacks.size) toast(`${msg.n || "someone"}'s cops`);
+}
+
+function tickRemoteCops(dt) {
+  const blink = tWorld * 6 % 2 < 1;
+  for (const pack of remotePacks.values()) {
+    if (pack.car?.sirenMats) {
+      pack.car.sirenMats[0].emissiveIntensity = blink ? 1.8 : 0.12;
+      pack.car.sirenMats[1].emissiveIntensity = blink ? 0.12 : 1.8;
+    }
+    for (const off of pack.officers) {
+      const rig = off.rig;
+      if (!rig) continue;
+      const dx = off.tx - rig.position.x;
+      const dz = off.tz - rig.position.z;
+      if (Math.hypot(dx, dz) > 8) {
+        rig.position.x = off.tx;
+        rig.position.z = off.tz;
+      } else {
+        const k = Math.min(1, dt * 14);
+        rig.position.x += dx * k;
+        rig.position.z += dz * k;
+      }
+      rig.position.y += (off.ty - rig.position.y) * Math.min(1, dt * 14);
+      rig.rotation.y += angDiff(rig.rotation.y, off.tyaw) * Math.min(1, dt * 12);
+      if (off.dead) {
+        rig.rotation.x += (off.trx - rig.rotation.x) * Math.min(1, dt * 12);
+        rig.rotation.z += (off.trz - rig.rotation.z) * Math.min(1, dt * 12);
+        if (rig.userData.body) rig.userData.body.position.y = -0.92;
+      } else {
+        poseCop(off, dt, off.moving);
+      }
+    }
   }
 }
 
@@ -7834,6 +7963,57 @@ function driveCopCar(pack, dt, ram) {
   syncCarMesh(car);
 }
 
+function copRound(value, precision = 2) {
+  const m = 10 ** precision;
+  return Math.round((Number(value) || 0) * m) / m;
+}
+
+function policeSnapshot() {
+  return cops.map((pack) => ({
+    i: String(pack.officers[0]?.id ?? ""),
+    c: pack.car && !pack.hijacked
+      ? { x: copRound(pack.car.x), z: copRound(pack.car.z), y: copRound(pack.car.yaw, 3) }
+      : null,
+    o: pack.officers
+      .filter((off) => !off.gone && off.rig)
+      .map((off) => ({
+        i: String(off.id),
+        x: copRound(off.rig.position.x),
+        y: copRound(off.rig.position.y),
+        z: copRound(off.rig.position.z),
+        r: copRound(off.rig.rotation.y, 3),
+        rx: off.dead ? copRound(off.rig.rotation.x, 3) : 0,
+        rz: off.dead ? copRound(off.rig.rotation.z, 3) : 0,
+        s: off.state,
+        m: off.state === "chase" || off.state === "board" || off.state === "out",
+        d: off.dead ? 1 : 0,
+        w: copRound(off.swingT),
+        h: copRound(off.hurtT),
+        p: copRound(off.phase),
+      })),
+  }));
+}
+
+function syncPolice(dt) {
+  copNetAcc += dt;
+  copNetHeartbeat += dt;
+  if (!cops.length) {
+    if (lastCopKey) publishEvent({ t: "cops", a: "clear" });
+    lastCopKey = "";
+    copNetAcc = 0;
+    copNetHeartbeat = 0;
+    return;
+  }
+  if (copNetAcc < 0.12) return;
+  copNetAcc = 0;
+  const packs = policeSnapshot();
+  const key = JSON.stringify(packs);
+  if (key === lastCopKey && copNetHeartbeat < 1) return;
+  lastCopKey = key;
+  copNetHeartbeat = 0;
+  publishEvent({ t: "cops", n: playerName(), p: packs });
+}
+
 function tickPolice(dt) {
   if (!cops.length) return;
   if (wanted) {
@@ -8583,8 +8763,10 @@ function tick() {
     updatePlayer(dt);
     tickDoorClosers(dt);
     tickRemoteCars(dt);
+    tickRemoteCops(dt);
     stickToRideCar();
     tickPolice(dt);
+    syncPolice(dt);
     if (!inCar) updatePour(dt);
     stashLook();
   } else {
@@ -8632,8 +8814,7 @@ function tick() {
     renderer.shadowMap.needsUpdate = true;
   }
   hud();
-  renderer.render(scene, camera);
-  renderDoubleVision();
+  if (!renderDoubleVision()) renderer.render(scene, camera);
   restoreBodyLook();
 }
 
@@ -9037,6 +9218,10 @@ window.__POUR = {
   restock: restockDrinks,
   reset: resetShift,
   grabGlass: () => attachHeld(glassMesh),
+  police: () => {
+    spawnPolice(bodyPos.x, bodyPos.z);
+    return cops.length;
+  },
   bumpDrink,
   grabNearest() {
     let best = null;
@@ -9067,6 +9252,7 @@ window.__POUR = {
     net: netStatus(),
     name: playerName(),
     online: roster().map((p) => p.name),
+    cops: { local: cops.length, remote: remotePacks.size },
   }),
 };
 
