@@ -109,7 +109,6 @@ export function createClub(api) {
   let wantDown = 0;
   let wantDance = 0;
   let rebalanceT = 0;
-  let fogClubMode = null;
 
   function playerPos() {
     return api.playerPos?.() || { x: 0, y: 0, z: 0 };
@@ -1972,11 +1971,8 @@ export function createClub(api) {
       );
     }
     if (scene.fog) {
-      if (fogClubMode !== inHere) {
-        scene.fog.color.setHex(inHere ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
-        scene.fog.density = inHere ? CLUB_FOG_DENSITY : OUTDOOR_FOG_DENSITY;
-        fogClubMode = inHere;
-      }
+      scene.fog.color.setHex(inHere ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
+      scene.fog.density = inHere ? CLUB_FOG_DENSITY : OUTDOOR_FOG_DENSITY;
       for (const mist of mistMeshes) {
         if (mist.userData.fogVolume) {
           mist.material.opacity = CLUB_MIST_OPACITY;
@@ -2288,8 +2284,6 @@ export function createClub(api) {
         side: THREE.DoubleSide,
         toneMapped: false,
       });
-    const y0 = 0.28;
-    const y1 = CLUB_H - 0.08;
     const cloudGeo = new THREE.SphereGeometry(1, 14, 8);
     const fogCube = new THREE.Mesh(
       new THREE.BoxGeometry(CX1 - CX0 - 0.24, CLUB_H - 0.18, CZ1 - CZ0 - 0.24),
@@ -2310,7 +2304,7 @@ export function createClub(api) {
       );
       mist.userData.smokeExtentX = mist.scale.x;
       mist.userData.smokeExtentZ = mist.scale.z;
-      mist.userData.smokeMinY = 0.7 + mist.scale.y;
+      mist.userData.smokeMinY = 1.35 + mist.scale.y;
       mist.userData.smokeMaxY = CLUB_H - 0.35 - mist.scale.y;
       mist.position.set(
         THREE.MathUtils.clamp(

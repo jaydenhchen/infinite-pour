@@ -742,6 +742,7 @@ function spawnPeer(id, state) {
     kvx: 0,
     kvz: 0,
     sipT: Number(state.sip) || 0,
+    sipOn: Number(state.sip) > 0.01,
     sipKind: state.sk ? "chug" : "sip",
   };
   paintShirt(rig, state.sc != null ? state.sc : colorOf(id));
@@ -823,8 +824,13 @@ function applyState(id, state) {
   if (state.gc != null) peer.gc = Number(state.gc) || 0;
   peer.pouring = !!state.p;
   if (state.sip != null) {
-    peer.sipT = Number(state.sip) || 0;
-    peer.sipKind = state.sk ? "chug" : "sip";
+    const nextSip = Number(state.sip) || 0;
+    const nextSipOn = nextSip > 0.01;
+    if (nextSipOn && !peer.sipOn) {
+      peer.sipT = nextSip;
+      peer.sipKind = state.sk ? "chug" : "sip";
+    }
+    peer.sipOn = nextSipOn;
   }
   const wasDrive = !!peer.drive;
   const wasSi = peer.si == null ? 0 : peer.si | 0;
@@ -1123,7 +1129,7 @@ function sendPose() {
     b: round(clamp(drunkFn(), 0, DRUNK_NET), 2),
     h: String(heldFn() || "").slice(0, 24),
     p: pouringFn() ? 1 : 0,
-    sip: extra.sip > 0.02 ? round(extra.sip, 2) : 0,
+    sip: extra.sip > 0.02 ? (extra.sk ? 1.08 : 0.64) : 0,
     sk: extra.sk ? 1 : 0,
     s: extra.s ? 1 : 0,
     u: extra.u ? 1 : 0,
