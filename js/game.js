@@ -47,7 +47,7 @@ import {
   makeBatonMesh,
   seatBatonOnArm,
 } from "./multiplayer.js?v=139";
-import { createGames } from "./games.js?v=106";
+import { createGames } from "./games.js?v=107";
 import { createClub } from "./club.js?v=51";
 
 const $ = (id) => document.getElementById(id);
@@ -6528,7 +6528,8 @@ function applyDrunkLook() {
   if (inCar) return;
   if (Math.abs(drunkCam.yaw) + Math.abs(drunkCam.pit) + Math.abs(drunkCam.roll) < 1e-5) return;
   camera.rotation.order = "YXZ";
-  _drunkEuler.setFromQuaternion(camera.quaternion, "YXZ");
+  if (viewMode === 1) _drunkEuler.set(savedPitch, savedYaw, 0, "YXZ");
+  else _drunkEuler.setFromQuaternion(camera.quaternion, "YXZ");
   _drunkEuler.y += drunkCam.yaw;
   _drunkEuler.x += drunkCam.pit;
   _drunkEuler.z += drunkCam.roll;
@@ -9169,8 +9170,10 @@ function bind() {
       return;
     }
     if (!dragging || controls.isLocked || summonOpen || chatOpen) return;
-    camera.rotation.y -= e.movementX * 0.0024;
-    camera.rotation.x = THREE.MathUtils.clamp(camera.rotation.x - e.movementY * 0.0024, -1.2, 1.2);
+    savedYaw -= e.movementX * 0.0024;
+    savedPitch = THREE.MathUtils.clamp(savedPitch - e.movementY * 0.0024, -1.2, 1.2);
+    camera.rotation.y = savedYaw;
+    camera.rotation.x = savedPitch;
   });
   window.addEventListener("keydown", (e) => {
     if (browserChord(e)) return;

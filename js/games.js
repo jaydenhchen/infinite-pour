@@ -1102,7 +1102,7 @@ export function createGames(api) {
   function buildYard() {
     buildTable(pong, "pong", pong.w, pong.d);
     buildTable(dye, "die", dye.w, dye.d);
-    const pongStand = standMarker(pong.x - 0.7, pong.z - 0.15, 0xd22b2b, true, false);
+    const pongStand = standMarker(pong.x - 0.7, pong.z - 0.15, 0x2a1a12, false, false);
     mark(pongStand, "pong-join");
     registerPick(pongStand);
     const dyeStand = standMarker(dye.x - 0.7, dye.z, 0xf4ead0, false, true);
