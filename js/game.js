@@ -76,7 +76,7 @@ const CLUB_FAR_GAIN = 0.95;
 const CLUB_NEAR_GAIN = 1.16;
 const CLUB_FAR_DRIVE = 0.55;
 const CLUB_NEAR_DRIVE = 0.85;
-const DOUBLE_VISION_SCALE = 0.4;
+const DOUBLE_VISION_SCALE = 0.32;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -5285,8 +5285,8 @@ function hud() {
   if (visualStep !== hudDrunkStep) {
     hudDrunkStep = visualStep;
     const vignetteRgb = drunkVignetteRgb(visualStep);
-    $("vignette").style.filter = `saturate(${1 + Math.min(2.1, visualStep * 0.42)})`;
-    $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(20, 50 - visualStep * 6)}%, rgba(${vignetteRgb}, ${Math.min(0.7, 0.3 + visualStep * 0.065)}) 100%)`;
+    $("vignette").style.filter = `saturate(${1 + Math.min(0.45, visualStep * 0.12)})`;
+    $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(38, 60 - visualStep * 3.5)}%, rgba(${vignetteRgb}, ${Math.min(0.24, 0.1 + visualStep * 0.03)}) 100%)`;
   }
   const list = $("onlineList");
   const online = $("online");
@@ -6503,7 +6503,7 @@ function setView(mode) {
 
 function applyDrunkCam(dt, extra = 0) {
   const drunk = Math.max(0, drunkLevel());
-  const amp = Math.min(1.8, drunk * 0.34);
+  const amp = Math.min(0.9, drunk * 0.18);
   shakePhase += dt * 1.05;
   const moving = sitting == null && inCar == null && onGround && (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD);
   if (moving) shakeWalk += dt * 5.2;
@@ -6566,14 +6566,38 @@ function ensureGhost(w, h) {
       })
     );
     ghostBase.renderOrder = 0;
-    const mat = new THREE.MeshBasicMaterial({
-      map: ghostRT.texture,
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        map: { value: ghostRT.texture },
+        opacity: { value: 0.08 },
+        shift: { value: new THREE.Vector2() },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D map;
+        uniform float opacity;
+        uniform vec2 shift;
+        varying vec2 vUv;
+        void main() {
+          vec2 uvR = clamp(vUv + shift, vec2(0.0), vec2(1.0));
+          vec2 uvB = clamp(vUv - shift, vec2(0.0), vec2(1.0));
+          float r = texture2D(map, uvR).r;
+          float g = texture2D(map, vUv).g;
+          float b = texture2D(map, uvB).b;
+          gl_FragColor = vec4(r, g, b, opacity);
+        }
+      `,
       transparent: true,
-      opacity: 0.16,
       depthTest: false,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
       toneMapped: false,
-      color: 0xffd8f4,
     });
     ghostQuad = new THREE.Mesh(geo, mat);
     ghostQuad.renderOrder = 1;
@@ -6608,12 +6632,17 @@ function renderDoubleVision(dt = 0) {
     ghostBase.visible = false;
   }
   const sway = THREE.MathUtils.clamp(drunkCam.yaw / 0.22, -1, 1);
-  ghostQuad.position.set(sway * (0.018 + amt * 0.065), amt * 0.012, 0);
-  ghostQuad.rotation.z = drunkCam.roll * 0.08;
-  ghostQuad.scale.setScalar(1 + amt * 0.012);
-  ghostQuad.material.opacity = 0.08 + amt * 0.16;
+  const channelShift = (0.002 + amt * 0.008) * (sway >= 0 ? 1 : -1);
+  ghostQuad.position.set(0, 0, 0);
+  ghostQuad.rotation.z = drunkCam.roll * 0.025;
+  ghostQuad.scale.setScalar(1);
+  ghostQuad.material.uniforms.shift.value.set(channelShift, amt * 0.0015);
+  ghostQuad.material.uniforms.opacity.value = 0.035 + amt * 0.065;
+  const autoClear = renderer.autoClear;
+  renderer.autoClear = false;
   renderer.render(ghostScene, ghostCam);
-  ghostBase.visible = true;
+  renderer.autoClear = autoClear;
+  ghostBase.visible = false;
   return true;
 }
 
