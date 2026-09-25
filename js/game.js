@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=139";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=51";
+import { createClub } from "./club.js?v=52";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1259,6 +1259,8 @@ const audio = {
     this.clubAudio = this.clubDecks[fade.to];
     this.clubTrack = this.clubDeckTracks[fade.to];
     const now = this.ctx?.currentTime || 0;
+    this.clubDeckGains[fade.from]?.gain.cancelScheduledValues(now);
+    this.clubDeckGains[fade.to]?.gain.cancelScheduledValues(now);
     this.clubDeckGains[fade.from]?.gain.setValueAtTime(0, now);
     this.clubDeckGains[fade.to]?.gain.setValueAtTime(1, now);
     this.clubFade = null;
@@ -1293,6 +1295,7 @@ const audio = {
   },
   skipClubTrack() {
     if (!this.clubAudio) return false;
+    if (this.clubFade) this.finishClubFade();
     this.prepareClubNext();
     return this.beginClubFade(3);
   },
@@ -1602,12 +1605,12 @@ const audio = {
     this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
     if (this.clubGain && this.ctx) {
       this.clubGain.gain.setTargetAtTime(this.clubVol, now, 0.045);
-      const drunkMix = inside ? THREE.MathUtils.clamp((Number(drunk) || 0) / 2.4, 0, 1) : 0;
-      this.clubBass?.gain.setTargetAtTime(inside ? 5 + near * 3 : 0, now, 0.1);
+      const drunkMix = inside ? THREE.MathUtils.clamp((Number(drunk) || 0) / 4.8, 0, 1) : 0;
+      this.clubBass?.gain.setTargetAtTime(inside ? 5 + near * 3.5 + drunkMix * 2 : 0, now, 0.1);
       this.clubPresence?.gain.setTargetAtTime(inside ? 1.5 + near * 1.5 : 0, now, 0.1);
-      this.clubDelay?.delayTime.setTargetAtTime(inside ? 0.12 + drunkMix * 0.12 : 0.14, now, 0.16);
-      this.clubEchoGain?.gain.setTargetAtTime(inside ? 0.08 + drunkMix * 0.32 : 0, now, 0.12);
-      this.clubEchoFeedback?.gain.setTargetAtTime(inside ? 0.1 + drunkMix * 0.28 : 0, now, 0.12);
+      this.clubDelay?.delayTime.setTargetAtTime(inside ? 0.13 + drunkMix * 0.2 : 0.14, now, 0.16);
+      this.clubEchoGain?.gain.setTargetAtTime(inside ? 0.1 + drunkMix * 0.5 : 0, now, 0.12);
+      this.clubEchoFeedback?.gain.setTargetAtTime(inside ? 0.12 + drunkMix * 0.36 : 0, now, 0.12);
     } else {
       this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
     }
@@ -5200,21 +5203,26 @@ function drunkVignetteRgb(d) {
   let r;
   let g;
   let b;
-  if (d < 0.75) {
-    const t = d / 0.75;
-    r = 16 + t * 8;
-    g = 16 + t * 70;
-    b = 18 + t * 22;
+  if (d < 0.8) {
+    const t = d / 0.8;
+    r = 190 + t * 24;
+    g = 18 + t * 12;
+    b = 28 + t * 10;
   } else if (d < 1.8) {
-    const t = (d - 0.75) / 1.05;
-    r = 24 + t * 18;
-    g = 86 - t * 38;
-    b = 40 + t * 120;
+    const t = (d - 0.8) / 1;
+    r = 214 - t * 174;
+    g = 30 + t * 158;
+    b = 38 - t * 6;
+  } else if (d < 3.2) {
+    const t = (d - 1.8) / 1.4;
+    r = 40 - t * 20;
+    g = 176 - t * 112;
+    b = 32 + t * 178;
   } else {
-    const t = Math.min(1, (d - 1.8) / 1.8);
-    r = 42 + t * 148;
-    g = 48 - t * 32;
-    b = 160 - t * 125;
+    const t = Math.min(1, (d - 3.2) / 2.4);
+    r = 20 - t * 8;
+    g = 64 - t * 24;
+    b = 210 + t * 35;
   }
   return `${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}`;
 }
@@ -6528,11 +6536,13 @@ function applyDrunkLook() {
   if (inCar) return;
   if (Math.abs(drunkCam.yaw) + Math.abs(drunkCam.pit) + Math.abs(drunkCam.roll) < 1e-5) return;
   camera.rotation.order = "YXZ";
-  if (viewMode === 1) _drunkEuler.set(savedPitch, savedYaw, 0, "YXZ");
-  else _drunkEuler.setFromQuaternion(camera.quaternion, "YXZ");
-  _drunkEuler.y += drunkCam.yaw;
-  _drunkEuler.x += drunkCam.pit;
-  _drunkEuler.z += drunkCam.roll;
+  if (viewMode === 1) _drunkEuler.set(savedPitch, savedYaw + drunkCam.yaw, drunkCam.roll, "YXZ");
+  else {
+    _drunkEuler.setFromQuaternion(camera.quaternion, "YXZ");
+    _drunkEuler.y += drunkCam.yaw;
+    _drunkEuler.x += drunkCam.pit;
+    _drunkEuler.z += drunkCam.roll;
+  }
   camera.quaternion.setFromEuler(_drunkEuler);
   camera.rotation.copy(_drunkEuler);
   const head = localPeer?.rig?.userData?.head;
@@ -9018,7 +9028,7 @@ function tick() {
   if (playing()) houseGames?.tick(dt, tWorld);
   const clubAuthority = roomAuthorityId();
   houseClub?.setNpcAuthority(!clubAuthority || clubAuthority === String(localId() || ""));
-  houseClub?.tick(dt, tWorld);
+  houseClub?.tick(dt, tWorld, frontDoorOpen || Math.abs(frontDoorAng) > 0.02);
   tickSignals(tWorld);
   tickStreetProps(dt);
   $("prompt").textContent = playing() ? promptFrom(look) : "";
@@ -9169,11 +9179,15 @@ function bind() {
       }
       return;
     }
-    if (!dragging || controls.isLocked || summonOpen || chatOpen) return;
+    if (!started || summonOpen || chatOpen || passedOut) return;
+    if (!controls.isLocked && !dragging) return;
     savedYaw -= e.movementX * 0.0024;
     savedPitch = THREE.MathUtils.clamp(savedPitch - e.movementY * 0.0024, -1.2, 1.2);
+    camera.rotation.order = "YXZ";
     camera.rotation.y = savedYaw;
     camera.rotation.x = savedPitch;
+    camera.rotation.z = 0;
+    camera.quaternion.setFromEuler(camera.rotation);
   });
   window.addEventListener("keydown", (e) => {
     if (browserChord(e)) return;
