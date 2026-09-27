@@ -24,10 +24,9 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
-const CLUB_CLOUD_OPACITY = 0.24;
+const CLUB_CLOUD_OPACITY = 0.38;
 const CLUB_FOG_COLOR = 0x50485c;
 const OUTDOOR_FOG_COLOR = 0x12080c;
-const CLUB_FOG_DENSITY = 0.18;
 const OUTDOOR_FOG_DENSITY = 0.006;
 const CLOUD_DRIFT_X = 0.66;
 const CLOUD_DRIFT_Z = 0.46;
@@ -127,6 +126,7 @@ export function createClub(api) {
     floorSolid,
     climbSolid,
     railSolid,
+    collideWorld,
     camBox,
     addCeiling,
     blockCars,
@@ -2012,9 +2012,9 @@ export function createClub(api) {
     return from + d * amount;
   }
 
-  function tickSyncedCrowd(dt, t) {
+  function tickSyncedCrowd(dt, t, guardsOnly = false) {
     for (const p of crowd) {
-      if (p.gone || !p.rig) continue;
+      if (guardsOnly && p.mode !== "guard") continue;
       if (p.netX != null) {
         const dx = p.netX - p.x;
         const dz = p.netZ - p.z;
@@ -2052,9 +2052,10 @@ export function createClub(api) {
 
   function tick(dt, t, doorOpen = doorActive()) {
     if (!built) return;
-    const clubActive = !!doorOpen;
+    const pos = playerPos();
+    const inHere = inside(pos.x, pos.z);
+    const clubActive = inHere || !!doorOpen;
     if (clubActive) {
-      const pos = playerPos();
       for (const cloud of smokeClouds) {
         const u = cloud.userData;
         const phase = u.smokePhase || 0;
@@ -2075,13 +2076,12 @@ export function createClub(api) {
       }
     }
     if (scene.fog) {
-      scene.fog.color.setHex(clubActive ? CLUB_FOG_COLOR : OUTDOOR_FOG_COLOR);
-      scene.fog.density = clubActive ? CLUB_FOG_DENSITY : OUTDOOR_FOG_DENSITY;
+      scene.fog.color.setHex(OUTDOOR_FOG_COLOR);
+      scene.fog.density = OUTDOOR_FOG_DENSITY;
     }
     if (cloudMaterial) {
-      cloudMaterial.uniforms.uOpacity.value = clubActive ? CLUB_CLOUD_OPACITY : CLUB_CLOUD_OPACITY * 0.55;
+      cloudMaterial.uniforms.uOpacity.value = inHere ? CLUB_CLOUD_OPACITY : 0;
     }
-    const pos = playerPos();
     let speakerDistance = Infinity;
     for (const speaker of SPEAKERS) {
       speakerDistance = Math.min(speakerDistance, Math.hypot(pos.x - speaker[0], pos.z - speaker[1]));
@@ -2183,20 +2183,21 @@ export function createClub(api) {
     for (const p of crowd) {
       if (p.pushNetT > 0) p.pushNetT = Math.max(0, p.pushNetT - dt);
     }
-    if (!clubActive) return;
     if (!npcAuthority) {
-      tickSyncedCrowd(dt, crowdTime);
+      tickSyncedCrowd(dt, crowdTime, !clubActive);
       return;
     }
+    if (clubActive) {
 
-    rebalanceT += dt;
-    if (rebalanceT > 1.2) {
-      rebalanceT = 0;
-      rebalanceCrowd();
-      refillBalconySeats();
+      rebalanceT += dt;
+      if (rebalanceT > 1.2) {
+        rebalanceT = 0;
+        rebalanceCrowd();
+        refillBalconySeats();
+      }
     }
     for (const p of crowd) {
-      if (p.gone) continue;
+      if (!clubActive && p.mode !== "guard") continue;
       if (p.stairCool > 0) p.stairCool -= dt;
       if (p.hurtT > 0) p.hurtT -= dt;
       if (p.dead) {
