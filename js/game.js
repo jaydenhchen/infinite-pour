@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=139";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=57";
+import { createClub } from "./club.js?v=62";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -3045,6 +3045,7 @@ function buildWorld() {
     makeHingeDoor,
     neonTex,
     audio,
+    collideWorld,
     playerPos: () => bodyPos,
     drunkLevel: () => drunkLevel(),
     makeBottle,
