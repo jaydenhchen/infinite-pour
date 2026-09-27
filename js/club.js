@@ -24,7 +24,7 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
-const CLUB_CLOUD_OPACITY = 0.46;
+const CLUB_CLOUD_OPACITY = 0.62;
 const CLUB_FOG_COLOR = 0x50485c;
 const OUTDOOR_FOG_COLOR = 0x12080c;
 const OUTDOOR_FOG_DENSITY = 0.006;
@@ -558,6 +558,7 @@ export function createClub(api) {
       dizzyAt: 0.82 + hash01(seed, 26) * 0.28,
       dizzyRate: 1.3 + hash01(seed, 27) * 1.4,
       gender: kind === "f" || kind === "djf" ? "f" : "m",
+      guard: kind === "guard",
       r: kind === "guard" ? 0.56 : kind.startsWith("dj") ? 0.48 : 0.5,
       phase: hash01(seed, 21) * Math.PI * 2,
       style: (hash01(seed, 22) * 4) | 0,
@@ -1254,12 +1255,55 @@ export function createClub(api) {
     pickFloorTarget(p, upstairs);
   }
 
+  function releaseChair(p) {
+    if (!p) return;
+    if (p.chair?.userData?.sitter === p) p.chair.userData.sitter = null;
+    p.chair = null;
+  }
+
+  function syncChairState(p) {
+    if (!p) return;
+    if (p.mode !== "sit" || p.dead || p.gone) {
+      releaseChair(p);
+      return;
+    }
+    const targetX = Number.isFinite(p.netX) ? p.netX : p.x;
+    const targetZ = Number.isFinite(p.netZ) ? p.netZ : p.z;
+    let chair = p.chair;
+    if (
+      chair &&
+      (Math.hypot(targetX - chair.userData.sit.x, targetZ - chair.userData.sit.z) > 0.3 ||
+        (chair.userData.sitter && chair.userData.sitter !== p))
+    ) {
+      releaseChair(p);
+      chair = null;
+    }
+    if (!chair) {
+      let best = null;
+      let bestD = 0.42;
+      for (const candidate of chairs) {
+        const sitter = candidate.userData.sitter;
+        if (sitter && sitter !== p) continue;
+        const d = Math.hypot(targetX - candidate.userData.sit.x, targetZ - candidate.userData.sit.z);
+        if (d < bestD) {
+          best = candidate;
+          bestD = d;
+        }
+      }
+      chair = best;
+    }
+    if (chair) {
+      p.chair = chair;
+      chair.userData.sitter = p;
+    }
+  }
+
   function emptyChairs() {
     return chairs.filter((c) => !c.userData.sitter);
   }
 
   function trySeatNearby(p) {
-    if (!p || p.y < 1.4 || p.mode === "sit") return false;
+    if (!p || p.y < 1.4 || p.mode === "sit" || (p.chairExitT || 0) > 0) return false;
     let best = null;
     let bestD = 1.48;
     for (const c of emptyChairs()) {
@@ -1279,6 +1323,8 @@ export function createClub(api) {
     p.mode = "sit";
     p.route = "";
     p.walking = false;
+    p.chairExit = null;
+    p.chairExitT = 0;
     p.chair = chair;
     p.x = chair.userData.sit.x;
     p.z = chair.userData.sit.z;
@@ -1291,16 +1337,22 @@ export function createClub(api) {
   function kickChair(chair) {
     const p = chair.userData.sitter;
     if (!p || p === "player") return false;
-    chair.userData.sitter = null;
-    p.chair = null;
+    const sit = chair.userData.sit;
+    releaseChair(p);
     p.mode = "mingle";
     p.route = "";
-    p.walking = false;
+    p.walking = true;
     p.y = BALC_Y;
-    p.x = chair.userData.sit.standX;
-    p.z = chair.userData.sit.standZ;
-    p.wait = 0.2;
-    pickTarget(p);
+    p.x = sit.x;
+    p.z = sit.z;
+    p.chairExit = { x: sit.standX, z: sit.standZ };
+    p.chairExitT = 4;
+    p.tx = p.chairExit.x;
+    p.tz = p.chairExit.z;
+    p.wait = 0;
+    p.yaw = Math.atan2(p.chairExit.x - p.x, p.chairExit.z - p.z);
+    p.rig.position.set(p.x, p.y, p.z);
+    p.rig.rotation.y = p.yaw;
     return true;
   }
 
@@ -1823,15 +1875,16 @@ export function createClub(api) {
   }
 
   function stepMingle(p, dt) {
+    if (p.chairExitT > 0) p.chairExitT = Math.max(0, p.chairExitT - dt);
     if (p.wait > 0) {
       p.wait -= dt;
       if (p.wait <= 0) pickTarget(p);
       return false;
     }
     if (usingStairs(p) && onStairs(p.x, p.z)) return stepStair(p, dt);
-    let aimX = p.tx;
-    let aimZ = p.tz;
-    if (p.y > 1.2 && !p.route) {
+    let aimX = p.chairExit?.x ?? p.tx;
+    let aimZ = p.chairExit?.z ?? p.tz;
+    if (!p.chairExit && p.y > 1.2 && !p.route) {
       const via = balconySteer(p.x, p.z, p.tx, p.tz);
       if (via) {
         aimX = via.x;
@@ -1843,6 +1896,12 @@ export function createClub(api) {
     const dist = Math.hypot(dx, dz);
     if (dist < 0.16) {
       p.walking = false;
+      if (p.chairExit) {
+        p.chairExit = null;
+        p.wait = 0.25;
+        pickTarget(p);
+        return false;
+      }
       if (p.route) {
         pickTarget(p);
         return false;
@@ -1865,14 +1924,14 @@ export function createClub(api) {
     if (!stairing) {
       if (p.y < 1 && blockedFloor(nx, nz)) {
         p.walking = false;
-        pickTarget(p);
+        if (!p.chairExit) pickTarget(p);
         return false;
       }
       if (p.y > 1 && !onBalcony(nx, nz)) {
         const safe = clampToDeck(nx, nz, (p.r || 0.44) + 0.04);
         if (Math.hypot(nx - safe.x, nz - safe.z) > 0.24) {
           p.walking = false;
-          pickTarget(p);
+          if (!p.chairExit) pickTarget(p);
           return false;
         }
         nx = safe.x;
@@ -1882,7 +1941,7 @@ export function createClub(api) {
     if (crowdStepBlocked(p, nx, nz)) {
       p.walking = false;
       p.wait = 0.1;
-      pickTarget(p);
+      if (!p.chairExit) pickTarget(p);
       return false;
     }
     p.x = nx;
@@ -2075,15 +2134,19 @@ export function createClub(api) {
 
   function tickSyncedCrowd(dt, t, guardsOnly = false) {
     for (const p of crowd) {
-      if (guardsOnly && p.mode !== "guard" && p.mode !== "sit") continue;
+      if (guardsOnly && !p.guard && p.mode !== "sit") continue;
+      if (p.mode === "sit" && p.chair) {
+        p.netX = p.chair.userData.sit.x;
+        p.netZ = p.chair.userData.sit.z;
+        p.netY = BALC_Y;
+      }
       if (p.netX != null) {
         const dx = p.netX - p.x;
         const dz = p.netZ - p.z;
-        if (Math.hypot(dx, dz) > 5) {
-          p.x = p.netX;
-          p.z = p.netZ;
-        } else {
-          const k = Math.min(1, dt * 12);
+        const dist = Math.hypot(dx, dz);
+        const maxStep = Math.max(0.02, dt * 3.2);
+        if (dist > 0.0001) {
+          const k = Math.min(1, maxStep / dist);
           p.x += dx * k;
           p.z += dz * k;
         }
@@ -2258,7 +2321,7 @@ export function createClub(api) {
       }
     }
     for (const p of crowd) {
-      if (!clubActive && p.mode !== "guard" && p.mode !== "sit") continue;
+      if (!clubActive && !p.guard && p.mode !== "sit") continue;
       if (p.stairCool > 0) p.stairCool -= dt;
       if (p.hurtT > 0) p.hurtT -= dt;
       if (p.dead) {
@@ -2326,13 +2389,12 @@ export function createClub(api) {
 
   function poseDead(p, t) {
     const u = p.rig.userData;
-    u.body.position.set(0, 0.1, 0);
-    u.body.rotation.set(1.38, 0, 0.22);
-    u.armL.rotation.set(-0.25, 0.1, 1.15);
-    u.armR.rotation.set(-0.18, -0.08, -1.05);
-    u.legL.rotation.set(0.12, 0, 0.28);
-    u.legR.rotation.set(-0.1, 0, -0.2);
-    u.head.rotation.set(0.28, 0.35, 0.18);
+    u.body.position.set(0, -0.24, 0.08);
+    u.body.rotation.set(1.5, 0, 0.28);
+    u.armL.rotation.set(-0.38, 0.1, 1.22);
+    u.armR.rotation.set(-0.28, -0.08, -1.12);
+    u.legL.rotation.set(-0.28, 0, 0.52);
+    u.legR.rotation.set(-0.2, 0, -0.46);
   }
 
   function poseHurt(p, t) {
@@ -2422,10 +2484,11 @@ export function createClub(api) {
       best.z += fz * 0.22;
     }
     if (best.chair) {
-      best.chair.userData.sitter = null;
-      best.chair = null;
+      releaseChair(best);
       best.mode = "mingle";
       best.route = "";
+      best.chairExit = null;
+      best.chairExitT = 0;
       best.wait = 0.2;
       pickTarget(best);
     }
@@ -2475,7 +2538,7 @@ export function createClub(api) {
       fog: true,
       toneMapped: false,
     });
-    for (let i = 0; i < 42; i++) {
+    for (let i = 0; i < 56; i++) {
       const mist = new THREE.Mesh(cloudGeometry, cloudMaterial);
       mist.scale.set(
         1.3 + hash01(i, 91) * 2.3,
@@ -2484,8 +2547,8 @@ export function createClub(api) {
       );
       mist.userData.smokeExtentX = mist.scale.x;
       mist.userData.smokeExtentZ = mist.scale.z;
-      mist.userData.smokeMinY = 1.35 + mist.scale.y;
-      mist.userData.smokeMaxY = CLUB_H - 0.35 - mist.scale.y;
+      mist.userData.smokeMinY = 0.3 + mist.scale.y * 0.7;
+      mist.userData.smokeMaxY = CLUB_H - 0.25 - mist.scale.y;
       mist.position.set(
         THREE.MathUtils.clamp(
           11.0 + hash01(i, 94) * 16.0,
@@ -2623,6 +2686,7 @@ export function createClub(api) {
       p.drawT = Math.max(0, Number(row[9]) || 0);
       p.swingT = Math.max(0, Number(row[10]) || 0);
       p.deadT = Math.max(0, Number(row[11]) || 0);
+      syncChairState(p);
     }
     if (!full) return;
     for (const p of crowd) {
