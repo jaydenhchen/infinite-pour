@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=140";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=64";
+import { createClub } from "./club.js?v=66";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -79,7 +79,7 @@ const CLUB_FAR_GAIN = 0.95;
 const CLUB_NEAR_GAIN = 1.16;
 const CLUB_FAR_DRIVE = 0.55;
 const CLUB_NEAR_DRIVE = 0.85;
-const DOUBLE_VISION_SCALE = 0.24;
+const DOUBLE_VISION_SCALE = 0.26;
 const WORLD_X = 108;
 const WORLD_Z_MIN = -18;
 const WORLD_Z_MAX = 118;
@@ -1846,8 +1846,10 @@ let shakeWalk = 0;
 let localGender = "m";
 let heartT = 0;
 let heartKick = 0;
+let heartBeatPulse = 0;
 let hudDrunkStep = -1;
 let hudDrunkFlashStep = -1;
+let hudHeartBeatStep = -1;
 const cops = [];
 let wanted = false;
 let wantedT = 0;
@@ -2084,6 +2086,7 @@ function tickHeartbeat(dt) {
   if (str <= 0.001) {
     el.style.opacity = "0";
     heartT = 0;
+    heartBeatPulse = 0;
     heartKick = Math.max(0, heartKick - dt * 4);
     return;
   }
@@ -2102,6 +2105,7 @@ function tickHeartbeat(dt) {
   }
   heartKick = Math.max(0, heartKick - dt * 3.2);
   const beat = Math.max(heartPulse(p1, 0, 0.14), heartPulse(p1, 0.2, 0.12) * 0.72);
+  heartBeatPulse = beat;
   const dark = Math.min(0.96, 0.2 + str * 0.46 + beat * (0.32 + str * 0.38));
   el.style.opacity = dark.toFixed(3);
 }
@@ -2732,6 +2736,10 @@ function resetShift() {
   bacDecayFrom = 0;
   bacHoldUntil = 0;
   bacDecayStart = 0;
+  heartT = 0;
+  heartKick = 0;
+  heartBeatPulse = 0;
+  hudHeartBeatStep = -1;
   sipT = 0;
   sipKind = "sip";
   sipDur = 0.62;
@@ -5340,15 +5348,23 @@ function hud() {
   const d = drunkLevel();
   const visualStep = Math.round(d * 40) / 40;
   const flashStep = d >= 0.72 ? Math.floor(tWorld * (2.1 + Math.min(1.8, d * 0.28))) : -1;
-  if (visualStep !== hudDrunkStep || flashStep !== hudDrunkFlashStep) {
+  const heartStep = Math.round(heartBeatPulse * 20) / 20;
+  const heartStr = heartStrength();
+  if (visualStep !== hudDrunkStep || flashStep !== hudDrunkFlashStep || heartStep !== hudHeartBeatStep) {
     hudDrunkStep = visualStep;
     hudDrunkFlashStep = flashStep;
+    hudHeartBeatStep = heartStep;
     const vignetteRgb = flashStep >= 0
       ? ["224, 24, 38", "32, 214, 82", "38, 86, 238"][((flashStep % 3) + 3) % 3]
       : drunkVignetteRgb(visualStep);
-    const flashAlpha = flashStep >= 0 ? Math.min(0.28, 0.12 + visualStep * 0.035) : Math.min(0.24, 0.1 + visualStep * 0.03);
-    $("vignette").style.filter = `saturate(${1 + Math.min(0.65, visualStep * 0.16)})`;
-    $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${Math.max(34, 60 - visualStep * 3.5)}%, rgba(${vignetteRgb}, ${flashAlpha}) 100%)`;
+    const baseAlpha = flashStep >= 0
+      ? Math.min(0.46, 0.12 + visualStep * 0.045)
+      : Math.min(0.4, 0.09 + visualStep * 0.04);
+    const beatAlpha = heartStep * (0.1 + heartStr * 0.28);
+    const vignetteAlpha = Math.min(0.62, baseAlpha + beatAlpha);
+    const vignetteRadius = Math.max(27, 60 - visualStep * 4.2 - heartStep * 4.5);
+    $("vignette").style.filter = `saturate(${1 + Math.min(0.9, visualStep * 0.2)})`;
+    $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${vignetteRadius}%, rgba(${vignetteRgb}, ${vignetteAlpha}) 100%)`;
   }
   const list = $("onlineList");
   const online = $("online");
@@ -6642,7 +6658,7 @@ function ensureGhost(w, h) {
       uniforms: {
         map: { value: ghostRT.texture },
         opacity: { value: 0.12 },
-        shift: { value: new THREE.Vector2() },
+        offset: { value: new THREE.Vector2() },
         tint: { value: ghostTint },
         flash: { value: 0 },
       },
@@ -6656,21 +6672,23 @@ function ensureGhost(w, h) {
       fragmentShader: `
         uniform sampler2D map;
         uniform float opacity;
+        uniform vec2 offset;
         uniform vec2 shift;
         uniform vec3 tint;
         uniform float flash;
         varying vec2 vUv;
         void main() {
+          vec2 ghostUv = clamp(vUv + offset, vec2(0.0), vec2(1.0));
           vec2 blur = shift * (1.0 + flash * 0.7);
-          vec2 uvR = clamp(vUv + blur * 1.8, vec2(0.0), vec2(1.0));
-          vec2 uvG = clamp(vUv + blur * 0.35, vec2(0.0), vec2(1.0));
-          vec2 uvB = clamp(vUv - blur * 1.8, vec2(0.0), vec2(1.0));
+          vec2 uvR = clamp(ghostUv + blur * 1.8, vec2(0.0), vec2(1.0));
+          vec2 uvG = clamp(ghostUv + blur * 0.35, vec2(0.0), vec2(1.0));
+          vec2 uvB = clamp(ghostUv - blur * 1.8, vec2(0.0), vec2(1.0));
           float r = texture2D(map, uvR).r;
           float g = texture2D(map, uvG).g;
           float b = texture2D(map, uvB).b;
           vec3 separated = vec3(r, g, b);
-          vec3 glow = tint * (0.12 + flash * 0.24);
-          gl_FragColor = vec4(separated * (0.56 + flash * 0.35) + glow, opacity);
+          vec3 glow = tint * (0.08 + flash * 0.16);
+          gl_FragColor = vec4(separated * (0.58 + flash * 0.3) + glow, opacity);
         }
       `,
       transparent: true,
@@ -6707,7 +6725,7 @@ function renderDoubleVision(dt = 0) {
   ensureGhost(w, h);
   ghostRefreshT -= dt;
   if (ghostRefreshT <= 0) {
-    ghostRefreshT = 0.12;
+    ghostRefreshT = 0.1;
     ghostBase.visible = true;
     renderer.setRenderTarget(ghostRT);
     renderer.render(scene, camera);
@@ -6722,15 +6740,21 @@ function renderDoubleVision(dt = 0) {
   if (phase === 0) ghostTint.setRGB(1, 0.08, 0.12);
   else if (phase === 1) ghostTint.setRGB(0.08, 1, 0.2);
   else ghostTint.setRGB(0.1, 0.24, 1);
+  const severity = Math.pow(amt, 0.78);
   const sway = THREE.MathUtils.clamp(drunkCam.yaw / 0.22, -1, 1);
-  const channelShift = (0.002 + amt * 0.014) * (sway >= 0 ? 1 : -1);
+  const ghostOffset = (0.002 + severity * 0.014) * (sway >= 0 ? 1 : -1);
+  const channelShift = (0.0015 + severity * 0.012) * (sway >= 0 ? 1 : -1);
   ghostQuad.position.set(0, 0, 0);
-  ghostQuad.rotation.z = drunkCam.roll * 0.025;
-  ghostQuad.scale.setScalar(1);
-  ghostQuad.material.uniforms.shift.value.set(channelShift, amt * 0.0025);
+  ghostQuad.rotation.z = drunkCam.roll * 0.05;
+  ghostQuad.scale.setScalar(1 + severity * 0.018);
+  ghostQuad.material.uniforms.offset.value.set(
+    ghostOffset,
+    Math.sin(tWorld * 1.4 + d) * severity * 0.004
+  );
+  ghostQuad.material.uniforms.shift.value.set(channelShift, severity * 0.0045);
   ghostQuad.material.uniforms.tint.value.copy(ghostTint);
   ghostQuad.material.uniforms.flash.value = pulse;
-  ghostQuad.material.uniforms.opacity.value = 0.08 + amt * 0.14;
+  ghostQuad.material.uniforms.opacity.value = 0.1 + severity * 0.22 + pulse * severity * 0.035;
   const autoClear = renderer.autoClear;
   renderer.autoClear = false;
   renderer.render(ghostScene, ghostCam);

@@ -489,9 +489,9 @@ export function createClub(api) {
     legR.position.set(0.075, 0.5, 0);
     body.add(legR);
 
-    if (girl) body.scale.set(0.93, 1.16, 0.93);
-    else if (guard) body.scale.set(1.04, 1.1, 1.04);
-    else body.scale.set(0.95, 1.1, 0.95);
+    if (girl) body.scale.setScalar(1.0);
+    else if (guard) body.scale.setScalar(1.06);
+    else body.scale.setScalar(1.05);
     const stars = new THREE.Group();
     if (!guard) {
       const starMats = [
@@ -702,7 +702,11 @@ export function createClub(api) {
   }
 
   function faceCenter(x, z) {
-    return Math.atan2(x - 19.0, z - 0.25);
+    return Math.atan2(19.0 - x, 0.25 - z);
+  }
+
+  function sitFacingCenter(x, z) {
+    return faceCenter(x, z);
   }
 
   function addLedScreen(w, h, x, y, z, yaw = 0) {
@@ -801,6 +805,7 @@ export function createClub(api) {
     const hit = addMesh(g, unitBox, seat, 0, BALC_Y + 0.24, 0, 0.28, 0.1, 0.28);
     const fx = Math.sin(yaw);
     const fz = Math.cos(yaw);
+    const sitYaw = sitFacingCenter(x, z);
     hit.userData.kind = "clubChair";
     hit.userData.root = hit;
     hit.userData.sitter = null;
@@ -808,7 +813,7 @@ export function createClub(api) {
       x,
       z,
       y: BALC_Y + 1.18,
-      yaw,
+      yaw: sitYaw,
       floor: BALC_Y,
       standX: x - fx * 0.52,
       standZ: z - fz * 0.52,
@@ -1791,12 +1796,38 @@ export function createClub(api) {
     return false;
   }
 
+  function stepStair(p, dt) {
+    const goingUp = p.route === "up";
+    const lane = STAIR_X + (goingUp ? 0.34 : -0.34);
+    const targetZ = goingUp ? STAIR_Z1 : STAIR_Z0;
+    const dz = targetZ - p.z;
+    p.x += (lane - p.x) * Math.min(1, dt * 14);
+    if (Math.abs(dz) <= 0.08) {
+      p.x = lane;
+      p.z = targetZ;
+      p.y = goingUp ? BALC_Y : 0;
+      p.route = "";
+      p.stairTrip = "";
+      p.stairCool = 14 + hash01(p.phase, p.x) * 10;
+      p.walking = false;
+      pickTarget(p);
+      return false;
+    }
+    const step = Math.min(Math.abs(dz), (p.speed || 1.6) * 1.08 * dt);
+    p.z += Math.sign(dz) * step;
+    p.y = stairHeight(p.z);
+    p.yaw = Math.atan2(0, dz);
+    p.walking = true;
+    return true;
+  }
+
   function stepMingle(p, dt) {
     if (p.wait > 0) {
       p.wait -= dt;
       if (p.wait <= 0) pickTarget(p);
       return false;
     }
+    if (usingStairs(p) && onStairs(p.x, p.z)) return stepStair(p, dt);
     let aimX = p.tx;
     let aimZ = p.tz;
     if (p.y > 1.2 && !p.route) {
@@ -1827,8 +1858,8 @@ export function createClub(api) {
     if (!p.walking && (walkingCount() >= MAX_WALKING_PEOPLE || (upper && balconyWalkingCount() >= BALCONY_WALKER_LIMIT))) return false;
     p.walking = true;
     const step = Math.min(dist, (p.route ? p.speed * 1.08 : p.speed) * dt);
-    const nx = p.x + (dx / dist) * step;
-    const nz = p.z + (dz / dist) * step;
+    let nx = p.x + (dx / dist) * step;
+    let nz = p.z + (dz / dist) * step;
     const stairing = usingStairs(p) && (onStairs(p.x, p.z) || onStairs(nx, nz) || inStairwell(nx, nz));
     if (!stairing) {
       if (p.y < 1 && blockedFloor(nx, nz)) {
@@ -1837,9 +1868,14 @@ export function createClub(api) {
         return false;
       }
       if (p.y > 1 && !onBalcony(nx, nz)) {
-        p.walking = false;
-        pickTarget(p);
-        return false;
+        const safe = clampToDeck(nx, nz, (p.r || 0.44) + 0.04);
+        if (Math.hypot(nx - safe.x, nz - safe.z) > 0.24) {
+          p.walking = false;
+          pickTarget(p);
+          return false;
+        }
+        nx = safe.x;
+        nz = safe.z;
       }
     }
     if (crowdStepBlocked(p, nx, nz)) {
