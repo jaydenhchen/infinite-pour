@@ -1535,7 +1535,7 @@ export function createClub(api) {
 
   function poseSit(p, t) {
     const u = p.rig.userData;
-    u.body.position.y = -0.16;
+    u.body.position.y = -0.38;
     u.body.rotation.set(0.08, 0, Math.sin(t * 0.55 + p.phase) * p.drunk * 0.04);
     u.legL.rotation.set(-1.22, 0, 0.08);
     u.legR.rotation.set(-1.16, 0, -0.06);

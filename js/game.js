@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=140";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=68";
+import { createClub } from "./club.js?v=69";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
