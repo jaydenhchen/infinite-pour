@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=140";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=69";
+import { createClub } from "./club.js?v=70";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -1621,9 +1621,9 @@ const audio = {
         : 0;
       this.clubBass?.gain.setTargetAtTime(inside ? 5 + near * 3.5 + echoMix * 2 : 0, now, 0.1);
       this.clubPresence?.gain.setTargetAtTime(inside ? 1.5 + near * 1.5 : 0, now, 0.1);
-      this.clubDelay?.delayTime.setTargetAtTime(inside ? 0.13 + echoMix * 0.26 : 0.14, now, 0.16);
-      this.clubEchoGain?.gain.setTargetAtTime(inside ? 0.1 + echoMix * 0.68 : 0, now, 0.12);
-      this.clubEchoFeedback?.gain.setTargetAtTime(inside ? 0.12 + echoMix * 0.48 : 0, now, 0.12);
+      this.clubDelay?.delayTime.setTargetAtTime(inside ? 0.13 + echoMix * 0.2 : 0.14, now, 0.16);
+      this.clubEchoGain?.gain.setTargetAtTime(inside ? 0.1 + echoMix * 0.52 : 0, now, 0.12);
+      this.clubEchoFeedback?.gain.setTargetAtTime(inside ? 0.12 + echoMix * 0.34 : 0, now, 0.12);
     } else {
       this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
     }
@@ -1848,7 +1848,6 @@ let heartT = 0;
 let heartKick = 0;
 let heartBeatPulse = 0;
 let hudDrunkStep = -1;
-let hudDrunkFlashStep = -1;
 let hudHeartBeatStep = -1;
 const cops = [];
 let wanted = false;
@@ -5263,26 +5262,26 @@ function drunkVignetteRgb(d) {
   let r;
   let g;
   let b;
-  if (d < 0.8) {
-    const t = d / 0.8;
-    r = 190 + t * 24;
-    g = 18 + t * 12;
-    b = 28 + t * 10;
-  } else if (d < 1.8) {
-    const t = (d - 0.8) / 1;
-    r = 214 - t * 174;
-    g = 30 + t * 158;
-    b = 38 - t * 6;
-  } else if (d < 3.2) {
-    const t = (d - 1.8) / 1.4;
-    r = 40 - t * 20;
-    g = 176 - t * 112;
-    b = 32 + t * 178;
+  if (d < 0.5) {
+    const t = d / 0.5;
+    r = 116 + t * 12;
+    g = 8 + t * 2;
+    b = 12 + t * 6;
+  } else if (d < 1.4) {
+    const t = (d - 0.5) / 0.9;
+    r = 128 - t * 118;
+    g = 10 + t * 22;
+    b = 18 + t * 122;
+  } else if (d < 2.3) {
+    const t = (d - 1.4) / 0.9;
+    r = 10 - t * 2;
+    g = 32 + t * 96;
+    b = 140 - t * 96;
   } else {
-    const t = Math.min(1, (d - 3.2) / 2.4);
-    r = 20 - t * 8;
-    g = 64 - t * 24;
-    b = 210 + t * 35;
+    const t = Math.min(1, (d - 2.3) / 2.5);
+    r = 8 - t * 3;
+    g = 128 - t * 54;
+    b = 44 - t * 20;
   }
   return `${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}`;
 }
@@ -5350,22 +5349,16 @@ function hud() {
   }
   const d = drunkLevel();
   const visualStep = Math.round(d * 40) / 40;
-  const flashStep = d >= 0.72 ? Math.floor(tWorld * (2.1 + Math.min(1.8, d * 0.28))) : -1;
   const heartStep = Math.round(heartBeatPulse * 20) / 20;
   const heartStr = heartStrength();
-  if (visualStep !== hudDrunkStep || flashStep !== hudDrunkFlashStep || heartStep !== hudHeartBeatStep) {
+  if (visualStep !== hudDrunkStep || heartStep !== hudHeartBeatStep) {
     hudDrunkStep = visualStep;
-    hudDrunkFlashStep = flashStep;
     hudHeartBeatStep = heartStep;
-    const vignetteRgb = flashStep >= 0
-      ? ["224, 24, 38", "32, 214, 82", "38, 86, 238"][((flashStep % 3) + 3) % 3]
-      : drunkVignetteRgb(visualStep);
-    const baseAlpha = flashStep >= 0
-      ? Math.min(0.46, 0.12 + visualStep * 0.045)
-      : Math.min(0.4, 0.09 + visualStep * 0.04);
-    const beatAlpha = heartStep * (0.1 + heartStr * 0.28);
-    const vignetteAlpha = Math.min(0.62, baseAlpha + beatAlpha);
-    const vignetteRadius = Math.max(27, 60 - visualStep * 4.2 - heartStep * 4.5);
+    const vignetteRgb = drunkVignetteRgb(visualStep);
+    const baseAlpha = Math.min(0.68, 0.1 + visualStep * 0.075);
+    const beatAlpha = heartStep * (0.16 + heartStr * 0.36);
+    const vignetteAlpha = Math.min(0.86, baseAlpha + beatAlpha);
+    const vignetteRadius = Math.max(18, 60 - visualStep * 5.4 - heartStep * 7);
     $("vignette").style.filter = `saturate(${1 + Math.min(0.9, visualStep * 0.2)})`;
     $("vignette").style.background = `radial-gradient(ellipse at center, transparent ${vignetteRadius}%, rgba(${vignetteRgb}, ${vignetteAlpha}) 100%)`;
   }
@@ -6600,7 +6593,7 @@ function applyDrunkCam(dt, extra = 0) {
   } else {
     drunkCam.yaw = (Math.sin(shakePhase * 0.73) * 0.16 + Math.sin(shakePhase * 1.85) * 0.05) * amp * feel;
     drunkCam.pit = (Math.cos(shakePhase * 0.61) * 0.1 + Math.sin(shakeWalk) * 0.035 * (moving ? 1 : 0.2)) * amp * feel;
-    drunkCam.roll = (Math.sin(shakePhase) * 0.2 + Math.sin(shakeWalk) * 0.055 * (moving ? 1 : 0.1)) * amp * feel + extra;
+    drunkCam.roll = extra;
   }
   const base = zoom ? 22 : 78 + extra * 8;
   const pulse = amp < 0.03 ? 0 : Math.sin(shakePhase * 0.45) * (zoom ? 1.1 : 2.2) * amp;
@@ -6662,6 +6655,7 @@ function ensureGhost(w, h) {
         map: { value: ghostRT.texture },
         opacity: { value: 0.12 },
         offset: { value: new THREE.Vector2() },
+        shift: { value: new THREE.Vector2() },
         tint: { value: ghostTint },
         flash: { value: 0 },
       },
