@@ -380,9 +380,9 @@ function lambert(color, extra = {}) {
 export function makeBatonMesh() {
   const g = new THREE.Group();
   g.userData.kind = "baton";
-  const wood = lambert(0x4a2c14);
-  const grip = lambert(0x1a120c);
-  const tip = lambert(0x2a1a10);
+  const wood = lambert(0x4a2c14, { emissive: 0x241207, emissiveIntensity: 0.3 });
+  const grip = lambert(0x1a120c, { emissive: 0x0c0805, emissiveIntensity: 0.18 });
+  const tip = lambert(0x2a1a10, { emissive: 0x1a0d06, emissiveIntensity: 0.24 });
   addBox(g, wood, 0, 0.24, 0, 0.045, 0.42, 0.045);
   addBox(g, grip, 0, 0.02, 0, 0.055, 0.1, 0.055);
   addBox(g, tip, 0, 0.47, 0, 0.05, 0.06, 0.05);
