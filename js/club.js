@@ -24,7 +24,7 @@ const SPEAKERS = [
 ];
 const LASER_RADIUS = 0.018;
 const LASER_MAX_RANGE = 40;
-const CLUB_CLOUD_OPACITY = 0.38;
+const CLUB_CLOUD_OPACITY = 0.46;
 const CLUB_FOG_COLOR = 0x50485c;
 const OUTDOOR_FOG_COLOR = 0x12080c;
 const OUTDOOR_FOG_DENSITY = 0.006;
@@ -142,6 +142,7 @@ export function createClub(api) {
     hitPlayer,
     pushNpc,
     drunkLevel,
+    standardDrinks,
   } = api;
 
   const crowd = [];
@@ -338,7 +339,7 @@ export function createClub(api) {
     addMesh(body, unitBox, top, 0.08, 1.03, 0.08, 0.15, 0.13, 0.11);
     addMesh(body, unitBox, top, 0, 1.1, 0.07, 0.3, 0.05, 0.11);
     if (style === 1 || style === 4) {
-      addMesh(body, unitBox, top, 0, 0.76, 0.02, 0.3, 0.36, 0.16);
+      addMesh(body, unitBox, top, 0, 0.76, 0.02, 0.3, 0.42, 0.16);
     } else if (style === 2) {
       addMesh(body, unitBox, top, 0, 0.98, 0.03, 0.28, 0.08, 0.15);
       addMesh(body, unitBox, top, 0, 1.16, 0.02, 0.045, 0.14, 0.045);
@@ -381,7 +382,7 @@ export function createClub(api) {
     const pants = lambert(pantHex);
     addMesh(body, unitBox, skin, 0, 0.96, 0, 0.26, 0.3, 0.14);
     addMesh(body, unitBox, skin, 0, 1.18, 0, 0.1, 0.11, 0.1);
-    addMesh(body, unitBox, shirt, 0, 0.95, 0.01, 0.36, 0.46, 0.2);
+    addMesh(body, unitBox, shirt, 0, 0.95, 0.01, 0.36, 0.5, 0.2);
     if (style === 1) {
       addMesh(body, unitBox, shirt, 0, 1.16, 0.05, 0.22, 0.05, 0.12);
     } else if (style === 2) {
@@ -394,7 +395,7 @@ export function createClub(api) {
     } else if (dj || style === 4) {
       addMesh(body, unitBox, lambert(0x1a1a22), 0, 0.98, 0.03, 0.38, 0.44, 0.22);
     }
-    addMesh(body, unitBox, pants, 0, 0.68, 0, 0.34, 0.18, 0.2);
+    addMesh(body, unitBox, pants, 0, 0.68, 0, 0.34, 0.22, 0.2);
     if (!dj && hash01(seed, 17) > 0.7) addMesh(body, unitBox, lambert(0xc9a227), 0, 1.08, 0.11, 0.04, 0.1, 0.01);
     return { style, shirt, pants };
   }
@@ -412,6 +413,7 @@ export function createClub(api) {
     const hair = lambert(guard ? 0x1a100c : hairHex);
     const shoe = lambert(girl ? 0x1a0a10 : 0x121014);
     const eye = lambert(0x140808);
+    addMesh(body, unitBox, skin, 0, 0.68, 0, 0.18, 1.36, 0.1);
     const fit = girl ? dressWoman(body, skin, seed) : guard ? dressGuard(body, skin) : dressMan(body, skin, seed, dj);
     const sleeve = girl ? skin : fit.shirt;
     const legMat = girl && (fit.skinny || fit.mini) ? skin : fit.bot || fit.pants;
@@ -474,22 +476,22 @@ export function createClub(api) {
     }
     armR.position.set(-0.23, 1.08, 0);
     body.add(armR);
-
-    const lw = skinny ? 0.09 : 0.12;
+    const lw = skinny ? 0.12 : 0.14;
+    const shoeY = girl ? -0.41 : -0.4;
     const legL = new THREE.Group();
-    addMesh(legL, unitBox, girl && fit.mini ? skin : girl && skinny ? fit.bot || skin : legMat, 0, -0.2, 0, lw, 0.38, lw);
-    addMesh(legL, unitBox, shoe, 0, -0.44, girl ? 0.04 : 0.02, 0.11, 0.08, girl ? 0.2 : 0.16);
-    legL.position.set(-0.09, 0.72, 0);
+    addMesh(legL, unitBox, girl && fit.mini ? skin : girl && skinny ? fit.bot || skin : legMat, 0, -0.2, 0, lw, 0.6, lw);
+    addMesh(legL, unitBox, shoe, 0, shoeY, girl ? 0.04 : 0.02, 0.12, girl ? 0.18 : 0.1, girl ? 0.2 : 0.16);
+    legL.position.set(-0.075, 0.5, 0);
     body.add(legL);
     const legR = new THREE.Group();
-    addMesh(legR, unitBox, girl && fit.mini ? skin : girl && skinny ? fit.bot || skin : legMat, 0, -0.2, 0, lw, 0.38, lw);
-    addMesh(legR, unitBox, shoe, 0, -0.44, girl ? 0.04 : 0.02, 0.11, 0.08, girl ? 0.2 : 0.16);
-    legR.position.set(0.09, 0.72, 0);
+    addMesh(legR, unitBox, girl && fit.mini ? skin : girl && skinny ? fit.bot || skin : legMat, 0, -0.2, 0, lw, 0.6, lw);
+    addMesh(legR, unitBox, shoe, 0, shoeY, girl ? 0.04 : 0.02, 0.12, girl ? 0.18 : 0.1, girl ? 0.2 : 0.16);
+    legR.position.set(0.075, 0.5, 0);
     body.add(legR);
 
-    if (girl) body.scale.setScalar(0.93);
-    else if (guard) body.scale.set(1.04, 1.02, 1.04);
-    else body.scale.setScalar(0.95);
+    if (girl) body.scale.set(0.93, 1.16, 0.93);
+    else if (guard) body.scale.set(1.04, 1.1, 1.04);
+    else body.scale.set(0.95, 1.1, 0.95);
     const stars = new THREE.Group();
     if (!guard) {
       const starMats = [
@@ -700,7 +702,7 @@ export function createClub(api) {
   }
 
   function faceCenter(x, z) {
-    return Math.atan2(19.0 - x, 0.25 - z);
+    return Math.atan2(x - 19.0, z - 0.25);
   }
 
   function addLedScreen(w, h, x, y, z, yaw = 0) {
@@ -1676,6 +1678,27 @@ export function createClub(api) {
     const dz = (pos.z || 0) - p.z;
     const dist = Math.hypot(dx, dz);
     if (!p.angry) {
+      const homeDx = (p.homeX ?? p.x) - p.x;
+      const homeDz = (p.homeZ ?? p.z) - p.z;
+      const homeDist = Math.hypot(homeDx, homeDz);
+      if (p.guardReturn && homeDist > 0.06) {
+        const step = Math.min(homeDist, 2.4 * dt);
+        let nx = p.x + (homeDx / (homeDist || 1)) * step;
+        let nz = p.z + (homeDz / (homeDist || 1)) * step;
+        if (collideWorld) [nx, nz] = collideWorld(nx, nz, 0.32);
+        p.x = nx;
+        p.z = nz;
+        p.yaw = Math.atan2(homeDx, homeDz);
+        poseGuard(p, t, true, "chase");
+        p.rig.position.set(p.x, p.y, p.z);
+        p.rig.rotation.y = p.yaw;
+        return;
+      }
+      if (p.guardReturn) {
+        p.x = p.homeX ?? p.x;
+        p.z = p.homeZ ?? p.z;
+        p.guardReturn = false;
+      }
       poseGuard(p, t, false, "");
       return;
     }
@@ -1968,8 +1991,9 @@ export function createClub(api) {
       const ux = dx / dist;
       const uz = dz / dist;
       const anchored = planted(p);
-      const npcYield = anchored ? 0.42 : 0.82;
-      const playerResistance = anchored ? 0.34 : 0.18;
+      const seated = p.mode === "sit";
+      const npcYield = seated ? 0 : anchored ? 0.42 : 0.82;
+      const playerResistance = seated ? 1 : anchored ? 0.34 : 0.18;
       const pushX = -ux * need * npcYield;
       const pushZ = -uz * need * npcYield;
       p.x += pushX;
@@ -2087,7 +2111,7 @@ export function createClub(api) {
       speakerDistance = Math.min(speakerDistance, Math.hypot(pos.x - speaker[0], pos.z - speaker[1]));
     }
     const musicProximity = clubActive ? THREE.MathUtils.clamp(1 - speakerDistance / 4.8, 0, 1) : -1;
-    audio.clubTick?.(dt, musicProximity, drunkLevel?.() || 0);
+    audio.clubTick?.(dt, musicProximity, drunkLevel?.() || 0, standardDrinks?.() || 0);
 
     if (clubActive) {
     const beat = (t * 2.15) % 1;
@@ -2414,7 +2438,7 @@ export function createClub(api) {
       fog: true,
       toneMapped: false,
     });
-    for (let i = 0; i < 28; i++) {
+    for (let i = 0; i < 42; i++) {
       const mist = new THREE.Mesh(cloudGeometry, cloudMaterial);
       mist.scale.set(
         1.3 + hash01(i, 91) * 2.3,
@@ -2591,6 +2615,20 @@ export function createClub(api) {
     return Number.isInteger(person?.id) ? person.id : -1;
   }
 
+  function resetGuards() {
+    for (const p of crowd) {
+      if (p.mode !== "guard" || p.dead || p.gone) continue;
+      p.angry = false;
+      p.drawT = 0;
+      p.swingT = 0;
+      p.swingLanded = false;
+      p.hurtT = 0;
+      p.walking = false;
+      p.guardReturn = true;
+      if (p.rig?.userData?.baton) p.rig.userData.baton.visible = false;
+    }
+  }
+
   function angryGuards() {
     const out = [];
     for (const p of crowd) {
@@ -2613,6 +2651,7 @@ export function createClub(api) {
     applyPunch,
     punchPick,
     applyNetworkPunch,
+    resetGuards,
     applyNetworkPush,
     angryGuards,
     setNpcAuthority,

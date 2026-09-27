@@ -46,9 +46,9 @@ import {
   setWorldBlock,
   makeBatonMesh,
   seatBatonOnArm,
-} from "./multiplayer.js?v=139";
+} from "./multiplayer.js?v=140";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=62";
+import { createClub } from "./club.js?v=64";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -69,6 +69,9 @@ const BAC_FADE = 60;
 const RECOVERY_TAU = 15;
 const PEE_SECS = 8;
 const ONE_DRINK_BAC = (40 / 40) * (1.5 / 1.2) * 0.028;
+const DOUBLE_VISION_START_DRINKS = 8;
+const CLUB_ECHO_START_DRINKS = 10;
+const CLUB_ECHO_FULL_DRINKS = 18;
 const CUP_STACK_MAX = 5;
 const CUP_NEST = 0.028;
 const CLUB_OUTSIDE_GAIN = 0;
@@ -1598,7 +1601,7 @@ const audio = {
     try { this.siren.o.stop(); } catch (err) { /* already stopped */ }
     this.siren = null;
   },
-  clubTick(dt, proximity, drunk = 0) {
+  clubTick(dt, proximity, drunk = 0, drinks = 0) {
     if (!this.clubAudio) return;
     const now = this.ctx?.currentTime || 0;
     if (this.clubFade && now >= this.clubFade.end) this.finishClubFade();
@@ -1609,12 +1612,18 @@ const audio = {
     this.clubVol += (target - this.clubVol) * Math.min(1, dt * 8);
     if (this.clubGain && this.ctx) {
       this.clubGain.gain.setTargetAtTime(this.clubVol, now, 0.045);
-      const drunkMix = inside ? THREE.MathUtils.clamp((Number(drunk) || 0) / 4.8, 0, 1) : 0;
-      this.clubBass?.gain.setTargetAtTime(inside ? 5 + near * 3.5 + drunkMix * 2 : 0, now, 0.1);
+      const echoMix = inside
+        ? THREE.MathUtils.clamp(
+            ((Number(drinks) || 0) - CLUB_ECHO_START_DRINKS) / (CLUB_ECHO_FULL_DRINKS - CLUB_ECHO_START_DRINKS),
+            0,
+            1
+          )
+        : 0;
+      this.clubBass?.gain.setTargetAtTime(inside ? 5 + near * 3.5 + echoMix * 2 : 0, now, 0.1);
       this.clubPresence?.gain.setTargetAtTime(inside ? 1.5 + near * 1.5 : 0, now, 0.1);
-      this.clubDelay?.delayTime.setTargetAtTime(inside ? 0.13 + drunkMix * 0.2 : 0.14, now, 0.16);
-      this.clubEchoGain?.gain.setTargetAtTime(inside ? 0.1 + drunkMix * 0.5 : 0, now, 0.12);
-      this.clubEchoFeedback?.gain.setTargetAtTime(inside ? 0.12 + drunkMix * 0.36 : 0, now, 0.12);
+      this.clubDelay?.delayTime.setTargetAtTime(inside ? 0.13 + echoMix * 0.26 : 0.14, now, 0.16);
+      this.clubEchoGain?.gain.setTargetAtTime(inside ? 0.1 + echoMix * 0.68 : 0, now, 0.12);
+      this.clubEchoFeedback?.gain.setTargetAtTime(inside ? 0.12 + echoMix * 0.48 : 0, now, 0.12);
     } else {
       this.clubAudio.volume = THREE.MathUtils.clamp(this.clubVol, 0, 1);
     }
@@ -1730,6 +1739,7 @@ let walkT = 0;
 let pouring = false;
 let held = null;
 let look = null;
+let lookedBaton = null;
 let bac = 0;
 let score = 0;
 let pours = 0;
@@ -2421,6 +2431,37 @@ function registerPick(obj) {
   pickables.push(obj);
 }
 
+function setBatonHighlight(root, active) {
+  if (!root || root.userData?.kind !== "baton") return;
+  root.traverse((obj) => {
+    const mat = obj.material;
+    if (!mat?.color) return;
+    const base = mat.userData.batonBase || (mat.userData.batonBase = {
+      color: mat.color.getHex(),
+      emissive: mat.emissive?.getHex?.() ?? null,
+      emissiveIntensity: mat.emissiveIntensity ?? 0,
+    });
+    if (active) {
+      mat.color.setHex(0xffffff);
+      if (mat.emissive) mat.emissive.setHex(0xffffff);
+      mat.emissiveIntensity = 1.35;
+    } else {
+      mat.color.setHex(base.color);
+      if (mat.emissive && base.emissive != null) mat.emissive.setHex(base.emissive);
+      mat.emissiveIntensity = base.emissiveIntensity;
+    }
+  });
+}
+
+function updateBatonLook(root) {
+  const next = root?.userData?.kind === "baton" ? root : null;
+  if (next === lookedBaton) return;
+  setBatonHighlight(lookedBaton, false);
+  setBatonHighlight(next, true);
+  lookedBaton = next;
+}
+
+
 function unregisterPick(obj) {
   const i = pickables.indexOf(obj);
   if (i >= 0) pickables.splice(i, 1);
@@ -2646,7 +2687,7 @@ function restockDrinks(fromNet) {
       unregisterPick(obj);
     } else if (obj.userData.stock) scene.add(obj);
     else if (obj.userData.kind === "baton") {
-      obj.scale.setScalar(1);
+      obj.scale.setScalar(1.12);
       obj.position.set(bodyPos.x, 0.03, bodyPos.z);
       obj.rotation.set(Math.PI / 2, 0, 0.12);
       scene.add(obj);
@@ -3048,6 +3089,7 @@ function buildWorld() {
     collideWorld,
     playerPos: () => bodyPos,
     drunkLevel: () => drunkLevel(),
+    standardDrinks: () => bac / ONE_DRINK_BAC,
     makeBottle,
     makeGlassMesh,
     randomDrink,
@@ -5059,6 +5101,7 @@ function finishPlayer(kind, by) {
   $("passout").classList.add("open");
   closeChat(false);
   if (inCar) exitCar(true);
+  if (kind === "guard") houseClub?.resetGuards?.();
   clearPolice();
   resetShift();
 }
@@ -5717,7 +5760,7 @@ function dropHeld() {
     return;
   }
   if (obj.userData.kind === "baton") {
-    obj.scale.setScalar(1);
+    obj.scale.setScalar(1.12);
     p.y = 0.03;
     obj.position.copy(p);
     obj.rotation.set(Math.PI / 2, camera.rotation.y, 0.12);
@@ -6646,11 +6689,16 @@ function ensureGhost(w, h) {
 
 function renderDoubleVision(dt = 0) {
   const d = drunkLevel();
-  if (d < 0.72 || passedOut || inCar || sipT > 0) {
+  const drinks = Math.max(0, bac / ONE_DRINK_BAC);
+  if (drinks < DOUBLE_VISION_START_DRINKS || passedOut || inCar || sipT > 0) {
     ghostRefreshT = 0;
     return false;
   }
-  const amt = THREE.MathUtils.clamp((d - 0.72) / 3.6, 0, 1);
+  const amt = THREE.MathUtils.clamp(
+    (drinks - DOUBLE_VISION_START_DRINKS) / (CLUB_ECHO_FULL_DRINKS - DOUBLE_VISION_START_DRINKS),
+    0,
+    1
+  );
   const displayW = renderer.domElement.width;
   const displayH = renderer.domElement.height;
   if (displayW < 8 || displayH < 8) return false;
@@ -7585,7 +7633,7 @@ function dropOfficerBaton(off) {
   const x = off.rd ? off.rd.x : off.x;
   const z = off.rd ? off.rd.z : off.z;
   const [nx, nz] = collideWorld(x + (Math.random() - 0.5) * 0.25, z + (Math.random() - 0.5) * 0.25, 0.18);
-  baton.position.set(nx, 0.03, nz);
+  baton.scale.setScalar(1.12);
   baton.rotation.set(Math.PI / 2, off.yaw || 0, 0.16);
   scene.add(baton);
   registerPick(baton);
@@ -7593,6 +7641,7 @@ function dropOfficerBaton(off) {
 
 function hitOfficer(off, fx, fz, dmg) {
   if (!off || off.dead || off.gone) return false;
+  heatUp();
   if (off.state === "ride") {
     const car = off.car;
     if (car) {
@@ -9045,6 +9094,7 @@ function tick() {
   if (playing()) {
     const p = pick();
     look = p ? p.root : null;
+    updateBatonLook(look);
     updatePlayer(dt);
     tickDoorClosers(dt);
     tickRemoteCars(dt);
@@ -9055,6 +9105,7 @@ function tick() {
     if (!inCar) updatePour(dt);
     stashLook();
   } else {
+    updateBatonLook(null);
     audio.pourStop();
     if (started && !passedOut && chatOpen) applyDrunkCam(dt);
   }
