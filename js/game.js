@@ -48,7 +48,7 @@ import {
   seatBatonOnArm,
 } from "./multiplayer.js?v=140";
 import { createGames } from "./games.js?v=107";
-import { createClub } from "./club.js?v=66";
+import { createClub } from "./club.js?v=68";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("gl");
@@ -5184,12 +5184,15 @@ function onToilet() {
 
 function sitOn(spot) {
   if (!spot || inCar) return;
+  const kind = spot.kind || (spot.fixture?.userData?.kind === "clubChair" ? "clubChair" : "stool");
+  // Chair/NPC forward is +Z; the camera looks down -Z, so a chair seat needs a half-turn.
+  const seatedYaw = spot.yaw == null ? spot.yaw : kind === "clubChair" ? spot.yaw + Math.PI : spot.yaw;
   sitting = {
     x: spot.x,
     z: spot.z,
     y: spot.y || SIT_Y,
-    yaw: spot.yaw,
-    kind: spot.kind || "stool",
+    yaw: seatedYaw,
+    kind,
     fixture: spot.fixture || null,
     standX: spot.standX ?? spot.x,
     standZ: spot.standZ ?? spot.z + 0.55,

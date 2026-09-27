@@ -810,6 +810,7 @@ export function createClub(api) {
     hit.userData.root = hit;
     hit.userData.sitter = null;
     hit.userData.sit = {
+      kind: "clubChair",
       x,
       z,
       y: BALC_Y + 1.18,
@@ -2074,7 +2075,7 @@ export function createClub(api) {
 
   function tickSyncedCrowd(dt, t, guardsOnly = false) {
     for (const p of crowd) {
-      if (guardsOnly && p.mode !== "guard") continue;
+      if (guardsOnly && p.mode !== "guard" && p.mode !== "sit") continue;
       if (p.netX != null) {
         const dx = p.netX - p.x;
         const dz = p.netZ - p.z;
@@ -2257,7 +2258,7 @@ export function createClub(api) {
       }
     }
     for (const p of crowd) {
-      if (!clubActive && p.mode !== "guard") continue;
+      if (!clubActive && p.mode !== "guard" && p.mode !== "sit") continue;
       if (p.stairCool > 0) p.stairCool -= dt;
       if (p.hurtT > 0) p.hurtT -= dt;
       if (p.dead) {
